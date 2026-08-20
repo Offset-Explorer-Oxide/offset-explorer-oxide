@@ -1,0 +1,15 @@
+### Node ###
+node_modules/
+package-lock.json
+dist/
+
+### Rust ###
+target/
+Cargo.lock
+
+### macOS ###
+.DS_Store
+
+### IDE ###
+.vscode/
+.idea/

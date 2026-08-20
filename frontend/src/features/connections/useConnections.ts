@@ -1,0 +1,121 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ConnectionStatus, ImportSummary, NewConnection } from "../../lib/tauri";
+
+export function useConnectionsQuery() {
+  return useQuery({ queryKey: ["connections"], queryFn: api.listConnections });
+}
+
+export function useCreateConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (newConnection: NewConnection) => api.createConnection(newConnection),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
+  });
+}
+
+export function useUpdateConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, connection }: { id: string; connection: NewConnection }) =>
+      api.updateConnection(id, connection),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
+  });
+}
+
+export function useDeleteConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteConnection(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
+  });
+}
+
+/** Backs the "Export Connection" context-menu item (`ids: [id]`) and the "Export All" button (`ids: null`). */
+export function useExportConnections() {
+  return useMutation<void, Error, { ids: string[] | null; path: string }>({
+    mutationFn: ({ ids, path }) => api.exportConnections(ids, path),
+  });
+}
+
+/** Backs the sidebar's "Import" button. */
+export function useImportConnections() {
+  const queryClient = useQueryClient();
+  return useMutation<ImportSummary, Error, string>({
+    mutationFn: (path: string) => api.importConnections(path),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
+  });
+}
+
+export function useConnectionStatus(id: string) {
+  return useQuery({
+    queryKey: ["connection-status", id],
+    queryFn: () => api.checkConnectionStatus(id),
+    refetchInterval: 10_000,
+    initialData: "UNKNOWN" as const,
+  });
+}
+
+/** Backs the ping button next to "Bootstrap servers" in the New Connection modal. */
+export function usePingBootstrapServers() {
+  return useMutation<ConnectionStatus, Error, string>({
+    mutationFn: (bootstrapServers: string) => api.pingBootstrapServers(bootstrapServers),
+  });
+}
+
+/** Backs the ping button next to "Host" in the New Connection modal's Zookeeper section. */
+export function usePingZookeeper() {
+  return useMutation<ConnectionStatus, Error, { host: string; port: number }>({
+    mutationFn: ({ host, port }) => api.pingZookeeper(host, port),
+  });
+}
+
+/** Backs the New Connection modal's bottom "Test" button. */
+export function useTestConnection() {
+  return useMutation<ConnectionStatus, Error, NewConnection>({
+    mutationFn: (newConnection: NewConnection) => api.testConnection(newConnection),
+  });
+}
+
+/** Whether the cluster detail panel should treat this connection as connected (gates field-disabling and the tree's Brokers/Topics/Consumers expansion). */
+export function useConnectionConnected(id: string) {
+  return useQuery({
+    queryKey: ["connection-connected", id],
+    queryFn: () => api.isConnectionConnected(id),
+    initialData: false,
+  });
+}
+
+/**
+ * Backs the cluster detail panel's "Reconnect" button. Takes `id` as a hook
+ * argument (rather than at `.mutate()` time) so the mutation key is scoped
+ * to this connection — `useIsMutating({ mutationKey: connectMutationKey(id) })`
+ * elsewhere (the connection tree's spinner) can then observe it in flight
+ * without needing its own reference to this mutation instance.
+ */
+export function connectMutationKey(id: string) {
+  return ["connect", id];
+}
+
+export function useConnect(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation<ConnectionStatus, Error, void>({
+    mutationKey: connectMutationKey(id),
+    mutationFn: () => api.connectConnection(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["connection-connected", id] });
+      queryClient.invalidateQueries({ queryKey: ["connection-status", id] });
+    },
+  });
+}
+
+/** Backs the cluster detail panel's "Disconnect" button. */
+export function useDisconnect() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: (id: string) => api.disconnectConnection(id),
+    onSuccess: (_void, id) => {
+      queryClient.invalidateQueries({ queryKey: ["connection-connected", id] });
+      queryClient.invalidateQueries({ queryKey: ["connection-status", id] });
+    },
+  });
+}

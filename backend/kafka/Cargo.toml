@@ -1,0 +1,22 @@
+[package]
+name = "kafkaoxide-kafka"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kafkaoxide-core = { workspace = true }
+error-stack = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+base64 = "0.22"
+
+# librdkafka's vendored build has two paths: the default (configure+make,
+# Unix-only — no cmake needed) and cmake-build (MSVC+CMake, the only path
+# that works on Windows, since Windows has no `configure` shell script
+# toolchain by default). Use the lighter default everywhere it works, and
+# only pay for cmake on Windows where it's unavoidable.
+[target.'cfg(windows)'.dependencies]
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+
+[target.'cfg(not(windows))'.dependencies]
+rdkafka = { version = "0.36" }

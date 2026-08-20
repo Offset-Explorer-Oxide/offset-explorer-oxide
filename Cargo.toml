@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+  "backend/core",
+  "backend/db",
+  "backend/secrets",
+  "backend/kafka",
+  "backend/avro",
+  "backend/schema-registry",
+  "src-tauri",
+]
+
+[workspace.dependencies]
+error-stack = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+strum = { version = "0.26", features = ["derive"] }
+async-trait = "0.1"
+kafkaoxide-core = { path = "backend/core" }
+kafkaoxide-db = { path = "backend/db" }
+kafkaoxide-secrets = { path = "backend/secrets" }
+kafkaoxide-kafka = { path = "backend/kafka" }
+kafkaoxide-avro = { path = "backend/avro" }
+kafkaoxide-schema-registry = { path = "backend/schema-registry" }
