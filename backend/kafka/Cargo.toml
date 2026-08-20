@@ -15,8 +15,17 @@ base64 = "0.22"
 # that works on Windows, since Windows has no `configure` shell script
 # toolchain by default). Use the lighter default everywhere it works, and
 # only pay for cmake on Windows where it's unavoidable.
+#
+# `ssl-vendored` is required on every platform: SecurityProtocol::Ssl/SaslSsl
+# (what virtually every managed cloud Kafka — Confluent Cloud, AWS MSK —
+# requires) is silently non-functional without it, since rdkafka-sys passes
+# `--disable-ssl` to librdkafka's build unless this feature is enabled.
+# Vendored (not plain `ssl`) so OpenSSL is statically linked into the app
+# binary rather than dynamically linked against a system OpenSSL install —
+# this is a distributed desktop app, and most end-user Windows/macOS
+# machines have no system OpenSSL for a dynamic link to find at runtime.
 [target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.36", features = ["cmake-build"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored"] }
 
 [target.'cfg(not(windows))'.dependencies]
-rdkafka = { version = "0.36" }
+rdkafka = { version = "0.36", features = ["ssl-vendored"] }

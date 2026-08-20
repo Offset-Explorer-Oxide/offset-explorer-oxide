@@ -15,12 +15,15 @@ use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
 use crate::messages::{apply_total_cap, clamp_offset, partition_limits};
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[async_trait]
 pub trait KafkaClient: Send + Sync {
@@ -32,9 +35,14 @@ pub trait KafkaClient: Send + Sync {
         password: Option<&str>,
     ) -> Result<ConnectionStatus, AppError>;
 
-    /// Pings just the bootstrap servers value, ignoring security settings.
-    /// Backs the ping button next to "Bootstrap servers" in the New
-    /// Connection modal's General section.
+    /// Plain TCP reachability check against each host:port in
+    /// `bootstrap_servers` (comma-separated) — reports `Reachable` as soon
+    /// as any one accepts a connection. Deliberately does not speak the
+    /// Kafka wire protocol or apply any security settings: a broker that
+    /// only accepts TLS/SASL (as virtually all managed cloud Kafka does)
+    /// still has an open TCP port, and "is something listening" is the
+    /// question this answers. Backs the ping button next to "Bootstrap
+    /// servers" in the New Connection modal's General section.
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError>;
 
     /// Tests full connectivity using the in-progress modal's entered
@@ -179,15 +187,12 @@ impl KafkaClient for RdKafkaClient {
     }
 
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError> {
-        run_probe(build_client_config(
-            bootstrap_servers,
-            SecurityProtocol::Plaintext,
-            None,
-            None,
-            None,
-            BrokerSslConfig::default(),
-        ))
-        .await
+        for addr in bootstrap_servers.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(Ok(_)) = timeout(TCP_PING_TIMEOUT, TcpStream::connect(addr)).await {
+                return Ok(ConnectionStatus::Reachable);
+            }
+        }
+        Ok(ConnectionStatus::Unreachable)
     }
 
     async fn test_connection(
@@ -756,12 +761,63 @@ mod tests {
         assert_eq!(status, ConnectionStatus::Unreachable);
     }
 
+    // Reproduces the reported bug: a broker that only accepts TLS/SASL (as
+    // virtually all managed cloud Kafka does) still has an open TCP port —
+    // it just won't speak plaintext Kafka wire protocol on it. Ping should
+    // answer "is something listening", not "can I complete an unauthenticated
+    // plaintext Kafka handshake", so it must not depend on rdkafka's
+    // fetch_metadata at all. This listener accepts a connection and then
+    // does nothing — never sending anything a real Kafka client would
+    // recognize — simulating exactly that TLS-only-broker case.
+    #[tokio::test]
+    async fn ping_bootstrap_reports_reachable_for_a_listener_that_speaks_no_kafka_protocol() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let client = RdKafkaClient;
+        let status = client
+            .ping_bootstrap(&format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        assert_eq!(status, ConnectionStatus::Reachable);
+    }
+
+    #[tokio::test]
+    async fn ping_bootstrap_reports_reachable_when_any_of_several_servers_is_up() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let client = RdKafkaClient;
+        // First entry (port 1) is closed; second is the live listener above.
+        let status = client
+            .ping_bootstrap(&format!("127.0.0.1:1,127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        assert_eq!(status, ConnectionStatus::Reachable);
+    }
+
+    #[tokio::test]
+    async fn ping_bootstrap_reports_unreachable_for_an_unresolvable_host() {
+        let client = RdKafkaClient;
+        let status = client
+            .ping_bootstrap("this-host-does-not-resolve.invalid:9092")
+            .await
+            .unwrap();
+        assert_eq!(status, ConnectionStatus::Unreachable);
+    }
+
     #[tokio::test]
     async fn test_connection_reports_unreachable_for_a_closed_port() {
-        // PLAINTEXT: the only security protocol this sandbox's librdkafka
-        // build (no OpenSSL, no libsasl2) can actually probe end-to-end.
-        // SASL/SSL protocol pass-through is covered at the config-building
-        // level instead, in `config::tests`.
         let client = RdKafkaClient;
         let status = client
             .test_connection(
