@@ -13,3 +13,7 @@ Cargo.lock
 ### IDE ###
 .vscode/
 .idea/
+
+### Local docs ###
+docs/
+PROGRESS.md
