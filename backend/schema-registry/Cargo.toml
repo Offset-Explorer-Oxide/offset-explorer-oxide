@@ -1,0 +1,13 @@
+[package]
+name = "kafkaoxide-schema-registry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kafkaoxide-core = { workspace = true }
+error-stack = { workspace = true }
+serde = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls-vendored"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }

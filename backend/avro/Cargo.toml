@@ -1,0 +1,11 @@
+[package]
+name = "kafkaoxide-avro"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kafkaoxide-core = { workspace = true }
+error-stack = { workspace = true }
+serde_json = { workspace = true }
+apache-avro = "0.16"
+base64 = "0.22"

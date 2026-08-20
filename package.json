@@ -1,0 +1,9 @@
+{
+  "name": "kafkaoxide",
+  "private": true,
+  "scripts": {
+    "tauri": "npx --prefix frontend tauri",
+    "dev": "npx --prefix frontend tauri dev",
+    "build": "npx --prefix frontend tauri build"
+  }
+}

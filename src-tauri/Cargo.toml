@@ -1,0 +1,24 @@
+[package]
+name = "kafkaoxide-app"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kafkaoxide-core = { workspace = true }
+kafkaoxide-db = { workspace = true }
+kafkaoxide-secrets = { workspace = true }
+kafkaoxide-kafka = { workspace = true }
+kafkaoxide-avro = { workspace = true }
+kafkaoxide-schema-registry = { workspace = true }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+error-stack = { workspace = true }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+base64 = "0.22"

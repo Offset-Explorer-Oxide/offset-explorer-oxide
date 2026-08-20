@@ -1,0 +1,289 @@
+import { describe, expect, it } from "vitest";
+import type { Connection } from "../../../lib/tauri";
+import { connectionToDraft, draftsEqual, emptyDraft, toNewConnection, validateDraft } from "./draft";
+
+describe("emptyDraft", () => {
+  it("defaults to plaintext with zookeeper disabled and no sasl mechanism", () => {
+    const draft = emptyDraft();
+    expect(draft.securityProtocol).toBe("PLAINTEXT");
+    expect(draft.zookeeperEnabled).toBe(false);
+    expect(draft.saslMechanism).toBe("");
+  });
+
+  it("defaults the kafka version to the newest supported version", () => {
+    expect(emptyDraft().kafkaVersion).toBe("3.7");
+  });
+});
+
+describe("validateDraft", () => {
+  it("requires a cluster name", () => {
+    const draft = emptyDraft();
+    draft.bootstrapServers = "localhost:9092";
+    expect(validateDraft(draft)).toBe("Cluster name is required");
+  });
+
+  it("requires bootstrap servers", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    expect(validateDraft(draft)).toBe("Bootstrap servers is required");
+  });
+
+  it("requires a zookeeper host when zookeeper is enabled", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.zookeeperEnabled = true;
+    draft.zookeeperPort = "2181";
+    expect(validateDraft(draft)).toBe("Zookeeper host is required when Zookeeper is enabled");
+  });
+
+  it("requires a zookeeper port when zookeeper is enabled", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.zookeeperEnabled = true;
+    draft.zookeeperHost = "zk.local";
+    expect(validateDraft(draft)).toBe("Zookeeper port is required when Zookeeper is enabled");
+  });
+
+  it("passes for a minimal valid draft", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    expect(validateDraft(draft)).toBeNull();
+  });
+
+  it("does not require zookeeper fields when zookeeper is disabled", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.zookeeperEnabled = false;
+    expect(validateDraft(draft)).toBeNull();
+  });
+});
+
+describe("toNewConnection", () => {
+  it("trims and nulls out blank optional fields", () => {
+    const draft = emptyDraft();
+    draft.name = "  Local  ";
+    draft.bootstrapServers = "  localhost:9092  ";
+
+    const result = toNewConnection(draft);
+
+    expect(result.name).toBe("Local");
+    expect(result.bootstrapServers).toBe("localhost:9092");
+    expect(result.zookeeperHost).toBeNull();
+    expect(result.zookeeperPort).toBeNull();
+    expect(result.zookeeperChrootPath).toBeNull();
+    expect(result.saslMechanism).toBeNull();
+    expect(result.saslUsername).toBeNull();
+    expect(result.saslPassword).toBeNull();
+    expect(result.saslOauthUrl).toBeNull();
+    expect(result.schemaRegistryEndpoint).toBeNull();
+    expect(result.schemaRegistryBasicAuthCredentials).toBeNull();
+  });
+
+  it("carries zookeeper fields through when enabled, parsing the port as a number", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.zookeeperEnabled = true;
+    draft.zookeeperHost = "zk.local";
+    draft.zookeeperPort = "2181";
+    draft.zookeeperChrootPath = "/kafka";
+
+    const result = toNewConnection(draft);
+
+    expect(result.zookeeperEnabled).toBe(true);
+    expect(result.zookeeperHost).toBe("zk.local");
+    expect(result.zookeeperPort).toBe(2181);
+    expect(result.zookeeperChrootPath).toBe("/kafka");
+  });
+
+  it("omits zookeeper host/port/chroot even if filled in when zookeeper is disabled", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.zookeeperEnabled = false;
+    draft.zookeeperHost = "zk.local";
+    draft.zookeeperPort = "2181";
+
+    const result = toNewConnection(draft);
+
+    expect(result.zookeeperHost).toBeNull();
+    expect(result.zookeeperPort).toBeNull();
+  });
+
+  it("converts an empty sasl mechanism selection to null", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.saslMechanism = "SCRAM-SHA-512";
+
+    expect(toNewConnection(draft).saslMechanism).toBe("SCRAM-SHA-512");
+  });
+
+  it("trims the sasl username and carries the password through", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.saslMechanism = "PLAIN";
+    draft.saslUsername = "  kafka-user  ";
+    draft.saslPassword = "hunter2";
+
+    const result = toNewConnection(draft);
+
+    expect(result.saslUsername).toBe("kafka-user");
+    expect(result.saslPassword).toBe("hunter2");
+  });
+
+  it("carries all schema registry fields through, trimmed", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.schemaRegistryEndpoint = " https://schema-registry.local ";
+    draft.schemaRegistryBasicAuthCredentials = "user:pass";
+    draft.schemaRegistryTrustStoreLocation = "/etc/ts.jks";
+    draft.schemaRegistryTrustStorePassword = "ts-secret";
+    draft.schemaRegistryKeystoreLocation = "/etc/ks.jks";
+    draft.schemaRegistryKeystorePassword = "ks-secret";
+    draft.schemaRegistryKeystoreKeyPassword = "ks-key-secret";
+
+    const result = toNewConnection(draft);
+
+    expect(result.schemaRegistryEndpoint).toBe("https://schema-registry.local");
+    expect(result.schemaRegistryBasicAuthCredentials).toBe("user:pass");
+    expect(result.schemaRegistryTrustStoreLocation).toBe("/etc/ts.jks");
+    expect(result.schemaRegistryTrustStorePassword).toBe("ts-secret");
+    expect(result.schemaRegistryKeystoreLocation).toBe("/etc/ks.jks");
+    expect(result.schemaRegistryKeystorePassword).toBe("ks-secret");
+    expect(result.schemaRegistryKeystoreKeyPassword).toBe("ks-key-secret");
+  });
+
+  it("carries all broker SSL fields through, trimmed", () => {
+    const draft = emptyDraft();
+    draft.name = "Local";
+    draft.bootstrapServers = "localhost:9092";
+    draft.sslTruststoreLocation = " /etc/broker-ts.pem ";
+    draft.sslTruststorePassword = "broker-ts-secret";
+    draft.sslKeystoreLocation = "/etc/broker-ks.p12";
+    draft.sslKeystorePassword = "broker-ks-secret";
+    draft.sslKeystoreKeyPassword = "broker-ks-key-secret";
+
+    const result = toNewConnection(draft);
+
+    expect(result.sslTruststoreLocation).toBe("/etc/broker-ts.pem");
+    expect(result.sslTruststorePassword).toBe("broker-ts-secret");
+    expect(result.sslKeystoreLocation).toBe("/etc/broker-ks.p12");
+    expect(result.sslKeystorePassword).toBe("broker-ks-secret");
+    expect(result.sslKeystoreKeyPassword).toBe("broker-ks-key-secret");
+  });
+});
+
+function sampleConnection(overrides: Partial<Connection> = {}): Connection {
+  return {
+    id: "conn-1",
+    name: "Local Kafka",
+    bootstrapServers: "localhost:9092",
+    kafkaVersion: "2.8",
+    zookeeperEnabled: true,
+    zookeeperHost: "zk.local",
+    zookeeperPort: 2181,
+    zookeeperChrootPath: "/kafka",
+    securityProtocol: "SASL_SSL",
+    saslMechanism: "SCRAM-SHA-512",
+    saslUsername: "kafka-user",
+    saslOauthUrl: "https://idp.example.com/token",
+    schemaRegistryEndpoint: "https://schema-registry.local",
+    schemaRegistryTrustStoreLocation: "/etc/ts.jks",
+    schemaRegistryKeystoreLocation: "/etc/ks.jks",
+    sslTruststoreLocation: "/etc/broker-ts.pem",
+    sslKeystoreLocation: "/etc/broker-ks.p12",
+    createdAt: "2026-08-18T00:00:00Z",
+    updatedAt: "2026-08-18T00:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("connectionToDraft", () => {
+  it("carries every non-secret field from the connection into the draft", () => {
+    const draft = connectionToDraft(sampleConnection());
+
+    expect(draft.name).toBe("Local Kafka");
+    expect(draft.bootstrapServers).toBe("localhost:9092");
+    expect(draft.kafkaVersion).toBe("2.8");
+    expect(draft.zookeeperEnabled).toBe(true);
+    expect(draft.zookeeperHost).toBe("zk.local");
+    expect(draft.zookeeperPort).toBe("2181");
+    expect(draft.zookeeperChrootPath).toBe("/kafka");
+    expect(draft.securityProtocol).toBe("SASL_SSL");
+    expect(draft.saslMechanism).toBe("SCRAM-SHA-512");
+    expect(draft.saslUsername).toBe("kafka-user");
+    expect(draft.saslOauthUrl).toBe("https://idp.example.com/token");
+    expect(draft.schemaRegistryEndpoint).toBe("https://schema-registry.local");
+    expect(draft.schemaRegistryTrustStoreLocation).toBe("/etc/ts.jks");
+    expect(draft.schemaRegistryKeystoreLocation).toBe("/etc/ks.jks");
+    expect(draft.sslTruststoreLocation).toBe("/etc/broker-ts.pem");
+    expect(draft.sslKeystoreLocation).toBe("/etc/broker-ks.p12");
+  });
+
+  it("leaves every secret field blank, since Connection never carries secrets", () => {
+    const draft = connectionToDraft(sampleConnection());
+
+    expect(draft.saslPassword).toBe("");
+    expect(draft.schemaRegistryBasicAuthCredentials).toBe("");
+    expect(draft.schemaRegistryTrustStorePassword).toBe("");
+    expect(draft.schemaRegistryKeystorePassword).toBe("");
+    expect(draft.schemaRegistryKeystoreKeyPassword).toBe("");
+    expect(draft.sslTruststorePassword).toBe("");
+    expect(draft.sslKeystorePassword).toBe("");
+    expect(draft.sslKeystoreKeyPassword).toBe("");
+  });
+
+  it("renders a null zookeeper port as an empty string rather than 'null'", () => {
+    const draft = connectionToDraft(sampleConnection({ zookeeperPort: null, zookeeperHost: null }));
+    expect(draft.zookeeperPort).toBe("");
+    expect(draft.zookeeperHost).toBe("");
+  });
+
+  it("round-trips back through toNewConnection to an equivalent NewConnection", () => {
+    const connection = sampleConnection();
+    const draft = connectionToDraft(connection);
+    const newConnection = toNewConnection(draft);
+
+    expect(newConnection.name).toBe(connection.name);
+    expect(newConnection.bootstrapServers).toBe(connection.bootstrapServers);
+    expect(newConnection.kafkaVersion).toBe(connection.kafkaVersion);
+    expect(newConnection.zookeeperEnabled).toBe(connection.zookeeperEnabled);
+    expect(newConnection.zookeeperHost).toBe(connection.zookeeperHost);
+    expect(newConnection.zookeeperPort).toBe(connection.zookeeperPort);
+    expect(newConnection.securityProtocol).toBe(connection.securityProtocol);
+    expect(newConnection.saslMechanism).toBe(connection.saslMechanism);
+    expect(newConnection.saslUsername).toBe(connection.saslUsername);
+  });
+});
+
+describe("draftsEqual", () => {
+  it("is true for two independently-created equivalent drafts", () => {
+    expect(draftsEqual(emptyDraft(), emptyDraft())).toBe(true);
+  });
+
+  it("is false when a single field differs", () => {
+    const a = emptyDraft();
+    const b = { ...emptyDraft(), name: "Changed" };
+    expect(draftsEqual(a, b)).toBe(false);
+  });
+
+  it("is false when a boolean field differs", () => {
+    const a = emptyDraft();
+    const b = { ...emptyDraft(), zookeeperEnabled: true };
+    expect(draftsEqual(a, b)).toBe(false);
+  });
+
+  it("is true again once the differing field is reverted", () => {
+    const original = emptyDraft();
+    const draft = { ...original, name: "Changed" };
+    const reverted = { ...draft, name: original.name };
+    expect(draftsEqual(original, reverted)).toBe(true);
+  });
+});
