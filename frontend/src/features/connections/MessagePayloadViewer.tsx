@@ -5,7 +5,7 @@ import { useDecodeAvro } from "./useClusterResources";
 import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
-import { base64ToBytes, bytesToText, tryParseJson, tryParseXml } from "./payloadDecoding";
+import { base64ToBytes, base64ToDisplayText, bytesToText, tryParseJson, tryParseXml } from "./payloadDecoding";
 
 type PanelTabId = "headers" | "value";
 type ValueMode = "text" | "json" | "avro" | "xml";
@@ -49,7 +49,7 @@ export function MessagePayloadViewer() {
     <div className="message-payload-viewer">
       <p className="message-payload-meta">
         Partition {message.partition} · Offset {message.offset}
-        {message.key !== null && <> · Key: {message.key}</>}
+        {message.keyBase64 !== null && <> · Key: {base64ToDisplayText(message.keyBase64)}</>}
       </p>
 
       <div className="connection-modal-tabs" role="tablist">
@@ -83,7 +83,7 @@ export function MessagePayloadViewer() {
                 {message.headers.map((header, index) => (
                   <tr key={index}>
                     <td>{header.key}</td>
-                    <td>{header.value ?? <em>null</em>}</td>
+                    <td>{base64ToDisplayText(header.valueBase64) ?? <em>null</em>}</td>
                   </tr>
                 ))}
               </tbody>

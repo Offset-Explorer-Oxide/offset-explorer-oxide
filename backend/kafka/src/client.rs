@@ -17,11 +17,19 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
-use crate::messages::{apply_total_cap, clamp_offset, partition_limits};
+use crate::messages::{apply_total_cap, clamp_offset, newest_first_start_offset, partition_limits};
+
+/// Per-partition message count used to resolve the newest-first start
+/// offset when the caller gives no explicit `offset`/`from_timestamp_ms`
+/// filter and no `max_messages_per_partition` — without a default, an
+/// unfiltered fetch on a large topic scans from the low watermark with no
+/// cap at all.
+const DEFAULT_MESSAGE_CAP: u32 = 100;
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
@@ -81,11 +89,20 @@ pub trait KafkaClient: Send + Sync {
     /// start/end offsets are resolved once up front (from watermarks, or
     /// from the from/to timestamps via `offsets_for_times`), so messages
     /// produced after the fetch starts are not included.
+    ///
+    /// When `on_message` is given, each message is also sent on it as soon
+    /// as it's polled, in addition to being collected into the returned
+    /// `Vec` — this lets a caller (the Tauri command layer) stream results
+    /// to the UI incrementally instead of waiting for the whole fetch to
+    /// finish. The channel is purely a progress feed: its receiver going
+    /// away (e.g. the caller stopped listening) does not affect the fetch,
+    /// which still runs to completion and returns the full result.
     async fn fetch_messages(
         &self,
         connection: &Connection,
         topic: &str,
         filter: &MessageFilter,
+        on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
     ) -> Result<Vec<TopicMessage>, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
@@ -113,9 +130,10 @@ pub trait KafkaClient: Send + Sync {
     ) -> Result<ConsumerGroupLag, AppError>;
 }
 
-/// Collects a message's Kafka headers, lossy-UTF-8-decoding each value —
-/// same treatment as the message key, since headers are conventionally
-/// short text metadata rather than arbitrary binary data.
+/// Collects a message's Kafka headers. Values are base64-encoded, not
+/// lossy-UTF-8-decoded — a header value is an arbitrary Kafka byte string,
+/// not guaranteed text, and lossy decoding would silently corrupt a binary
+/// one.
 fn extract_headers(message: &BorrowedMessage) -> Vec<MessageHeader> {
     let Some(headers) = message.headers() else {
         return Vec::new();
@@ -124,7 +142,7 @@ fn extract_headers(message: &BorrowedMessage) -> Vec<MessageHeader> {
         .iter()
         .map(|header| MessageHeader {
             key: header.key.to_string(),
-            value: header.value.map(|v| String::from_utf8_lossy(v).into_owned()),
+            value_base64: header.value.map(|v| BASE64.encode(v)),
         })
         .collect()
 }
@@ -341,6 +359,7 @@ impl KafkaClient for RdKafkaClient {
         connection: &Connection,
         topic: &str,
         filter: &MessageFilter,
+        on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
     ) -> Result<Vec<TopicMessage>, AppError> {
         let mut config = client_config(connection);
         config.set("group.id", "kafkaoxide-message-browser");
@@ -387,9 +406,10 @@ impl KafkaClient for RdKafkaClient {
                     watermarks(p).map(|(low, _)| low)
                 })?
             } else {
+                let cap = i64::from(filter.max_messages_per_partition.unwrap_or(DEFAULT_MESSAGE_CAP));
                 target_partitions
                     .iter()
-                    .map(|&p| watermarks(p).map(|(low, _)| (p, low)))
+                    .map(|&p| watermarks(p).map(|(low, high)| (p, newest_first_start_offset(low, high, cap))))
                     .collect::<Result<_, _>>()?
             };
 
@@ -438,16 +458,20 @@ impl KafkaClient for RdKafkaClient {
                         if budget <= 0 {
                             continue;
                         }
-                        collected.push(TopicMessage {
+                        let message = TopicMessage {
                             partition,
                             offset: borrowed.offset(),
                             timestamp_ms: borrowed.timestamp().to_millis(),
-                            key: borrowed.key().map(|k| String::from_utf8_lossy(k).into_owned()),
+                            key_base64: borrowed.key().map(|k| BASE64.encode(k)),
                             payload_base64: filter
                                 .include_payload
                                 .then(|| BASE64.encode(borrowed.payload().unwrap_or(&[]))),
                             headers: extract_headers(&borrowed),
-                        });
+                        };
+                        if let Some(sender) = &on_message {
+                            let _ = sender.send(message.clone());
+                        }
+                        collected.push(message);
                         remaining.insert(partition, budget - 1);
                     }
                     Some(Err(_)) | None => {
@@ -851,9 +875,26 @@ mod tests {
     async fn fetch_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default())
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_messages_streams_each_message_on_the_given_channel_as_it_arrives() {
+        // A closed-port fetch fails before ever polling a message, so this
+        // only proves the sender is accepted and the channel closes cleanly
+        // (no hang) when the fetch errors out early — full delivery-of-real-
+        // messages behavior needs a live broker and isn't covered by this
+        // unit test suite (see the `_errors_for_a_closed_port` tests' doc
+        // comments for why: no broker fixture in this crate).
+        let client = RdKafkaClient;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = client
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), Some(tx))
+            .await;
+        assert!(result.is_err());
+        assert!(rx.recv().await.is_none());
     }
 
     #[tokio::test]

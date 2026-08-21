@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { dataTabCacheKey, tabDataKey, UNASSIGNED_TAB_KEY, useTabDataStore } from "./useTabDataStore";
 
-const sample = [{ partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: null, headers: [] }];
+const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
 
 beforeEach(() => {
   useTabDataStore.setState({ messagesByTab: {} });
@@ -46,7 +46,7 @@ describe("useTabDataStore", () => {
   });
 
   it("keeps each tab's cached messages independent", () => {
-    const other = [{ partition: 1, offset: 9, timestampMs: null, key: null, payloadBase64: null, headers: [] }];
+    const other = [{ partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
     useTabDataStore.getState().setTabMessages("tab-1", sample);
     useTabDataStore.getState().setTabMessages("tab-2", other);
 
@@ -62,5 +62,27 @@ describe("useTabDataStore", () => {
 
     expect(useTabDataStore.getState().messagesByTab["tab-1"]).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab["tab-2"]).toEqual(sample);
+  });
+
+  it("appends a streamed message onto a tab with no cached rows yet", () => {
+    useTabDataStore.getState().appendTabMessage("tab-1", sample[0]);
+    expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual(sample);
+  });
+
+  it("appends a streamed message after a tab's existing cached rows", () => {
+    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    useTabDataStore.getState().setTabMessages("tab-1", sample);
+    useTabDataStore.getState().appendTabMessage("tab-1", second);
+
+    expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual([sample[0], second]);
+  });
+
+  it("keeps appended messages scoped to their own tab", () => {
+    const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    useTabDataStore.getState().appendTabMessage("tab-1", sample[0]);
+    useTabDataStore.getState().appendTabMessage("tab-2", other);
+
+    expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual(sample);
+    expect(useTabDataStore.getState().messagesByTab["tab-2"]).toEqual([other]);
   });
 });

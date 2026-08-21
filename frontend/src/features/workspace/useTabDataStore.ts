@@ -43,6 +43,8 @@ interface TabDataState {
    */
   messagesByTab: Record<string, TopicMessage[]>;
   setTabMessages: (tabId: string, messages: TopicMessage[]) => void;
+  /** Appends one streamed message onto a tab's rows — backs the Data tab's live-streaming Fetch, which paints rows in as they arrive instead of waiting for the whole fetch to finish. */
+  appendTabMessage: (tabId: string, message: TopicMessage) => void;
   clearTabMessages: (tabId: string) => void;
 }
 
@@ -50,6 +52,10 @@ export const useTabDataStore = create<TabDataState>((set) => ({
   messagesByTab: {},
   setTabMessages: (tabId, messages) =>
     set((state) => ({ messagesByTab: { ...state.messagesByTab, [tabId]: messages } })),
+  appendTabMessage: (tabId, message) =>
+    set((state) => ({
+      messagesByTab: { ...state.messagesByTab, [tabId]: [...(state.messagesByTab[tabId] ?? []), message] },
+    })),
   clearTabMessages: (tabId) =>
     set((state) => {
       const { [tabId]: _removed, ...rest } = state.messagesByTab;

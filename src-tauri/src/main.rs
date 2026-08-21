@@ -13,6 +13,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // The window title is set here (not left as the static string in
+            // tauri.conf.json) so it always shows the actual running
+            // version — reading it from `package_info()` keeps it in sync
+            // automatically with tauri.conf.json's `version` field with no
+            // separate value to remember to update on every version bump.
+            if let Some(window) = handle.get_webview_window("main") {
+                let version = handle.package_info().version.to_string();
+                let _ = window.set_title(&format!("Offset Explorer Oxide v{version}"));
+            }
+
             tauri::async_runtime::block_on(async move {
                 let data_dir = handle.path().app_data_dir().expect("app data dir");
                 std::fs::create_dir_all(&data_dir).expect("create app data dir");

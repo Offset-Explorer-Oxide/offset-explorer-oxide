@@ -9,6 +9,15 @@ import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
+let capturedMessagesBatchHandler: ((event: { payload: { requestId: string; message: unknown } }) => void) | null =
+  null;
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn((_event: string, handler: (event: { payload: { requestId: string; message: unknown } }) => void) => {
+    capturedMessagesBatchHandler = handler;
+    return Promise.resolve(() => {});
+  }),
+}));
+
 // Real AG Grid needs DOM measurement (ResizeObserver etc.) jsdom doesn't
 // fully provide; this test's job is to verify DataTab passes the right
 // rowData/onRowClicked, not to exercise AG Grid's own rendering.
@@ -28,6 +37,7 @@ let lastGridProps: {
   quickFilterText?: string;
   overlayNoRowsTemplate?: string;
   columnDefs: MockColDef[];
+  loading?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   context?: any;
 } | null = null;
@@ -38,6 +48,7 @@ vi.mock("ag-grid-react", () => ({
     quickFilterText?: string;
     overlayNoRowsTemplate?: string;
     columnDefs: MockColDef[];
+    loading?: boolean;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     context?: any;
   }) => {
@@ -61,6 +72,7 @@ function resetLastGridProps() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetLastGridProps();
+  capturedMessagesBatchHandler = null;
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null });
   useTabDataStore.setState({ messagesByTab: {} });
 });
@@ -125,6 +137,26 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
   });
 
+  it("clears the right pane's viewed message when switching to a different topic without remounting", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="orders" />
+      </QueryClientProvider>,
+    );
+    const message = { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] };
+    useMessageViewerStore.getState().viewMessage(message, "1", "orders");
+    expect(useMessageViewerStore.getState().message).toEqual(message);
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="order-created" />
+      </QueryClientProvider>,
+    );
+
+    expect(useMessageViewerStore.getState().message).toBeNull();
+  });
+
   it("leaves the partition filter blank and editable when partitionId is not given", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -178,6 +210,7 @@ describe("DataTab", () => {
           offset: null,
           includePayload: false,
         },
+        requestId: expect.any(String),
       }),
     );
   });
@@ -235,13 +268,68 @@ describe("DataTab", () => {
     );
   });
 
+  it("shows the grid's loading state while a fetch is in flight, and clears it once it resolves", async () => {
+    let resolveFetch: (messages: unknown[]) => void = () => {};
+    const pending = new Promise<unknown[]>((resolve) => {
+      resolveFetch = resolve;
+    });
+    setInvokeHandlers({ connection_fetch_messages: () => pending });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(lastGridProps?.loading).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(lastGridProps?.loading).toBe(true));
+
+    resolveFetch([]);
+    await waitFor(() => expect(lastGridProps?.loading).toBe(false));
+  });
+
+  it("streams a message onto the grid as soon as a matching messages-batch event arrives, ahead of the fetch resolving", async () => {
+    let resolveFetch: (messages: unknown[]) => void = () => {};
+    const pending = new Promise<unknown[]>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+
+    await waitFor(() => expect(lastGridProps?.rowData).toEqual([streamed]));
+
+    resolveFetch([streamed]);
+    await waitFor(() => expect(lastGridProps?.loading).toBe(false));
+  });
+
+  it("ignores a messages-batch event from a different (stale/superseded) request id", async () => {
+    setInvokeHandlers({ connection_fetch_messages: () => [] });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(lastGridProps?.loading).toBe(false));
+
+    const stale = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
+    capturedMessagesBatchHandler?.({ payload: { requestId: "some-other-request", message: stale } });
+
+    expect(lastGridProps?.rowData).toEqual([]);
+  });
+
   it("tells the grid to show a 'No messages' overlay when there are no rows", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
     expect(lastGridProps?.overlayNoRowsTemplate).toContain("No messages");
   });
 
   it("passes the fetched messages to the grid as rowData", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: "eA==" }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
     setInvokeHandlers({ connection_fetch_messages: () => messages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -267,7 +355,7 @@ describe("DataTab", () => {
   });
 
   it("keeps the fetched messages cached for the tab across an unmount/remount (switching tabs away and back)", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: "eA==" }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
     setInvokeHandlers({ connection_fetch_messages: () => messages });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -283,7 +371,7 @@ describe("DataTab", () => {
   });
 
   it("does not leak one topic's cached rows into a different topic's Data tab in the same top-level tab", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: "eA==" }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
     setInvokeHandlers({ connection_fetch_messages: () => messages });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -299,7 +387,7 @@ describe("DataTab", () => {
   });
 
   it("does not leak a topic's cached rows into one of its partitions' Data tab", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: "eA==" }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
     setInvokeHandlers({ connection_fetch_messages: () => messages });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -360,7 +448,7 @@ describe("DataTab", () => {
 
   it("selects a message into the viewer store when a grid row is clicked", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    const message = { partition: 0, offset: 5, timestampMs: null, key: null, payloadBase64: "eA==" };
+    const message = { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eA==" };
 
     lastGridProps?.onRowClicked({ data: message });
 
@@ -371,7 +459,7 @@ describe("DataTab", () => {
 
   it("does not open the viewer when the row click originated from a button (e.g. Fetch payload)", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    const message = { partition: 0, offset: 5, timestampMs: null, key: null, payloadBase64: null };
+    const message = { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null };
     const button = document.createElement("button");
 
     lastGridProps?.onRowClicked({ data: message, event: { target: button } });
@@ -381,8 +469,8 @@ describe("DataTab", () => {
 
   it("passes a context.fetchPayload that fetches just one row's payload and patches it into the cached rows", async () => {
     const initial = [
-      { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: null },
-      { partition: 1, offset: 2, timestampMs: null, key: null, payloadBase64: null },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null },
+      { partition: 1, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null },
     ];
     setInvokeHandlers({ connection_fetch_messages: () => initial });
     const user = userEvent.setup();
@@ -392,7 +480,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(lastGridProps?.rowData).toEqual(initial));
 
     const fetchMessages = vi.fn(() => [
-      { partition: 0, offset: 1, timestampMs: null, key: "k", payloadBase64: "eA==" },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
     ]);
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     await lastGridProps?.context.fetchPayload(initial[0]);
@@ -409,9 +497,10 @@ describe("DataTab", () => {
         offset: 1,
         includePayload: true,
       },
+      requestId: expect.any(String),
     });
     expect(lastGridProps?.rowData).toEqual([
-      { partition: 0, offset: 1, timestampMs: null, key: "k", payloadBase64: "eA==" },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
       initial[1],
     ]);
   });

@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { ThemeProvider } from "./features/theme/ThemeProvider";
-import { AppTitle } from "./features/layout/AppTitle";
 import { TabBar } from "./features/tabs/TabBar";
 import { useTabsStore } from "./features/tabs/useTabsStore";
 import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
@@ -89,10 +88,7 @@ function AppShell() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div className="app-header-start">
-          <AppTitle />
-          <TabBar />
-        </div>
+        <TabBar />
         <button type="button" aria-label="Open settings" className="settings-gear" onClick={openSettings}>
           ⚙
         </button>

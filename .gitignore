@@ -17,3 +17,6 @@ Cargo.lock
 ### Local docs ###
 docs/
 PROGRESS.md
+
+### Claude Code local session state ###
+.claude/RESUME.md

@@ -6,7 +6,7 @@ use kafkaoxide_core::{
 };
 use kafkaoxide_kafka::BrokerSslConfig;
 use std::collections::HashSet;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(serde::Serialize)]
 pub struct CommandError {
@@ -263,16 +263,89 @@ pub async fn connection_count_topic_messages(
     Ok(state.kafka.count_topic_messages(&connection, &topic).await?)
 }
 
-/// Backs the topic Data tab's Fetch button.
+/// One incrementally-fetched message, emitted on the `"messages-batch"`
+/// event as soon as it's polled from the broker. Tagged with the
+/// frontend-generated `request_id` passed into `connection_fetch_messages`
+/// so a Data tab that started a second fetch (or was stopped) can filter
+/// out late-arriving events from a superseded request instead of having
+/// them corrupt its current rows.
+#[derive(Clone, serde::Serialize)]
+struct MessagesBatchEvent {
+    request_id: String,
+    message: kafkaoxide_core::TopicMessage,
+}
+
+/// How often (in messages received) to log fetch progress to the Logs
+/// panel — frequent enough to reassure the user a large fetch is still
+/// moving, without flooding the panel on a fast, high-volume topic.
+const PROGRESS_LOG_INTERVAL: usize = 25;
+
+/// Backs the topic Data tab's Fetch button. Streams each message to the
+/// frontend via the `"messages-batch"` event as soon as it's polled (see
+/// `MessagesBatchEvent`), in addition to returning the full, authoritative
+/// result once the fetch completes — the frontend uses the stream to paint
+/// rows incrementally and then reconciles with the final `Vec` on success.
 #[tauri::command]
 pub async fn connection_fetch_messages(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     topic: String,
     filter: kafkaoxide_core::MessageFilter,
+    request_id: String,
 ) -> Result<Vec<kafkaoxide_core::TopicMessage>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.fetch_messages(&connection, &topic, &filter).await?)
+    crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
+    let forward_task = {
+        let app = app.clone();
+        let topic = topic.clone();
+        let request_id = request_id.clone();
+        tokio::spawn(async move {
+            let mut count = 0usize;
+            while let Some(message) = rx.recv().await {
+                count += 1;
+                let _ = app.emit(
+                    "messages-batch",
+                    MessagesBatchEvent {
+                        request_id: request_id.clone(),
+                        message,
+                    },
+                );
+                if count % PROGRESS_LOG_INTERVAL == 0 {
+                    crate::logging::emit_log(
+                        &app,
+                        "info",
+                        format!("Fetched {count} messages for topic \"{topic}\" so far..."),
+                    );
+                }
+            }
+        })
+    };
+
+    let result = state.kafka.fetch_messages(&connection, &topic, &filter, Some(tx)).await;
+    let _ = forward_task.await;
+
+    match result {
+        Ok(messages) => {
+            crate::logging::emit_log(
+                &app,
+                "info",
+                format!("Fetched {} messages for topic \"{topic}\"", messages.len()),
+            );
+            Ok(messages)
+        }
+        Err(err) => {
+            let command_err: CommandError = err.into();
+            crate::logging::emit_log(
+                &app,
+                "error",
+                format!("Failed to fetch messages for topic \"{topic}\": {}", command_err.message),
+            );
+            Err(command_err)
+        }
+    }
 }
 
 /// Backs the topic detail panel's Partitions tab.

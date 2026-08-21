@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { AllCommunityModule, ColDef, ModuleRegistry, ValueFormatterParams, ValueGetterParams } from "ag-grid-community";
-import { TopicMessage } from "../../lib/tauri";
+import { listen } from "@tauri-apps/api/event";
+import { MessagesBatchEvent, TopicMessage } from "../../lib/tauri";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, EMPTY_TAB_MESSAGES, useTabDataStore } from "../workspace/useTabDataStore";
 import { APP_GRID_THEME } from "./agGridTheme";
 import { emptyFilterForm, FilterFormState, toMessageFilter } from "./dataFilters";
-import { base64ToBytes, bytesToText, detectConfluentAvro } from "./payloadDecoding";
+import { base64ToBytes, base64ToDisplayText, bytesToText, detectConfluentAvro } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
@@ -27,6 +28,11 @@ function formatValue(params: ValueGetterParams<TopicMessage>): string {
   return bytesToText(bytes);
 }
 
+/** Decodes the row's key for display — base64 on the wire since a Kafka key is an arbitrary byte string, not guaranteed text. */
+function formatKey(params: ValueGetterParams<TopicMessage>): string {
+  return base64ToDisplayText(params.data?.keyBase64 ?? null) ?? "";
+}
+
 /** Keeps the search bar's quick filter scoped to key + value by opting these columns out of it. */
 const excludeFromQuickFilter = () => "";
 
@@ -40,7 +46,7 @@ const COLUMN_DEFS: ColDef<TopicMessage>[] = [
     width: 200,
     getQuickFilterText: excludeFromQuickFilter,
   },
-  { field: "key", headerName: "Key", width: 150 },
+  { headerName: "Key", valueGetter: formatKey, width: 150 },
   { headerName: "Value", valueGetter: formatValue, cellRenderer: ValueCell, flex: 1 },
 ];
 
@@ -73,11 +79,33 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const [searchText, setSearchText] = useState("");
   const fetchMessages = useFetchMessages();
   const viewMessage = useMessageViewerStore((s) => s.viewMessage);
+  const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const stoppedRef = useRef(false);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const tabKey = dataTabCacheKey(activeTabId, connectionId, topicName, partitionId);
+  const tabKeyRef = useRef(tabKey);
+  tabKeyRef.current = tabKey;
   const messages = useTabDataStore((s) => s.messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
+  const appendTabMessage = useTabDataStore((s) => s.appendTabMessage);
+  /** Tags the in-flight Fetch's `requestId` so the "messages-batch" listener below can tell its rows apart from a stale/superseded fetch's late-arriving events — see `MessagesBatchEvent`'s doc comment. */
+  const activeRequestIdRef = useRef<string | null>(null);
+
+  // Streams rows into the grid as connection_fetch_messages's backend task
+  // polls them, instead of leaving the grid empty until the whole fetch
+  // finishes. Subscribed once (not per-fetch) and reads the current
+  // request/tab via refs, since re-subscribing on every Fetch click would
+  // risk a race between the old listener's teardown and a new one's setup.
+  useEffect(() => {
+    const unlisten = listen<MessagesBatchEvent>("messages-batch", (event) => {
+      if (stoppedRef.current) return;
+      if (event.payload.requestId !== activeRequestIdRef.current) return;
+      appendTabMessage(tabKeyRef.current, event.payload.message);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [appendTabMessage]);
 
   // DataTab is reused (not remounted) when switching between topics,
   // partitions, or connections within the same top-level tab — neither
@@ -87,14 +115,18 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // looking at one topic would silently carry over and hide/skew results
   // after switching to a completely different topic — e.g. leftover search
   // text that doesn't match any of the new topic's rows makes a
-  // successful Fetch look like it returned nothing.
+  // successful Fetch look like it returned nothing. The right pane's
+  // viewed message needs the same reset, for the same underlying reason —
+  // without it, the previous topic's message stays visible in the right
+  // pane after switching, looking like it belongs to the new topic.
   useEffect(() => {
     setForm(
       partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) },
     );
     setSearchText("");
     setError(null);
-  }, [connectionId, topicName, partitionId]);
+    clearViewedMessage();
+  }, [connectionId, topicName, partitionId, clearViewedMessage]);
 
   function updateForm(patch: Partial<FilterFormState>) {
     setForm((prev) => ({ ...prev, ...patch }));
@@ -104,11 +136,15 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     setError(null);
     setIsPlaying(true);
     stoppedRef.current = false;
+    const requestId = crypto.randomUUID();
+    activeRequestIdRef.current = requestId;
+    setTabMessages(tabKey, []);
     try {
       const result = await fetchMessages.mutateAsync({
         connectionId,
         topic: topicName,
         filter: toMessageFilter(form),
+        requestId,
       });
       if (!stoppedRef.current) {
         setTabMessages(tabKey, result);
@@ -141,6 +177,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         offset: row.offset,
         includePayload: true,
       },
+      // Own, unmatched request id — this single-row fetch shouldn't be
+      // appended to the grid via the "messages-batch" listener above (which
+      // only reacts to the main Fetch's activeRequestIdRef); its result is
+      // patched into the cached rows directly below instead.
+      requestId: crypto.randomUUID(),
     });
     const updated = result.find((m) => m.partition === row.partition && m.offset === row.offset);
     if (!updated) return;
@@ -244,6 +285,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           defaultColDef={DEFAULT_COL_DEF}
           quickFilterText={searchText}
           context={gridContext}
+          loading={isPlaying}
           overlayNoRowsTemplate="<span class='data-tab-no-rows'>No messages</span>"
           onRowClicked={(event) => {
             // AG Grid's row-click detection runs regardless of stopPropagation

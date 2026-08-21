@@ -32,7 +32,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the payload as text by default", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("hello world"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("hello world"), headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -45,7 +45,7 @@ describe("MessagePayloadViewer", () => {
         partition: 0,
         offset: 1,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: btoa('{"id":1,"name":"orders"}'),
         headers: [],
       },
@@ -65,7 +65,7 @@ describe("MessagePayloadViewer", () => {
         partition: 2,
         offset: 7,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: btoa('{"id":1}'),
         headers: [],
       },
@@ -84,7 +84,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when JSON is requested but the payload isn't valid JSON", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("not json"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not json"), headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -96,7 +96,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when JSON is requested but the payload is XML", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("<a>1</a>"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("<a>1</a>"), headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -112,7 +112,7 @@ describe("MessagePayloadViewer", () => {
         partition: 0,
         offset: 1,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: btoa("<order><id>1</id></order>"),
         headers: [],
       },
@@ -132,7 +132,7 @@ describe("MessagePayloadViewer", () => {
         partition: 2,
         offset: 7,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: btoa("<order/>"),
         headers: [],
       },
@@ -151,7 +151,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when XML is requested but the payload isn't valid XML", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("not xml"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not xml"), headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -167,7 +167,7 @@ describe("MessagePayloadViewer", () => {
         partition: 0,
         offset: 1,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: btoa('{"id":1}'),
         headers: [],
       },
@@ -185,7 +185,7 @@ describe("MessagePayloadViewer", () => {
     useMessageViewerStore.setState({
       connectionId: "conn-1",
       topic: "orders",
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("avro-bytes"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -210,7 +210,7 @@ describe("MessagePayloadViewer", () => {
     useMessageViewerStore.setState({
       connectionId: "conn-1",
       topic: "orders",
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: btoa("avro-bytes"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -222,7 +222,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows a hint to enable 'Load message payload' when payloadBase64 is null", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -232,7 +232,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the message's partition and offset even when the payload wasn't loaded", () => {
     useMessageViewerStore.setState({
-      message: { partition: 3, offset: 17, timestampMs: null, key: null, payloadBase64: null, headers: [] },
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -242,7 +242,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the message's partition and offset", () => {
     useMessageViewerStore.setState({
-      message: { partition: 3, offset: 17, timestampMs: null, key: null, payloadBase64: btoa("x"), headers: [] },
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -252,7 +252,7 @@ describe("MessagePayloadViewer", () => {
 
   it("opens on the Value tab by default", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -265,11 +265,11 @@ describe("MessagePayloadViewer", () => {
         partition: 0,
         offset: 1,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: null,
         headers: [
-          { key: "content-type", value: "application/json" },
-          { key: "empty-header", value: null },
+          { key: "content-type", valueBase64: btoa("application/json") },
+          { key: "empty-header", valueBase64: null },
         ],
       },
     });
@@ -285,7 +285,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows a placeholder on the Headers tab when the message has no headers", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, key: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -301,9 +301,9 @@ describe("MessagePayloadViewer", () => {
         partition: 0,
         offset: 1,
         timestampMs: null,
-        key: null,
+        keyBase64: null,
         payloadBase64: null,
-        headers: [{ key: "trace-id", value: "abc" }],
+        headers: [{ key: "trace-id", valueBase64: btoa("abc") }],
       },
     });
     const user = userEvent.setup();

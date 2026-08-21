@@ -35,10 +35,15 @@ export function useCountTopicMessages() {
   });
 }
 
-/** Backs the topic Data tab's Fetch button. */
+/** Backs the topic Data tab's Fetch button. `requestId` tags the backend's streamed `"messages-batch"` events so a listener can tell this fetch's rows apart from a superseded one. */
 export function useFetchMessages() {
-  return useMutation<TopicMessage[], Error, { connectionId: string; topic: string; filter: MessageFilter }>({
-    mutationFn: ({ connectionId, topic, filter }) => api.fetchMessages(connectionId, topic, filter),
+  return useMutation<
+    TopicMessage[],
+    Error,
+    { connectionId: string; topic: string; filter: MessageFilter; requestId: string }
+  >({
+    mutationFn: ({ connectionId, topic, filter, requestId }) =>
+      api.fetchMessages(connectionId, topic, filter, requestId),
   });
 }
 
