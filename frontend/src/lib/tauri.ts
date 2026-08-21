@@ -1,4 +1,5 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { useGeneralSettingsStore } from "../features/settings/useGeneralSettingsStore";
 
 /**
  * Tauri's `invoke` rejects with whatever the Rust command's `Err` payload
@@ -219,26 +220,64 @@ export const api = {
   pingBootstrapServers: (bootstrapServers: string) =>
     invoke<ConnectionStatus>("connection_ping_bootstrap", { bootstrapServers }),
   pingZookeeper: (host: string, port: number) =>
-    invoke<ConnectionStatus>("connection_ping_zookeeper", { host, port }),
+    invoke<ConnectionStatus>("connection_ping_zookeeper", {
+      host,
+      port,
+      timeoutMs: useGeneralSettingsStore.getState().zookeeperTimeoutMs,
+    }),
   testConnection: (newConnection: NewConnection) =>
     invoke<ConnectionStatus>("connection_test", { newConnection }),
   connectConnection: (id: string) => invoke<ConnectionStatus>("connection_connect", { id }),
   disconnectConnection: (id: string) => invoke<void>("connection_disconnect", { id }),
   isConnectionConnected: (id: string) => invoke<boolean>("connection_is_connected", { id }),
-  listBrokers: (id: string) => invoke<BrokerSummary[]>("connection_list_brokers", { id }),
-  listTopics: (id: string) => invoke<TopicSummary[]>("connection_list_topics", { id }),
+  listBrokers: (id: string) =>
+    invoke<BrokerSummary[]>("connection_list_brokers", {
+      id,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
+  listTopics: (id: string) =>
+    invoke<TopicSummary[]>("connection_list_topics", {
+      id,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   listConsumerGroups: (id: string) =>
-    invoke<ConsumerGroupSummary[]>("connection_list_consumer_groups", { id }),
+    invoke<ConsumerGroupSummary[]>("connection_list_consumer_groups", {
+      id,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   countTopicMessages: (id: string, topic: string) =>
-    invoke<number>("connection_count_topic_messages", { id, topic }),
+    invoke<number>("connection_count_topic_messages", {
+      id,
+      topic,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   fetchMessages: (id: string, topic: string, filter: MessageFilter, requestId: string) =>
-    invoke<TopicMessage[]>("connection_fetch_messages", { id, topic, filter, requestId }),
+    invoke<TopicMessage[]>("connection_fetch_messages", {
+      id,
+      topic,
+      filter,
+      requestId,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+      maxMessageSizeBytes: useGeneralSettingsStore.getState().maxMessageSizeBytes,
+    }),
   listPartitions: (id: string, topic: string) =>
-    invoke<PartitionSummary[]>("connection_list_partitions", { id, topic }),
+    invoke<PartitionSummary[]>("connection_list_partitions", {
+      id,
+      topic,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   describeTopicConfig: (id: string, topic: string) =>
-    invoke<ConfigEntry[]>("connection_describe_topic_config", { id, topic }),
+    invoke<ConfigEntry[]>("connection_describe_topic_config", {
+      id,
+      topic,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   fetchConsumerGroupLag: (id: string, groupId: string) =>
-    invoke<ConsumerGroupLag>("connection_fetch_consumer_group_lag", { id, groupId }),
+    invoke<ConsumerGroupLag>("connection_fetch_consumer_group_lag", {
+      id,
+      groupId,
+      readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
   getTopicSchema: (connectionId: string, topic: string, format: SchemaFormat) =>
     invoke<string | null>("topic_schema_get", { connectionId, topic, format }),
   setTopicSchema: (connectionId: string, topic: string, format: SchemaFormat, schemaText: string) =>

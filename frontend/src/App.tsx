@@ -22,6 +22,7 @@ import { BottomPanel } from "./features/bottom-panel/BottomPanel";
 import { ResizableShell } from "./features/layout/ResizableShell";
 import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
 import { PreferencesProvider } from "./features/settings/PreferencesProvider";
+import { IdleTimerProvider } from "./features/idle/IdleTimerProvider";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
 import { SETTINGS_TAB_ID, useSettingsPanelStore } from "./features/settings/useSettingsPanelStore";
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
@@ -221,7 +222,9 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <PreferencesProvider>
-          <AppShell />
+          <IdleTimerProvider>
+            <AppShell />
+          </IdleTimerProvider>
         </PreferencesProvider>
       </ThemeProvider>
     </QueryClientProvider>
