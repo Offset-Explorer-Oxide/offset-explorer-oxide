@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import { ClusterResourceTree } from "./ClusterResourceTree";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useTreeUiStore } from "./useTreeUiStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -16,6 +17,7 @@ function renderWithClient(ui: React.ReactElement) {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceSelectionStore.setState({ selection: null });
+  useTreeUiStore.setState({ expanded: {}, searchText: {} });
 });
 
 describe("ClusterResourceTree", () => {

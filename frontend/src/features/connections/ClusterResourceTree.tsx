@@ -1,8 +1,10 @@
 import { BrokerSummary, ConsumerGroupSummary } from "../../lib/tauri";
+import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { ResourceCategory } from "./ResourceCategory";
 import { TopicCategory } from "./TopicCategory";
 import { useBrokers, useConsumerGroups, useTopics } from "./useClusterResources";
+import { treeKey } from "./useTreeUiStore";
 
 export interface ClusterResourceTreeProps {
   connectionId: string;
@@ -21,6 +23,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
   const brokers = useBrokers(connectionId, true);
   const topics = useTopics(connectionId, true);
   const groups = useConsumerGroups(connectionId, true);
+  const activeTabId = useTabsStore((s) => s.activeTabId);
 
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectBroker = useWorkspaceSelectionStore((s) => s.selectBroker);
@@ -34,6 +37,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         items={brokers.data}
         isLoading={brokers.isLoading}
         onExpand={noop}
+        treeKey={treeKey(activeTabId, connectionId, "Brokers")}
         getKey={(broker) => String(broker.id)}
         getLabel={(broker) => `${broker.id} — ${broker.host}:${broker.port}`}
         matchesSearch={(broker, query) =>
@@ -63,6 +67,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         items={groups.data}
         isLoading={groups.isLoading}
         onExpand={noop}
+        treeKey={treeKey(activeTabId, connectionId, "Consumers")}
         getKey={(group) => group.groupId}
         getLabel={(group) => group.groupId}
         matchesSearch={(group, query) => group.groupId.toLowerCase().includes(query.toLowerCase())}

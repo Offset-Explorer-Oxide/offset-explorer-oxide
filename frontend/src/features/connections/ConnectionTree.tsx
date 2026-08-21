@@ -13,8 +13,10 @@ import {
   useDisconnect,
   useExportConnections,
 } from "./useConnections";
+import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { ClusterResourceTree } from "./ClusterResourceTree";
+import { treeKey, useTreeUiStore } from "./useTreeUiStore";
 
 /**
  * Green requires both a reachable ping AND an explicit "connected" session
@@ -42,7 +44,10 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectConnection = useWorkspaceSelectionStore((s) => s.selectConnection);
   const isSelected = selection?.type === "connection" && selection.id === id;
-  const [expanded, setExpanded] = useState(false);
+  const activeTabId = useTabsStore((s) => s.activeTabId);
+  const rowKey = treeKey(activeTabId, "connection", id);
+  const expanded = useTreeUiStore((s) => s.expanded[rowKey] ?? false);
+  const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const connected = isConnected ?? false;
   const isConnecting = useIsMutating({ mutationKey: connectMutationKey(id) }) > 0;
@@ -85,7 +90,7 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
             aria-label={`${expanded ? "Collapse" : "Expand"} ${name}`}
             onClick={(e) => {
               e.stopPropagation();
-              setExpanded((current) => !current);
+              toggleExpanded(rowKey);
             }}
           >
             <span className="tree-caret" aria-hidden="true" />

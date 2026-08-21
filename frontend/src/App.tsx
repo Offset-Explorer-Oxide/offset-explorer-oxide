@@ -1,5 +1,5 @@
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { onWindowFocusChanged } from "./lib/appWindow";
 import { ThemeProvider } from "./features/theme/ThemeProvider";
@@ -68,24 +68,6 @@ function AppShell() {
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const activeJsonTab = useJsonViewerTabsStore((s) => s.tabs.find((tab) => tab.id === activeTabId));
   const isSettingsActive = activeTabId === SETTINGS_TAB_ID;
-
-  // The sidebar tree's own local UI state (which categories are expanded,
-  // any text typed into their search boxes) lives in plain useState inside
-  // ConnectionTree/ResourceCategory/TopicCategory, not in a tab-scoped
-  // store — so without a per-tab `key` below, it's really one shared
-  // component instance and looks identical no matter which tab is active,
-  // which reads as "tabs aren't independent" even though the *selection*
-  // (which item is highlighted, what shows in the middle pane) already is,
-  // via useWorkspaceSelectionStore's own byTab cache. Remounting on every
-  // real-tab switch gives each tab a fresh tree. A JSON/XML viewer tab (and
-  // Settings, which behaves the same way) is a transient peek spawned from
-  // within a workspace tab, not a separate workspace, so switching into and
-  // back out of one must NOT reset this — the ref only advances when the
-  // active tab is a real (non-JSON, non-Settings) tab.
-  const lastWorkspaceTabIdRef = useRef<string | null>(null);
-  if (!activeJsonTab && !isSettingsActive) {
-    lastWorkspaceTabIdRef.current = activeTabId;
-  }
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const setSelectionActiveTab = useWorkspaceSelectionStore((s) => s.setActiveTab);
   const openSettings = useSettingsPanelStore((s) => s.open);
@@ -188,7 +170,7 @@ function AppShell() {
                   onCancel={closeModal}
                 />
               )}
-              <ConnectionTree key={lastWorkspaceTabIdRef.current ?? "no-tab"} onClone={handleClone} />
+              <ConnectionTree onClone={handleClone} />
             </aside>
           }
           leftHidden={Boolean(activeJsonTab) || isSettingsActive}

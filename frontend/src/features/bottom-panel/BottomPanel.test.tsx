@@ -10,6 +10,8 @@ import { dataTabCacheKey, useTabDataStore } from "../workspace/useTabDataStore";
 
 let capturedHandler: ((event: { payload: unknown }) => void) | null = null;
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn((_event: string, handler: (event: { payload: unknown }) => void) => {
     capturedHandler = handler;
@@ -192,5 +194,15 @@ describe("BottomPanel tab memory", () => {
     expect(useTabDataStore.getState().messagesByTab[ordersKey]).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab[paymentsKey]).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab[otherTabKey]).toBeDefined();
+  });
+
+  it("asks the backend to trim the OS-visible working set when Clear memory is clicked", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const user = userEvent.setup();
+    render(<BottomPanel />);
+
+    await user.click(screen.getByLabelText("Clear tab memory"));
+
+    expect(invoke).toHaveBeenCalledWith("trim_process_memory", undefined);
   });
 });

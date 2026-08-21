@@ -252,4 +252,6 @@ export const api = {
   renameTab: (id: string, name: string) => invoke<void>("tab_rename", { id, name }),
   deleteTab: (id: string) => invoke<void>("tab_delete", { id }),
   reorderTabs: (ids: string[]) => invoke<void>("tab_reorder", { ids }),
+  /** Trims the OS-visible working set on Windows (a no-op elsewhere) — see `commands::system::trim_process_memory`'s doc comment for why clearing app-level data alone doesn't shrink what Task Manager reports. */
+  trimProcessMemory: () => invoke<void>("trim_process_memory"),
 };

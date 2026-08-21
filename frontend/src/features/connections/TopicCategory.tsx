@@ -1,7 +1,9 @@
-import { MouseEvent as ReactMouseEvent, useRef, useState } from "react";
+import { MouseEvent as ReactMouseEvent, useRef } from "react";
 import { TopicSummary } from "../../lib/tauri";
+import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { usePartitions } from "./useClusterResources";
+import { treeKey, useTreeUiStore } from "./useTreeUiStore";
 
 export interface TopicCategoryProps {
   connectionId: string;
@@ -20,8 +22,12 @@ export interface TopicCategoryProps {
  * a per-item-expand concept onto the generic ResourceCategory.
  */
 export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSelected, onSelect }: TopicCategoryProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [query, setQuery] = useState("");
+  const activeTabId = useTabsStore((s) => s.activeTabId);
+  const key = treeKey(activeTabId, connectionId, "Topics");
+  const expanded = useTreeUiStore((s) => s.expanded[key] ?? false);
+  const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
+  const query = useTreeUiStore((s) => s.searchText[key] ?? "");
+  const setSearchText = useTreeUiStore((s) => s.setSearchText);
   const hasExpandedBefore = useRef(false);
 
   function toggle() {
@@ -29,7 +35,7 @@ export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSel
       hasExpandedBefore.current = true;
       onExpand();
     }
-    setExpanded((current) => !current);
+    toggleExpanded(key);
   }
 
   const filtered = (topics ?? []).filter((topic) => topic.name.toLowerCase().includes(query.toLowerCase()));
@@ -51,7 +57,7 @@ export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSel
             aria-label="Search Topics"
             placeholder="Search topics…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => setSearchText(key, e.target.value)}
           />
           {isLoading && <p>Loading…</p>}
           <ul className="resource-item-list">
@@ -79,14 +85,17 @@ interface TopicRowProps {
 }
 
 function TopicRow({ connectionId, topic, isSelected, onSelect }: TopicRowProps) {
-  const [expanded, setExpanded] = useState(false);
+  const activeTabId = useTabsStore((s) => s.activeTabId);
+  const key = treeKey(activeTabId, connectionId, "topic", topic.name);
+  const expanded = useTreeUiStore((s) => s.expanded[key] ?? false);
+  const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
   const partitions = usePartitions(connectionId, topic.name, expanded);
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectPartition = useWorkspaceSelectionStore((s) => s.selectPartition);
 
   function toggleExpand(e: ReactMouseEvent) {
     e.stopPropagation();
-    setExpanded((current) => !current);
+    toggleExpanded(key);
   }
 
   function isPartitionSelected(partitionId: number) {

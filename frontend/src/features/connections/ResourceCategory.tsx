@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
+import { useTreeUiStore } from "./useTreeUiStore";
 
 export interface ResourceCategoryProps<T> {
   label: string;
@@ -11,6 +12,8 @@ export interface ResourceCategoryProps<T> {
   onSelect: (item: T) => void;
   /** Called exactly once, the first time this category is expanded — triggers the lazy fetch. */
   onExpand: () => void;
+  /** Tab-scoped key (see `treeKey`) this category's expand/search state is stored under, so it starts fresh for a new tab and stays exactly as left for one you've already visited. */
+  treeKey: string;
 }
 
 /**
@@ -28,9 +31,12 @@ export function ResourceCategory<T>({
   isSelected,
   onSelect,
   onExpand,
+  treeKey: key,
 }: ResourceCategoryProps<T>) {
-  const [expanded, setExpanded] = useState(false);
-  const [query, setQuery] = useState("");
+  const expanded = useTreeUiStore((s) => s.expanded[key] ?? false);
+  const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
+  const query = useTreeUiStore((s) => s.searchText[key] ?? "");
+  const setSearchText = useTreeUiStore((s) => s.setSearchText);
   const hasExpandedBefore = useRef(false);
 
   function toggle() {
@@ -38,7 +44,7 @@ export function ResourceCategory<T>({
       hasExpandedBefore.current = true;
       onExpand();
     }
-    setExpanded((current) => !current);
+    toggleExpanded(key);
   }
 
   const filtered = (items ?? []).filter((item) => matchesSearch(item, query));
@@ -60,7 +66,7 @@ export function ResourceCategory<T>({
             aria-label={`Search ${label}`}
             placeholder={`Search ${label.toLowerCase()}…`}
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => setSearchText(key, e.target.value)}
           />
           {isLoading && <p>Loading…</p>}
           <ul className="resource-item-list">
