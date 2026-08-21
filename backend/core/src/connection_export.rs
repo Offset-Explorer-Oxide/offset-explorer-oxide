@@ -176,12 +176,20 @@ mod tests {
             security_protocol: SecurityProtocol::SaslSsl,
             sasl_mechanism: Some(SaslMechanism::ScramSha512),
             sasl_username: Some("alice".into()),
+            sasl_password: Some("alice-secret".into()),
             sasl_oauth_url: Some("https://oauth.example.com".into()),
             schema_registry_endpoint: Some("https://schema.example.com".into()),
+            schema_registry_basic_auth_credentials: Some("sr-user:sr-secret".into()),
             schema_registry_trust_store_location: Some("/certs/truststore.jks".into()),
+            schema_registry_trust_store_password: Some("sr-ts-secret".into()),
             schema_registry_keystore_location: Some("/certs/keystore.jks".into()),
+            schema_registry_keystore_password: Some("sr-ks-secret".into()),
+            schema_registry_keystore_key_password: Some("sr-ks-key-secret".into()),
             ssl_truststore_location: Some("/certs/broker-truststore.jks".into()),
+            ssl_truststore_password: Some("broker-ts-secret".into()),
             ssl_keystore_location: Some("/certs/broker-keystore.jks".into()),
+            ssl_keystore_password: Some("broker-ks-secret".into()),
+            ssl_keystore_key_password: Some("broker-ks-key-secret".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         }
@@ -221,6 +229,29 @@ mod tests {
             Some("/certs/broker-truststore.jks")
         );
         assert_eq!(portable.ssl_keystore_location.as_deref(), Some("/certs/broker-keystore.jks"));
+    }
+
+    #[test]
+    fn portable_connection_never_carries_any_secret_from_a_connection() {
+        // Regression guard: `Connection` now stores real secret values
+        // (plaintext DB storage), unlike before when these fields didn't
+        // exist on the struct at all. `PortableConnection` — and therefore
+        // the export file on disk — must still never carry them.
+        let connection = sample_connection("1", "Prod");
+        let json = serde_json::to_string(&PortableConnection::from(&connection)).unwrap();
+
+        for secret in [
+            "alice-secret",
+            "sr-user:sr-secret",
+            "sr-ts-secret",
+            "sr-ks-secret",
+            "sr-ks-key-secret",
+            "broker-ts-secret",
+            "broker-ks-secret",
+            "broker-ks-key-secret",
+        ] {
+            assert!(!json.contains(secret), "export JSON leaked a secret value: {secret}");
+        }
     }
 
     #[test]

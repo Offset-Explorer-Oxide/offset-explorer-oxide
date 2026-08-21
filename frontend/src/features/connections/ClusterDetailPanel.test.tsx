@@ -166,28 +166,4 @@ describe("ClusterDetailPanel", () => {
     expect(update.mock.calls[0][0]).toMatchObject({ id: "1" });
     await waitFor(() => expect(screen.getByRole("button", { name: "Update" })).toBeDisabled());
   });
-
-  it("does not report the SASL password as touched when only an unrelated field is edited", async () => {
-    // Regression test: secret fields always render blank on load, matching
-    // the blank field in the loaded snapshot — editing some other field and
-    // clicking Update must not touch (and so must not wipe) the SASL
-    // password already stored in the OS keychain.
-    const updated = sampleConnection({ name: "Renamed", securityProtocol: "SASL_SSL", saslMechanism: "PLAIN" });
-    const update = vi.fn((_args: { id: string }) => updated);
-    setInvokeHandlers({
-      connection_list: () => [sampleConnection({ securityProtocol: "SASL_SSL", saslMechanism: "PLAIN" })],
-      connection_is_connected: () => false,
-      connection_update: update,
-    });
-    const user = userEvent.setup();
-    renderWithClient(<ClusterDetailPanel connectionId="1" />);
-
-    const nameInput = await screen.findByLabelText("Cluster name");
-    await user.clear(nameInput);
-    await user.type(nameInput, "Renamed");
-    await user.click(screen.getByRole("button", { name: "Update" }));
-
-    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
-    expect(update.mock.calls[0][0]).toMatchObject({ id: "1", touchedSecrets: [] });
-  });
 });

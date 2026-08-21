@@ -19,12 +19,20 @@ struct ConnectionRow {
     security_protocol: String,
     sasl_mechanism: Option<String>,
     sasl_username: Option<String>,
+    sasl_password: Option<String>,
     sasl_oauth_url: Option<String>,
     schema_registry_endpoint: Option<String>,
+    schema_registry_basic_auth_credentials: Option<String>,
     schema_registry_trust_store_location: Option<String>,
+    schema_registry_trust_store_password: Option<String>,
     schema_registry_keystore_location: Option<String>,
+    schema_registry_keystore_password: Option<String>,
+    schema_registry_keystore_key_password: Option<String>,
     ssl_truststore_location: Option<String>,
+    ssl_truststore_password: Option<String>,
     ssl_keystore_location: Option<String>,
+    ssl_keystore_password: Option<String>,
+    ssl_keystore_key_password: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -53,12 +61,20 @@ impl ConnectionRow {
             security_protocol,
             sasl_mechanism,
             sasl_username: self.sasl_username,
+            sasl_password: self.sasl_password,
             sasl_oauth_url: self.sasl_oauth_url,
             schema_registry_endpoint: self.schema_registry_endpoint,
+            schema_registry_basic_auth_credentials: self.schema_registry_basic_auth_credentials,
             schema_registry_trust_store_location: self.schema_registry_trust_store_location,
+            schema_registry_trust_store_password: self.schema_registry_trust_store_password,
             schema_registry_keystore_location: self.schema_registry_keystore_location,
+            schema_registry_keystore_password: self.schema_registry_keystore_password,
+            schema_registry_keystore_key_password: self.schema_registry_keystore_key_password,
             ssl_truststore_location: self.ssl_truststore_location,
+            ssl_truststore_password: self.ssl_truststore_password,
             ssl_keystore_location: self.ssl_keystore_location,
+            ssl_keystore_password: self.ssl_keystore_password,
+            ssl_keystore_key_password: self.ssl_keystore_key_password,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -75,12 +91,15 @@ pub async fn create(pool: &SqlitePool, new_conn: &NewConnection) -> Result<Conne
         "INSERT INTO connections (
              id, name, bootstrap_servers, kafka_version,
              zookeeper_enabled, zookeeper_host, zookeeper_port, zookeeper_chroot_path,
-             security_protocol, sasl_mechanism, sasl_username, sasl_oauth_url,
-             schema_registry_endpoint, schema_registry_trust_store_location, schema_registry_keystore_location,
-             ssl_truststore_location, ssl_keystore_location,
+             security_protocol, sasl_mechanism, sasl_username, sasl_password, sasl_oauth_url,
+             schema_registry_endpoint, schema_registry_basic_auth_credentials,
+             schema_registry_trust_store_location, schema_registry_trust_store_password,
+             schema_registry_keystore_location, schema_registry_keystore_password, schema_registry_keystore_key_password,
+             ssl_truststore_location, ssl_truststore_password,
+             ssl_keystore_location, ssl_keystore_password, ssl_keystore_key_password,
              created_at, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?18)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?26)",
     )
     .bind(&id)
     .bind(&new_conn.name)
@@ -93,12 +112,20 @@ pub async fn create(pool: &SqlitePool, new_conn: &NewConnection) -> Result<Conne
     .bind(&security_protocol)
     .bind(&sasl_mechanism)
     .bind(&new_conn.sasl_username)
+    .bind(&new_conn.sasl_password)
     .bind(&new_conn.sasl_oauth_url)
     .bind(&new_conn.schema_registry_endpoint)
+    .bind(&new_conn.schema_registry_basic_auth_credentials)
     .bind(&new_conn.schema_registry_trust_store_location)
+    .bind(&new_conn.schema_registry_trust_store_password)
     .bind(&new_conn.schema_registry_keystore_location)
+    .bind(&new_conn.schema_registry_keystore_password)
+    .bind(&new_conn.schema_registry_keystore_key_password)
     .bind(&new_conn.ssl_truststore_location)
+    .bind(&new_conn.ssl_truststore_password)
     .bind(&new_conn.ssl_keystore_location)
+    .bind(&new_conn.ssl_keystore_password)
+    .bind(&new_conn.ssl_keystore_key_password)
     .bind(&now)
     .execute(pool)
     .await
@@ -146,11 +173,14 @@ pub async fn update(pool: &SqlitePool, id: &str, new_conn: &NewConnection) -> Re
         "UPDATE connections SET
              name = ?1, bootstrap_servers = ?2, kafka_version = ?3,
              zookeeper_enabled = ?4, zookeeper_host = ?5, zookeeper_port = ?6, zookeeper_chroot_path = ?7,
-             security_protocol = ?8, sasl_mechanism = ?9, sasl_username = ?10, sasl_oauth_url = ?11,
-             schema_registry_endpoint = ?12, schema_registry_trust_store_location = ?13, schema_registry_keystore_location = ?14,
-             ssl_truststore_location = ?15, ssl_keystore_location = ?16,
-             updated_at = ?17
-         WHERE id = ?18",
+             security_protocol = ?8, sasl_mechanism = ?9, sasl_username = ?10, sasl_password = ?11, sasl_oauth_url = ?12,
+             schema_registry_endpoint = ?13, schema_registry_basic_auth_credentials = ?14,
+             schema_registry_trust_store_location = ?15, schema_registry_trust_store_password = ?16,
+             schema_registry_keystore_location = ?17, schema_registry_keystore_password = ?18, schema_registry_keystore_key_password = ?19,
+             ssl_truststore_location = ?20, ssl_truststore_password = ?21,
+             ssl_keystore_location = ?22, ssl_keystore_password = ?23, ssl_keystore_key_password = ?24,
+             updated_at = ?25
+         WHERE id = ?26",
     )
     .bind(&new_conn.name)
     .bind(&new_conn.bootstrap_servers)
@@ -162,12 +192,20 @@ pub async fn update(pool: &SqlitePool, id: &str, new_conn: &NewConnection) -> Re
     .bind(&security_protocol)
     .bind(&sasl_mechanism)
     .bind(&new_conn.sasl_username)
+    .bind(&new_conn.sasl_password)
     .bind(&new_conn.sasl_oauth_url)
     .bind(&new_conn.schema_registry_endpoint)
+    .bind(&new_conn.schema_registry_basic_auth_credentials)
     .bind(&new_conn.schema_registry_trust_store_location)
+    .bind(&new_conn.schema_registry_trust_store_password)
     .bind(&new_conn.schema_registry_keystore_location)
+    .bind(&new_conn.schema_registry_keystore_password)
+    .bind(&new_conn.schema_registry_keystore_key_password)
     .bind(&new_conn.ssl_truststore_location)
+    .bind(&new_conn.ssl_truststore_password)
     .bind(&new_conn.ssl_keystore_location)
+    .bind(&new_conn.ssl_keystore_password)
+    .bind(&new_conn.ssl_keystore_key_password)
     .bind(&now)
     .bind(id)
     .execute(pool)
@@ -300,7 +338,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_not_persist_secret_fields() {
+    async fn persists_and_returns_every_secret_field() {
+        // Secrets live in plain columns now (see the module doc comment on
+        // `Connection` in kafkaoxide-core) — deliberately the opposite of
+        // this test's old name/assertion, from when they lived in the OS
+        // keychain instead.
         let pool = test_pool().await;
         let mut new_conn = plaintext_connection("Secretive");
         new_conn.sasl_password = Some("sasl-secret".to_string());
@@ -313,16 +355,24 @@ mod tests {
         new_conn.ssl_keystore_key_password = Some("broker-ks-key-secret".to_string());
 
         let created = create(&pool, &new_conn).await.unwrap();
-        let json = serde_json::to_string(&created).unwrap();
 
-        assert!(!json.contains("sasl-secret"));
-        assert!(!json.contains("user:pass"));
-        assert!(!json.contains("ts-secret"));
-        assert!(!json.contains("ks-secret"));
-        assert!(!json.contains("ks-key-secret"));
-        assert!(!json.contains("broker-ts-secret"));
-        assert!(!json.contains("broker-ks-secret"));
-        assert!(!json.contains("broker-ks-key-secret"));
+        assert_eq!(created.sasl_password.as_deref(), Some("sasl-secret"));
+        assert_eq!(
+            created.schema_registry_basic_auth_credentials.as_deref(),
+            Some("user:pass")
+        );
+        assert_eq!(created.schema_registry_trust_store_password.as_deref(), Some("ts-secret"));
+        assert_eq!(created.schema_registry_keystore_password.as_deref(), Some("ks-secret"));
+        assert_eq!(
+            created.schema_registry_keystore_key_password.as_deref(),
+            Some("ks-key-secret")
+        );
+        assert_eq!(created.ssl_truststore_password.as_deref(), Some("broker-ts-secret"));
+        assert_eq!(created.ssl_keystore_password.as_deref(), Some("broker-ks-secret"));
+        assert_eq!(created.ssl_keystore_key_password.as_deref(), Some("broker-ks-key-secret"));
+
+        let fetched = get(&pool, &created.id).await.unwrap();
+        assert_eq!(fetched, created);
     }
 
     #[tokio::test]

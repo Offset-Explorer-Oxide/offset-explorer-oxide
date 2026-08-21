@@ -49,7 +49,7 @@ pub async fn set(
 }
 
 /// Backs the Schema tab's Clear button — idempotent, no error when nothing
-/// was set (same convention as `kafkaoxide_secrets::SecretStore::delete_secret`).
+/// was set.
 pub async fn delete(
     pool: &SqlitePool,
     connection_id: &str,

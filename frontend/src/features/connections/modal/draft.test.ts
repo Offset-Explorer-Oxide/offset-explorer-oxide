@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Connection } from "../../../lib/tauri";
-import { connectionToDraft, draftsEqual, emptyDraft, toNewConnection, touchedSecretKeys, validateDraft } from "./draft";
+import { connectionToDraft, draftsEqual, emptyDraft, toNewConnection, validateDraft } from "./draft";
 
 describe("emptyDraft", () => {
   it("defaults to plaintext with zookeeper disabled and no sasl mechanism", () => {
@@ -193,12 +193,20 @@ function sampleConnection(overrides: Partial<Connection> = {}): Connection {
     securityProtocol: "SASL_SSL",
     saslMechanism: "SCRAM-SHA-512",
     saslUsername: "kafka-user",
+    saslPassword: "sasl-secret",
     saslOauthUrl: "https://idp.example.com/token",
     schemaRegistryEndpoint: "https://schema-registry.local",
+    schemaRegistryBasicAuthCredentials: "sr-user:sr-secret",
     schemaRegistryTrustStoreLocation: "/etc/ts.jks",
+    schemaRegistryTrustStorePassword: "sr-ts-secret",
     schemaRegistryKeystoreLocation: "/etc/ks.jks",
+    schemaRegistryKeystorePassword: "sr-ks-secret",
+    schemaRegistryKeystoreKeyPassword: "sr-ks-key-secret",
     sslTruststoreLocation: "/etc/broker-ts.pem",
+    sslTruststorePassword: "broker-ts-secret",
     sslKeystoreLocation: "/etc/broker-ks.p12",
+    sslKeystorePassword: "broker-ks-secret",
+    sslKeystoreKeyPassword: "broker-ks-key-secret",
     createdAt: "2026-08-18T00:00:00Z",
     updatedAt: "2026-08-18T00:00:00Z",
     ...overrides,
@@ -227,17 +235,22 @@ describe("connectionToDraft", () => {
     expect(draft.sslKeystoreLocation).toBe("/etc/broker-ks.p12");
   });
 
-  it("leaves every secret field blank, since Connection never carries secrets", () => {
+  it("carries every secret field too, since Connection now includes them", () => {
     const draft = connectionToDraft(sampleConnection());
 
+    expect(draft.saslPassword).toBe("sasl-secret");
+    expect(draft.schemaRegistryBasicAuthCredentials).toBe("sr-user:sr-secret");
+    expect(draft.schemaRegistryTrustStorePassword).toBe("sr-ts-secret");
+    expect(draft.schemaRegistryKeystorePassword).toBe("sr-ks-secret");
+    expect(draft.schemaRegistryKeystoreKeyPassword).toBe("sr-ks-key-secret");
+    expect(draft.sslTruststorePassword).toBe("broker-ts-secret");
+    expect(draft.sslKeystorePassword).toBe("broker-ks-secret");
+    expect(draft.sslKeystoreKeyPassword).toBe("broker-ks-key-secret");
+  });
+
+  it("renders a null/absent secret field as an empty string", () => {
+    const draft = connectionToDraft(sampleConnection({ saslPassword: null }));
     expect(draft.saslPassword).toBe("");
-    expect(draft.schemaRegistryBasicAuthCredentials).toBe("");
-    expect(draft.schemaRegistryTrustStorePassword).toBe("");
-    expect(draft.schemaRegistryKeystorePassword).toBe("");
-    expect(draft.schemaRegistryKeystoreKeyPassword).toBe("");
-    expect(draft.sslTruststorePassword).toBe("");
-    expect(draft.sslKeystorePassword).toBe("");
-    expect(draft.sslKeystoreKeyPassword).toBe("");
   });
 
   it("renders a null zookeeper port as an empty string rather than 'null'", () => {
@@ -285,47 +298,5 @@ describe("draftsEqual", () => {
     const draft = { ...original, name: "Changed" };
     const reverted = { ...draft, name: original.name };
     expect(draftsEqual(original, reverted)).toBe(true);
-  });
-});
-
-describe("touchedSecretKeys", () => {
-  it("returns nothing when no secret field was touched", () => {
-    const original = emptyDraft();
-    const draft = { ...original, name: "Changed", bootstrapServers: "broker:9092" };
-    expect(touchedSecretKeys(draft, original)).toEqual([]);
-  });
-
-  it("reports a secret field the user typed into", () => {
-    const original = emptyDraft();
-    const draft = { ...original, saslPassword: "hunter2" };
-    expect(touchedSecretKeys(draft, original)).toEqual(["sasl_password"]);
-  });
-
-  it("reports every secret field that was touched", () => {
-    const original = emptyDraft();
-    const draft = {
-      ...original,
-      saslPassword: "hunter2",
-      sslTruststorePassword: "ts-secret",
-    };
-    expect(touchedSecretKeys(draft, original).sort()).toEqual(["sasl_password", "ssl_truststore_password"].sort());
-  });
-
-  it("still counts a field as touched when explicitly cleared back to blank", () => {
-    // original snapshot already has something in it (e.g. re-editing after
-    // a previous Update in the same session) — clearing it is a real change
-    // the user wants applied, not "leave alone."
-    const original = { ...emptyDraft(), saslPassword: "old-value" };
-    const draft = { ...original, saslPassword: "" };
-    expect(touchedSecretKeys(draft, original)).toEqual(["sasl_password"]);
-  });
-
-  it("does not report an untouched blank secret field as touched", () => {
-    // The realistic case: reopening a saved connection always shows blank
-    // secret fields (connectionToDraft), matching the blank original — this
-    // must NOT be treated as "clear this secret."
-    const original = emptyDraft();
-    const draft = { ...original };
-    expect(touchedSecretKeys(draft, original)).toEqual([]);
   });
 });

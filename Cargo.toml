@@ -3,7 +3,6 @@ resolver = "2"
 members = [
   "backend/core",
   "backend/db",
-  "backend/secrets",
   "backend/kafka",
   "backend/avro",
   "backend/schema-registry",
@@ -21,7 +20,6 @@ strum = { version = "0.26", features = ["derive"] }
 async-trait = "0.1"
 kafkaoxide-core = { path = "backend/core" }
 kafkaoxide-db = { path = "backend/db" }
-kafkaoxide-secrets = { path = "backend/secrets" }
 kafkaoxide-kafka = { path = "backend/kafka" }
 kafkaoxide-avro = { path = "backend/avro" }
 kafkaoxide-schema-registry = { path = "backend/schema-registry" }
