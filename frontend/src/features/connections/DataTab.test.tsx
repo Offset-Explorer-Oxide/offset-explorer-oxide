@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { useTabDataStore } from "../workspace/useTabDataStore";
+import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -75,6 +76,7 @@ beforeEach(() => {
   capturedMessagesBatchHandler = null;
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null });
   useTabDataStore.setState({ messagesByTab: {} });
+  useDataTabFiltersStore.setState({ formByTab: {} });
 });
 
 describe("DataTab", () => {
@@ -135,6 +137,38 @@ describe("DataTab", () => {
 
     expect(screen.getByLabelText("Search messages")).toHaveValue("");
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
+  });
+
+  it("keeps a topic's filter form intact when switching away to a different topic and back, even though the search text does not persist", async () => {
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="orders" />
+      </QueryClientProvider>,
+    );
+    await user.type(screen.getByLabelText("Max messages per partition"), "5");
+    await user.type(screen.getByLabelText("Offset"), "100");
+    await user.type(screen.getByLabelText("Search messages"), "some-old-order-id");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="order-created" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="orders" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("5");
+    expect(screen.getByLabelText("Offset")).toHaveValue("100");
+    // The quick-filter search box is deliberately NOT persisted per topic —
+    // only the fetch filter form is.
+    expect(screen.getByLabelText("Search messages")).toHaveValue("");
   });
 
   it("passes the current partitionId to viewMessage when a row is clicked, so the viewer can tell a topic-wide Data tab apart from one of its partitions'", () => {
