@@ -9,6 +9,13 @@ error-stack = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 base64 = "0.22"
+# Vendored OpenSSL (see `ssl-vendored` below) has no knowledge of any OS's
+# certificate trust store — it only knows the path baked in at compile time
+# on the CI build machine, which doesn't exist on an end user's machine. This
+# reads the *actual* OS trust store (Windows cert store / macOS Keychain /
+# Linux's /etc/ssl/certs) at runtime instead, so TLS verification works the
+# same way it would for any browser on that machine.
+rustls-native-certs = "0.8"
 
 # librdkafka's vendored build has two paths: the default (configure+make,
 # Unix-only — no cmake needed) and cmake-build (MSVC+CMake, the only path
