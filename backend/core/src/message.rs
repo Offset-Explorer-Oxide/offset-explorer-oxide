@@ -25,16 +25,18 @@ pub struct MessageFilter {
 
 /// A single Kafka message header — arbitrary key/value metadata sent
 /// alongside a message, separate from its key and payload (e.g.
-/// content-type, correlation/trace ids). Unlike `payload_base64`, headers
-/// are cheap, typically-small text and are always populated regardless of
-/// the "Load message payload" checkbox.
+/// content-type, correlation/trace ids). Unlike a topic/consumer-group name,
+/// a header value is an arbitrary byte string in the Kafka protocol — it is
+/// NOT guaranteed to be valid UTF-8 (e.g. a binary correlation id), so it's
+/// base64-encoded the same way `TopicMessage::payload_base64` is, rather
+/// than lossy-UTF-8-decoded (which would silently corrupt binary values).
+/// Always populated regardless of the "Load message payload" checkbox,
+/// unlike `payload_base64`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageHeader {
     pub key: String,
-    /// Lossy UTF-8 decoded, same treatment as `TopicMessage::key` — header
-    /// values are conventionally short text, not arbitrary binary data.
-    pub value: Option<String>,
+    pub value_base64: Option<String>,
 }
 
 /// One row in the Data tab's AG Grid. `payload_base64` is `None` unless the
@@ -42,14 +44,16 @@ pub struct MessageHeader {
 /// present, it's decoded/rendered client-side (text, JSON, or
 /// Avro-with-Confluent-wire-format detection) when the row is clicked, per
 /// spec: "message payload should be shown when clicked on the message in
-/// right most tab".
+/// right most tab". `key_base64` is base64-encoded rather than decoded to a
+/// plain string for the same reason as `MessageHeader::value_base64` — a
+/// Kafka message key is an arbitrary byte string, not guaranteed text.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TopicMessage {
     pub partition: i32,
     pub offset: i64,
     pub timestamp_ms: Option<i64>,
-    pub key: Option<String>,
+    pub key_base64: Option<String>,
     pub payload_base64: Option<String>,
     pub headers: Vec<MessageHeader>,
 }
@@ -74,14 +78,14 @@ mod tests {
             partition: 0,
             offset: 42,
             timestamp_ms: Some(1_700_000_000_000),
-            key: Some("order-1".into()),
+            key_base64: Some("b3JkZXItMQ==".into()),
             payload_base64: Some("eyJpZCI6MX0=".into()),
             headers: vec![],
         };
         let json = serde_json::to_string(&message).unwrap();
         assert_eq!(
             json,
-            r#"{"partition":0,"offset":42,"timestampMs":1700000000000,"key":"order-1","payloadBase64":"eyJpZCI6MX0=","headers":[]}"#
+            r#"{"partition":0,"offset":42,"timestampMs":1700000000000,"keyBase64":"b3JkZXItMQ==","payloadBase64":"eyJpZCI6MX0=","headers":[]}"#
         );
     }
 
@@ -91,7 +95,7 @@ mod tests {
             partition: 0,
             offset: 42,
             timestamp_ms: None,
-            key: None,
+            key_base64: None,
             payload_base64: None,
             headers: vec![],
         };
@@ -103,10 +107,10 @@ mod tests {
     fn message_header_serializes_fields_as_camel_case() {
         let header = MessageHeader {
             key: "content-type".into(),
-            value: Some("application/json".into()),
+            value_base64: Some("YXBwbGljYXRpb24vanNvbg==".into()),
         };
         let json = serde_json::to_string(&header).unwrap();
-        assert_eq!(json, r#"{"key":"content-type","value":"application/json"}"#);
+        assert_eq!(json, r#"{"key":"content-type","valueBase64":"YXBwbGljYXRpb24vanNvbg=="}"#);
     }
 
     #[test]
@@ -115,17 +119,17 @@ mod tests {
             partition: 0,
             offset: 42,
             timestamp_ms: None,
-            key: None,
+            key_base64: None,
             payload_base64: None,
             headers: vec![
                 MessageHeader {
                     key: "trace-id".into(),
-                    value: Some("abc123".into()),
+                    value_base64: Some("YWJjMTIz".into()),
                 },
-                MessageHeader { key: "empty".into(), value: None },
+                MessageHeader { key: "empty".into(), value_base64: None },
             ],
         };
         let json = serde_json::to_string(&message).unwrap();
-        assert!(json.contains(r#""headers":[{"key":"trace-id","value":"abc123"},{"key":"empty","value":null}]"#));
+        assert!(json.contains(r#""headers":[{"key":"trace-id","valueBase64":"YWJjMTIz"},{"key":"empty","valueBase64":null}]"#));
     }
 }

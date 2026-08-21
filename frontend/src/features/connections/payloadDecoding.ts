@@ -13,6 +13,18 @@ export function bytesToText(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
+/**
+ * Decodes a base64 message key or header value (`TopicMessage.keyBase64`,
+ * `MessageHeader.valueBase64`) into text for display. These fields are
+ * arbitrary Kafka byte strings, not guaranteed UTF-8, so this is
+ * display-only and lossy (invalid sequences become "�") — the base64 field
+ * itself is what preserves the real bytes exactly.
+ */
+export function base64ToDisplayText(base64: string | null): string | null {
+  if (base64 === null) return null;
+  return bytesToText(base64ToBytes(base64));
+}
+
 /** Parses a JSON string into a value for JsonTreeView, or returns undefined if it isn't valid JSON. */
 export function tryParseJson(text: string): unknown {
   if (text.trim().length === 0) return undefined;

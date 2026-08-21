@@ -31,27 +31,6 @@ body {
   padding: 4px 8px;
 }
 
-.app-header-start {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.app-title {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  white-space: nowrap;
-  font-weight: 600;
-}
-
-.app-title-version {
-  font-weight: 400;
-  font-size: 0.85em;
-  color: var(--color-fg-muted);
-}
-
 .app-body {
   flex: 1;
   display: flex;

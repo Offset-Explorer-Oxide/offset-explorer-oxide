@@ -29,6 +29,15 @@ pub fn clamp_offset(offset: i64, low: i64, high: i64) -> i64 {
     offset.clamp(low, high)
 }
 
+/// When no explicit start offset or timestamp filter is given, resolves the
+/// per-partition start offset to fetch the newest messages first: `max(low,
+/// high - cap)` instead of scanning from the low watermark. Without this, an
+/// unfiltered fetch on a large topic has to walk the entire history before
+/// reaching anything recent.
+pub fn newest_first_start_offset(low: i64, high: i64, cap: i64) -> i64 {
+    (high - cap).max(low)
+}
+
 /// Applies an overall `max_total_messages` cap across the already
 /// per-partition-capped limits, preserving relative partition order and
 /// truncating whichever partitions come last once the total is exhausted.
@@ -123,5 +132,20 @@ mod tests {
     #[test]
     fn clamp_offset_clamps_a_value_above_the_high_watermark() {
         assert_eq!(clamp_offset(500, 10, 100), 100);
+    }
+
+    #[test]
+    fn newest_first_start_offset_backs_off_from_the_high_watermark_by_the_cap() {
+        assert_eq!(newest_first_start_offset(0, 1000, 100), 900);
+    }
+
+    #[test]
+    fn newest_first_start_offset_clamps_to_low_when_the_cap_exceeds_available_history() {
+        assert_eq!(newest_first_start_offset(950, 1000, 100), 950);
+    }
+
+    #[test]
+    fn newest_first_start_offset_returns_high_when_cap_is_zero() {
+        assert_eq!(newest_first_start_offset(0, 1000, 0), 1000);
     }
 }

@@ -27,7 +27,13 @@ export const useTabsStore = create<TabsState>((set, get) => ({
   error: null,
   loadTabs: async () => {
     try {
-      const tabs = await api.listTabs();
+      let tabs = await api.listTabs();
+      // A fresh install (or a user who's closed every tab) should never land
+      // on an empty tab bar with no way to open a connection into anything —
+      // always guarantee at least one tab exists.
+      if (tabs.length === 0) {
+        tabs = [await api.createTab("Tab 1")];
+      }
       for (const tab of tabs) {
         useTabOrderStore.getState().registerRoot(tab.id);
       }

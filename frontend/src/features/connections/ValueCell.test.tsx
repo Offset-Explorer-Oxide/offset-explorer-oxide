@@ -6,7 +6,7 @@ import { TopicMessage } from "../../lib/tauri";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
 function sampleRow(overrides: Partial<TopicMessage> = {}): TopicMessage {
-  return { partition: 0, offset: 5, timestampMs: null, key: null, payloadBase64: null, headers: [], ...overrides };
+  return { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [], ...overrides };
 }
 
 function renderCell(data: TopicMessage | undefined, fetchPayload: ValueCellContext["fetchPayload"]) {

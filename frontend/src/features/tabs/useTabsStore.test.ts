@@ -9,6 +9,50 @@ beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
 });
 
+describe("useTabsStore loadTabs", () => {
+  it("auto-creates a default first tab when none exist yet", async () => {
+    const tabList = vi.fn(() => []);
+    const tabCreate = vi.fn(() => ({ id: "default-1", name: "Tab 1", position: 0 }));
+    setInvokeHandlers({ tab_list: tabList, tab_create: tabCreate });
+
+    await useTabsStore.getState().loadTabs();
+
+    expect(tabCreate).toHaveBeenCalledWith({ name: "Tab 1" });
+    expect(useTabsStore.getState().tabs).toEqual([{ id: "default-1", name: "Tab 1", position: 0 }]);
+    expect(useTabsStore.getState().activeTabId).toBe("default-1");
+  });
+
+  it("does not create a default tab when tabs already exist", async () => {
+    const tabCreate = vi.fn();
+    setInvokeHandlers({
+      tab_list: () => [{ id: "1", name: "Alpha", position: 0 }],
+      tab_create: tabCreate,
+    });
+
+    await useTabsStore.getState().loadTabs();
+
+    expect(tabCreate).not.toHaveBeenCalled();
+    expect(useTabsStore.getState().tabs).toEqual([{ id: "1", name: "Alpha", position: 0 }]);
+    expect(useTabsStore.getState().activeTabId).toBe("1");
+  });
+
+  it("sets an error and does not create a default tab when listing fails", async () => {
+    const tabCreate = vi.fn();
+    setInvokeHandlers({
+      tab_list: () => {
+        throw new Error("list failed");
+      },
+      tab_create: tabCreate,
+    });
+
+    await useTabsStore.getState().loadTabs();
+
+    expect(tabCreate).not.toHaveBeenCalled();
+    expect(useTabsStore.getState().error).toBe("list failed");
+    expect(useTabsStore.getState().tabs).toEqual([]);
+  });
+});
+
 describe("useTabsStore deleteTab", () => {
   it("removes the tab from state and calls tab_delete", async () => {
     setInvokeHandlers({ tab_delete: () => undefined });

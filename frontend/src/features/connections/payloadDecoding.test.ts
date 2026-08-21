@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { base64ToBytes, bytesToText, detectConfluentAvro, formatXmlNode, tryParseJson, tryParseXml } from "./payloadDecoding";
+import {
+  base64ToBytes,
+  base64ToDisplayText,
+  bytesToText,
+  detectConfluentAvro,
+  formatXmlNode,
+  tryParseJson,
+  tryParseXml,
+} from "./payloadDecoding";
 
 function toBase64(bytes: number[]): string {
   return btoa(String.fromCharCode(...bytes));
@@ -16,6 +24,26 @@ describe("base64ToBytes / bytesToText", () => {
     const original = "héllo wörld 日本語";
     const bytes = Array.from(new TextEncoder().encode(original));
     expect(bytesToText(base64ToBytes(toBase64(bytes)))).toBe(original);
+  });
+});
+
+describe("base64ToDisplayText", () => {
+  it("decodes a base64 key/header value for display", () => {
+    expect(base64ToDisplayText(btoa("order-1"))).toBe("order-1");
+  });
+
+  it("returns null unchanged, for a message/header with no key or value at all", () => {
+    expect(base64ToDisplayText(null)).toBeNull();
+  });
+
+  it("does not throw on binary (non-UTF-8) bytes — shows the replacement character instead", () => {
+    // A lone continuation byte (0x80) is invalid as the start of a UTF-8
+    // sequence. This must degrade gracefully for display, since a real
+    // binary key would fail identically — the underlying base64 field
+    // itself (not this display helper) is what preserves the exact bytes.
+    const binary = toBase64([0x80, 0x81]);
+    expect(() => base64ToDisplayText(binary)).not.toThrow();
+    expect(base64ToDisplayText(binary)).toContain("�");
   });
 });
 

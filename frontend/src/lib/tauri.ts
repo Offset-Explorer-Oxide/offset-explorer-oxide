@@ -176,18 +176,26 @@ export interface MessageFilter {
 
 export interface MessageHeader {
   key: string;
-  value: string | null;
+  /** Base64-encoded — a header value is an arbitrary Kafka byte string, not guaranteed text. Decode with `base64ToBytes`/`bytesToText` from `payloadDecoding.ts` to display. */
+  valueBase64: string | null;
 }
 
 export interface TopicMessage {
   partition: number;
   offset: number;
   timestampMs: number | null;
-  key: string | null;
+  /** Base64-encoded — a Kafka message key is an arbitrary byte string, not guaranteed text. Decode with `base64ToBytes`/`bytesToText` from `payloadDecoding.ts` to display. */
+  keyBase64: string | null;
   /** null unless the fetch's `includePayload` filter was set. */
   payloadBase64: string | null;
   /** Always populated regardless of `includePayload` — headers are cheap metadata, not the payload itself. */
   headers: MessageHeader[];
+}
+
+/** Payload of the `"messages-batch"` event, emitted once per message as `connection_fetch_messages` streams results. `requestId` must be checked against the id passed into that call — a stale fetch (superseded by a newer one, or one the user hit Stop on) keeps emitting until its backend task finishes, so a listener must ignore events for any other request. */
+export interface MessagesBatchEvent {
+  requestId: string;
+  message: TopicMessage;
 }
 
 export interface ImportSummary {
@@ -223,8 +231,8 @@ export const api = {
     invoke<ConsumerGroupSummary[]>("connection_list_consumer_groups", { id }),
   countTopicMessages: (id: string, topic: string) =>
     invoke<number>("connection_count_topic_messages", { id, topic }),
-  fetchMessages: (id: string, topic: string, filter: MessageFilter) =>
-    invoke<TopicMessage[]>("connection_fetch_messages", { id, topic, filter }),
+  fetchMessages: (id: string, topic: string, filter: MessageFilter, requestId: string) =>
+    invoke<TopicMessage[]>("connection_fetch_messages", { id, topic, filter, requestId }),
   listPartitions: (id: string, topic: string) =>
     invoke<PartitionSummary[]>("connection_list_partitions", { id, topic }),
   describeTopicConfig: (id: string, topic: string) =>
