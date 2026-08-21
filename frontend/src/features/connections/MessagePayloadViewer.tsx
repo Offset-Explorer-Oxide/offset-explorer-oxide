@@ -15,10 +15,19 @@ const PANEL_TABS: { id: PanelTabId; label: string }[] = [
   { id: "value", label: "Value" },
 ];
 
+function CloseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function MessagePayloadViewer() {
   const message = useMessageViewerStore((s) => s.message);
   const connectionId = useMessageViewerStore((s) => s.connectionId);
   const topic = useMessageViewerStore((s) => s.topic);
+  const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const openJsonTab = useJsonViewerTabsStore((s) => s.openTab);
   const selectTab = useTabsStore((s) => s.selectTab);
   const [activeTab, setActiveTab] = useState<PanelTabId>("value");
@@ -47,10 +56,21 @@ export function MessagePayloadViewer() {
 
   return (
     <div className="message-payload-viewer">
-      <p className="message-payload-meta">
-        Partition {message.partition} · Offset {message.offset}
-        {message.keyBase64 !== null && <> · Key: {base64ToDisplayText(message.keyBase64)}</>}
-      </p>
+      <div className="message-payload-header">
+        <p className="message-payload-meta">
+          Partition {message.partition} · Offset {message.offset}
+          {message.keyBase64 !== null && <> · Key: {base64ToDisplayText(message.keyBase64)}</>}
+        </p>
+        <button
+          type="button"
+          className="json-tree-icon-button"
+          title="Close"
+          aria-label="Close message payload viewer"
+          onClick={clearViewedMessage}
+        >
+          <CloseIcon />
+        </button>
+      </div>
 
       <div className="connection-modal-tabs" role="tablist">
         {PANEL_TABS.map((tab) => (

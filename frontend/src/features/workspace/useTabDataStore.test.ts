@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { dataTabCacheKey, tabDataKey, UNASSIGNED_TAB_KEY, useTabDataStore } from "./useTabDataStore";
+import { dataTabCacheKey, tabDataKey, tabDataPrefix, UNASSIGNED_TAB_KEY, useTabDataStore } from "./useTabDataStore";
 
 const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
 
@@ -84,5 +84,31 @@ describe("useTabDataStore", () => {
 
     expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual(sample);
     expect(useTabDataStore.getState().messagesByTab["tab-2"]).toEqual([other]);
+  });
+
+  it("clears every cached entry for a tab (every topic/partition it holds), leaving other tabs untouched", () => {
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("tab-1", "1", "orders"), sample);
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("tab-1", "1", "payments"), sample);
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("tab-1", "1", "orders", 0), sample);
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("tab-2", "1", "orders"), sample);
+
+    useTabDataStore.getState().clearAllMessagesForTab("tab-1");
+
+    expect(useTabDataStore.getState().messagesByTab).toEqual({
+      [dataTabCacheKey("tab-2", "1", "orders")]: sample,
+    });
+  });
+});
+
+describe("tabDataPrefix", () => {
+  it("matches every dataTabCacheKey minted for the same tab", () => {
+    const prefix = tabDataPrefix("tab-1");
+    expect(dataTabCacheKey("tab-1", "1", "orders").startsWith(prefix)).toBe(true);
+    expect(dataTabCacheKey("tab-1", "1", "orders", 0).startsWith(prefix)).toBe(true);
+  });
+
+  it("does not match a different tab's keys", () => {
+    const prefix = tabDataPrefix("tab-1");
+    expect(dataTabCacheKey("tab-2", "1", "orders").startsWith(prefix)).toBe(false);
   });
 });

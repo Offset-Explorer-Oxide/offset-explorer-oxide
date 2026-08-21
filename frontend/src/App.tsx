@@ -1,6 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { onWindowFocusChanged } from "./lib/appWindow";
 import { ThemeProvider } from "./features/theme/ThemeProvider";
 import { TabBar } from "./features/tabs/TabBar";
 import { useTabsStore } from "./features/tabs/useTabsStore";
@@ -22,7 +23,7 @@ import { ResizableShell } from "./features/layout/ResizableShell";
 import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
 import { PreferencesProvider } from "./features/settings/PreferencesProvider";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
-import { useSettingsPanelStore } from "./features/settings/useSettingsPanelStore";
+import { SETTINGS_TAB_ID, useSettingsPanelStore } from "./features/settings/useSettingsPanelStore";
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
 import "./styles/themes.css";
 import "./styles/global.css";
@@ -66,16 +67,59 @@ function AppShell() {
   const loadTabs = useTabsStore((s) => s.loadTabs);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const activeJsonTab = useJsonViewerTabsStore((s) => s.tabs.find((tab) => tab.id === activeTabId));
+  const isSettingsActive = activeTabId === SETTINGS_TAB_ID;
+
+  // The sidebar tree's own local UI state (which categories are expanded,
+  // any text typed into their search boxes) lives in plain useState inside
+  // ConnectionTree/ResourceCategory/TopicCategory, not in a tab-scoped
+  // store — so without a per-tab `key` below, it's really one shared
+  // component instance and looks identical no matter which tab is active,
+  // which reads as "tabs aren't independent" even though the *selection*
+  // (which item is highlighted, what shows in the middle pane) already is,
+  // via useWorkspaceSelectionStore's own byTab cache. Remounting on every
+  // real-tab switch gives each tab a fresh tree. A JSON/XML viewer tab (and
+  // Settings, which behaves the same way) is a transient peek spawned from
+  // within a workspace tab, not a separate workspace, so switching into and
+  // back out of one must NOT reset this — the ref only advances when the
+  // active tab is a real (non-JSON, non-Settings) tab.
+  const lastWorkspaceTabIdRef = useRef<string | null>(null);
+  if (!activeJsonTab && !isSettingsActive) {
+    lastWorkspaceTabIdRef.current = activeTabId;
+  }
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const setSelectionActiveTab = useWorkspaceSelectionStore((s) => s.setActiveTab);
-  const settingsOpen = useSettingsPanelStore((s) => s.isOpen);
   const openSettings = useSettingsPanelStore((s) => s.open);
   const hasSelectedMessage = useMessageViewerStore((s) => s.message !== null);
   const setMessageViewerActiveTab = useMessageViewerStore((s) => s.setActiveTab);
+  const viewedConnectionId = useMessageViewerStore((s) => s.connectionId);
+  const viewedTopic = useMessageViewerStore((s) => s.topic);
+  const viewedPartitionId = useMessageViewerStore((s) => s.partitionId);
+  const clearViewedMessage = useMessageViewerStore((s) => s.clear);
 
   useEffect(() => {
     loadTabs();
   }, [loadTabs]);
+
+  // React Query's queries with `refetchInterval` (the sidebar's per-
+  // connection status poll, every 10s) already skip firing while
+  // `focusManager` reports the app unfocused — but its default listener
+  // relies on the DOM's `visibilitychange`/`window.blur`, which WebView2
+  // (Tauri's Windows webview) doesn't reliably fire when the OS window
+  // loses focus while minimized/backgrounded. Left unfixed, that poll (one
+  // native Kafka client created + destroyed per saved connection, every
+  // 10s) never actually pauses on Windows even when the app sits in the
+  // background for hours — a very plausible source of the kind of slow,
+  // continuous memory growth a native client library's create/destroy
+  // churn can produce over a long session. Wiring Tauri's own real
+  // OS-level focus event in bypasses the unreliable DOM signal entirely.
+  useEffect(() => {
+    focusManager.setEventListener((handleFocus) => {
+      const unlistenPromise = onWindowFocusChanged(handleFocus);
+      return () => {
+        unlistenPromise.then((fn) => fn());
+      };
+    });
+  }, []);
 
   // Each tab keeps its own workspace selection/message-viewer state — the
   // global connection list (which clusters exist/are connected) still comes
@@ -84,6 +128,32 @@ function AppShell() {
     setSelectionActiveTab(activeTabId);
     setMessageViewerActiveTab(activeTabId);
   }, [activeTabId, setSelectionActiveTab, setMessageViewerActiveTab]);
+
+  // The right pane's viewed message must always belong to whatever
+  // topic/partition Data tab is currently showing in the middle pane —
+  // otherwise switching topics leaves a stale message (and the whole right
+  // pane, since it only renders while one is selected) visibly stuck from
+  // the topic you just left. This can't live inside DataTab itself: that
+  // component isn't even mounted while a non-Data sub-tab (Properties,
+  // Partitions, ...) is active, so a clear scoped there silently fails to
+  // fire on a topic switch made from one of those. `selection` is the one
+  // thing that's always live and always changes on any such switch,
+  // regardless of which sub-tab or panel happens to be mounted.
+  useEffect(() => {
+    if (!viewedConnectionId || !viewedTopic) return;
+    const stillShowingViewedData =
+      (selection?.type === "topic" &&
+        selection.connectionId === viewedConnectionId &&
+        selection.topicName === viewedTopic &&
+        viewedPartitionId === undefined) ||
+      (selection?.type === "partition" &&
+        selection.connectionId === viewedConnectionId &&
+        selection.topicName === viewedTopic &&
+        selection.partitionId === viewedPartitionId);
+    if (!stillShowingViewedData) {
+      clearViewedMessage();
+    }
+  }, [selection, viewedConnectionId, viewedTopic, viewedPartitionId, clearViewedMessage]);
 
   return (
     <div className="app-shell">
@@ -118,12 +188,12 @@ function AppShell() {
                   onCancel={closeModal}
                 />
               )}
-              <ConnectionTree onClone={handleClone} />
+              <ConnectionTree key={lastWorkspaceTabIdRef.current ?? "no-tab"} onClone={handleClone} />
             </aside>
           }
-          leftHidden={Boolean(activeJsonTab) && !settingsOpen}
+          leftHidden={Boolean(activeJsonTab) || isSettingsActive}
           middle={
-            settingsOpen ? (
+            isSettingsActive ? (
               <main className="app-main">
                 <SettingsPanel />
               </main>

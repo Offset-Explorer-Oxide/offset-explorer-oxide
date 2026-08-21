@@ -4,7 +4,7 @@ import { useLogsStore } from "./useLogsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
-import { dataTabCacheKey, EMPTY_TAB_MESSAGES, tabDataKey, useTabDataStore } from "../workspace/useTabDataStore";
+import { tabDataPrefix, useTabDataStore } from "../workspace/useTabDataStore";
 
 /** Formats a byte count (a JSON-serialized-size estimate, not an exact figure) as megabytes for display. */
 export function formatTabMemory(bytes: number): string {
@@ -16,29 +16,29 @@ export function BottomPanel() {
   const isExpanded = useLogsStore((s) => s.isExpanded);
   const toggleExpanded = useLogsStore((s) => s.toggleExpanded);
   const activeTabId = useTabsStore((s) => s.activeTabId);
-  const selection = useWorkspaceSelectionStore((s) => s.selection);
-  const tabKey =
-    selection?.type === "topic"
-      ? dataTabCacheKey(activeTabId, selection.connectionId, selection.topicName)
-      : selection?.type === "partition"
-        ? dataTabCacheKey(activeTabId, selection.connectionId, selection.topicName, selection.partitionId)
-        : tabDataKey(activeTabId);
 
-  // "Tab memory" is everything the active top-level tab has cached — its
-  // fetched Data tab rows plus any payload loaded into the right pane's
-  // message viewer — not anything scoped to the left sidebar's tree.
-  const cachedMessages = useTabDataStore((s) => s.messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES);
+  // "Tab memory" is everything the active top-level tab has cached — every
+  // topic/partition's fetched Data tab rows it holds (not just whichever
+  // one happens to be selected right now), plus any payload loaded into
+  // the right pane's message viewer — not anything scoped to the left
+  // sidebar's tree.
+  const messagesByTab = useTabDataStore((s) => s.messagesByTab);
+  const tabPrefix = tabDataPrefix(activeTabId);
+  const cachedBytes = Object.entries(messagesByTab).reduce(
+    (total, [key, messages]) => (key.startsWith(tabPrefix) ? total + JSON.stringify(messages).length : total),
+    0,
+  );
   const viewedMessage = useMessageViewerStore((s) => (activeTabId ? s.byTab[activeTabId] : undefined) ?? null);
-  const bytesUsed = JSON.stringify(cachedMessages).length + JSON.stringify(viewedMessage).length;
+  const bytesUsed = cachedBytes + JSON.stringify(viewedMessage).length;
 
   const clearSelectionMemory = useWorkspaceSelectionStore((s) => s.clearTabMemory);
   const clearMessageMemory = useMessageViewerStore((s) => s.clearTabMemory);
-  const clearTabData = useTabDataStore((s) => s.clearTabMessages);
+  const clearAllTabData = useTabDataStore((s) => s.clearAllMessagesForTab);
 
   function handleClearMemory() {
     clearSelectionMemory();
     clearMessageMemory();
-    clearTabData(tabKey);
+    clearAllTabData(activeTabId);
   }
 
   return (

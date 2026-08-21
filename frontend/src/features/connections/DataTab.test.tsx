@@ -137,24 +137,13 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
   });
 
-  it("clears the right pane's viewed message when switching to a different topic without remounting", async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    const { rerender } = render(
-      <QueryClientProvider client={client}>
-        <DataTab connectionId="1" topicName="orders" />
-      </QueryClientProvider>,
-    );
-    const message = { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] };
-    useMessageViewerStore.getState().viewMessage(message, "1", "orders");
-    expect(useMessageViewerStore.getState().message).toEqual(message);
+  it("passes the current partitionId to viewMessage when a row is clicked, so the viewer can tell a topic-wide Data tab apart from one of its partitions'", () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" partitionId={2} />);
+    const message = { partition: 2, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eA==" };
 
-    rerender(
-      <QueryClientProvider client={client}>
-        <DataTab connectionId="1" topicName="order-created" />
-      </QueryClientProvider>,
-    );
+    lastGridProps?.onRowClicked({ data: message });
 
-    expect(useMessageViewerStore.getState().message).toBeNull();
+    expect(useMessageViewerStore.getState().partitionId).toBe(2);
   });
 
   it("leaves the partition filter blank and editable when partitionId is not given", () => {
@@ -428,6 +417,39 @@ describe("DataTab", () => {
     await user.type(screen.getByLabelText("Search messages"), "order-1");
 
     await waitFor(() => expect(lastGridProps?.quickFilterText).toBe("order-1"));
+  });
+
+  it("shows the fetched message count as 'visible / total' below the search bar", async () => {
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(screen.getByText("0 / 0 messages")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(screen.getByText("2 / 2 messages")).toBeInTheDocument());
+  });
+
+  it("narrows the visible count to only messages matching the search text, without changing the total", async () => {
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: "b3JkZXItMQ==", payloadBase64: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: "b3RoZXI=", payloadBase64: null, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("2 / 2 messages")).toBeInTheDocument());
+
+    await user.type(screen.getByLabelText("Search messages"), "order-1");
+
+    await waitFor(() => expect(screen.getByText("1 / 2 messages")).toBeInTheDocument());
   });
 
   it("excludes partition, offset, and timestamp from the quick filter, leaving only key and value searchable", () => {

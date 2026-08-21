@@ -250,6 +250,18 @@ describe("MessagePayloadViewer", () => {
     expect(screen.getByText(/offset 17/i)).toBeInTheDocument();
   });
 
+  it("clears the viewed message when the close button is clicked", async () => {
+    useMessageViewerStore.setState({
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), headers: [] },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByLabelText("Close message payload viewer"));
+
+    expect(useMessageViewerStore.getState().message).toBeNull();
+  });
+
   it("opens on the Value tab by default", () => {
     useMessageViewerStore.setState({
       message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import { AllCommunityModule, ColDef, ModuleRegistry, ValueFormatterParams, ValueGetterParams } from "ag-grid-community";
 import { listen } from "@tauri-apps/api/event";
@@ -18,9 +18,9 @@ function formatTimestamp(params: ValueFormatterParams<TopicMessage, number | nul
   return params.value ? new Date(params.value).toISOString() : "";
 }
 
-/** Decodes the row's payload for the Value column — blank until "Load message payload" is checked and a fetch has run. */
-function formatValue(params: ValueGetterParams<TopicMessage>): string {
-  const payload = params.data?.payloadBase64;
+/** Decodes a message's payload for the Value column — blank until "Load message payload" is checked and a fetch has run. */
+function messageValueText(message: TopicMessage | undefined): string {
+  const payload = message?.payloadBase64;
   if (!payload) return "";
   const bytes = base64ToBytes(payload);
   const avro = detectConfluentAvro(bytes);
@@ -28,13 +28,28 @@ function formatValue(params: ValueGetterParams<TopicMessage>): string {
   return bytesToText(bytes);
 }
 
-/** Decodes the row's key for display — base64 on the wire since a Kafka key is an arbitrary byte string, not guaranteed text. */
+/** Decodes a message's key for display — base64 on the wire since a Kafka key is an arbitrary byte string, not guaranteed text. */
+function messageKeyText(message: TopicMessage | undefined): string {
+  return base64ToDisplayText(message?.keyBase64 ?? null) ?? "";
+}
+
+function formatValue(params: ValueGetterParams<TopicMessage>): string {
+  return messageValueText(params.data);
+}
+
 function formatKey(params: ValueGetterParams<TopicMessage>): string {
-  return base64ToDisplayText(params.data?.keyBase64 ?? null) ?? "";
+  return messageKeyText(params.data);
 }
 
 /** Keeps the search bar's quick filter scoped to key + value by opting these columns out of it. */
 const excludeFromQuickFilter = () => "";
+
+/** Mirrors AG Grid's own quick-filter matching (case-insensitive substring over the Key/Value columns' text, the only two that don't opt out via `excludeFromQuickFilter`) so the "N / total" count above the grid reflects exactly what's visible, without reaching into the grid's internal API. */
+function matchesSearch(message: TopicMessage, query: string): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return messageKeyText(message).toLowerCase().includes(q) || messageValueText(message).toLowerCase().includes(q);
+}
 
 const COLUMN_DEFS: ColDef<TopicMessage>[] = [
   { field: "partition", headerName: "Partition", width: 100, getQuickFilterText: excludeFromQuickFilter },
@@ -79,13 +94,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const [searchText, setSearchText] = useState("");
   const fetchMessages = useFetchMessages();
   const viewMessage = useMessageViewerStore((s) => s.viewMessage);
-  const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const stoppedRef = useRef(false);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const tabKey = dataTabCacheKey(activeTabId, connectionId, topicName, partitionId);
   const tabKeyRef = useRef(tabKey);
   tabKeyRef.current = tabKey;
   const messages = useTabDataStore((s) => s.messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES);
+  const visibleMessageCount = useMemo(
+    () => (searchText ? messages.filter((m) => matchesSearch(m, searchText)).length : messages.length),
+    [messages, searchText],
+  );
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
   const appendTabMessage = useTabDataStore((s) => s.appendTabMessage);
   /** Tags the in-flight Fetch's `requestId` so the "messages-batch" listener below can tell its rows apart from a stale/superseded fetch's late-arriving events — see `MessagesBatchEvent`'s doc comment. */
@@ -115,18 +133,23 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // looking at one topic would silently carry over and hide/skew results
   // after switching to a completely different topic — e.g. leftover search
   // text that doesn't match any of the new topic's rows makes a
-  // successful Fetch look like it returned nothing. The right pane's
-  // viewed message needs the same reset, for the same underlying reason —
-  // without it, the previous topic's message stays visible in the right
-  // pane after switching, looking like it belongs to the new topic.
+  // successful Fetch look like it returned nothing.
+  //
+  // The right pane's viewed message needs a reset for the same underlying
+  // reason, but is deliberately NOT handled here — this component isn't
+  // even mounted while a non-Data sub-tab (e.g. Properties) is active, so a
+  // clear scoped to this effect would silently fail to fire when the user
+  // switches topics from one of those. That reset lives in App.tsx instead,
+  // driven directly off `useWorkspaceSelectionStore`'s `selection`, which
+  // always changes on a topic/partition switch regardless of which sub-tab
+  // (or component) happens to be mounted at the time.
   useEffect(() => {
     setForm(
       partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) },
     );
     setSearchText("");
     setError(null);
-    clearViewedMessage();
-  }, [connectionId, topicName, partitionId, clearViewedMessage]);
+  }, [connectionId, topicName, partitionId]);
 
   function updateForm(patch: Partial<FilterFormState>) {
     setForm((prev) => ({ ...prev, ...patch }));
@@ -277,6 +300,10 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         />
       </label>
 
+      <p className="data-tab-message-count">
+        {visibleMessageCount} / {messages.length} messages
+      </p>
+
       <div className="data-tab-grid" data-testid="message-grid">
         <AgGridReact<TopicMessage>
           theme={APP_GRID_THEME}
@@ -295,7 +322,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             // time, racing the in-flight per-row fetch.
             const target = event.event?.target;
             if (target instanceof HTMLElement && target.closest("button")) return;
-            if (event.data) viewMessage(event.data, connectionId, topicName);
+            if (event.data) viewMessage(event.data, connectionId, topicName, partitionId);
           }}
         />
       </div>

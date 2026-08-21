@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "./features/tabs/useTabsStore";
+import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
+import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
@@ -13,6 +15,20 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: (...args: unknown[]) => save(...args),
   open: (...args: unknown[]) => open(...args),
 }));
+let capturedFocusHandler: ((focused: boolean) => void) | null = null;
+vi.mock("./lib/appWindow", () => ({
+  onWindowFocusChanged: vi.fn((handler: (focused: boolean) => void) => {
+    capturedFocusHandler = handler;
+    return Promise.resolve(() => {});
+  }),
+}));
+
+beforeEach(() => {
+  useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
+  useJsonViewerTabsStore.setState({ tabs: [] });
+  useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
+  capturedFocusHandler = null;
+});
 
 describe("App", () => {
   it("renders the shell with tab bar, sidebar, and bottom panel", async () => {
@@ -163,6 +179,34 @@ describe("App", () => {
     expect(screen.getByText("Select a cluster, broker, or topic.")).toBeInTheDocument();
   });
 
+  it("keeps Settings open (like a JSON viewer tab) when switching away, and reactivates it when its pill is clicked again", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") return Promise.resolve({ id: "tab-1", name: "Tab 1" });
+      if (command === "connection_list") return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    await user.click(screen.getByLabelText("Open settings"));
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Tab 1" }));
+
+    expect(screen.queryByRole("heading", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.getByText("Select a cluster, broker, or topic.")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "false");
+
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+  });
+
   it("does not render the right pane until a message is selected", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockImplementation((command: string) => {
@@ -226,5 +270,251 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByTestId("resizable-pane-left")).toBeVisible());
 
     expect(screen.getByLabelText("Collapse Local Kafka")).toBeInTheDocument();
+  });
+
+  it("clears the middle pane's selection and the tree's highlighted row when a new tab is opened", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let nextTabId = 1;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") {
+        const id = `tab-${nextTabId++}`;
+        const name = (args as { name?: string } | undefined)?.name ?? "New Tab";
+        return Promise.resolve({ id, name });
+      }
+      if (command === "connection_list")
+        return Promise.resolve([
+          {
+            id: "1",
+            name: "Local Kafka",
+            bootstrapServers: "localhost:9092",
+            securityProtocol: "PLAINTEXT",
+            saslMechanism: null,
+            saslUsername: null,
+            createdAt: "2026-08-18T00:00:00Z",
+            updatedAt: "2026-08-18T00:00:00Z",
+          },
+        ]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(false);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+
+    await user.click(screen.getByTestId("connection-row-1"));
+
+    expect(screen.getByTestId("connection-row-1")).toHaveClass("connection-row--selected");
+    expect(screen.queryByText("Select a cluster, broker, or topic.")).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("New tab"));
+
+    await waitFor(() => expect(screen.getByText("Select a cluster, broker, or topic.")).toBeInTheDocument());
+    expect(screen.getByTestId("connection-row-1")).not.toHaveClass("connection-row--selected");
+  });
+
+  it("resets the tree's expanded state when switching to a different real tab (unlike a JSON tab excursion, which keeps it)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let nextTabId = 1;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") {
+        const id = `tab-${nextTabId++}`;
+        const name = (args as { name?: string } | undefined)?.name ?? "New Tab";
+        return Promise.resolve({ id, name });
+      }
+      if (command === "connection_list") return Promise.resolve([{ id: "1", name: "Local Kafka" }]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      if (command === "connection_list_brokers") return Promise.resolve([]);
+      if (command === "connection_list_topics") return Promise.resolve([]);
+      if (command === "connection_list_consumer_groups") return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    expect(screen.getByLabelText("Collapse Local Kafka")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("New tab"));
+
+    await waitFor(() => expect(screen.getByLabelText("Expand Local Kafka")).toBeInTheDocument());
+  });
+
+  it("restores a tab's previously-selected item when switching back to it", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let nextTabId = 1;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") {
+        const id = `tab-${nextTabId++}`;
+        const name = (args as { name?: string } | undefined)?.name ?? "New Tab";
+        return Promise.resolve({ id, name });
+      }
+      if (command === "connection_list")
+        return Promise.resolve([
+          {
+            id: "1",
+            name: "Local Kafka",
+            bootstrapServers: "localhost:9092",
+            securityProtocol: "PLAINTEXT",
+            saslMechanism: null,
+            saslUsername: null,
+            createdAt: "2026-08-18T00:00:00Z",
+            updatedAt: "2026-08-18T00:00:00Z",
+          },
+        ]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(false);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    const firstTabId = useTabsStore.getState().activeTabId;
+
+    await user.click(screen.getByTestId("connection-row-1"));
+    expect(screen.getByTestId("connection-row-1")).toHaveClass("connection-row--selected");
+
+    await user.click(screen.getByLabelText("New tab"));
+    await waitFor(() => expect(screen.getByText("Select a cluster, broker, or topic.")).toBeInTheDocument());
+
+    useTabsStore.getState().selectTab(firstTabId as string);
+
+    await waitFor(() => expect(screen.getByTestId("connection-row-1")).toHaveClass("connection-row--selected"));
+    expect(screen.queryByText("Select a cluster, broker, or topic.")).not.toBeInTheDocument();
+  });
+
+  it("wires Tauri's real OS window focus event into React Query's focusManager", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "connection_list") return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const { focusManager } = await import("@tanstack/react-query");
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    expect(capturedFocusHandler).not.toBeNull();
+
+    capturedFocusHandler?.(false);
+    expect(focusManager.isFocused()).toBe(false);
+
+    capturedFocusHandler?.(true);
+    expect(focusManager.isFocused()).toBe(true);
+  });
+
+  it("closes the right pane when switching to a different topic in the sidebar while a message is viewed", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") return Promise.resolve({ id: "tab-1", name: "Tab 1" });
+      if (command === "connection_list")
+        return Promise.resolve([
+          {
+            id: "1",
+            name: "Local Kafka",
+            bootstrapServers: "localhost:9092",
+            securityProtocol: "PLAINTEXT",
+            saslMechanism: null,
+            saslUsername: null,
+            createdAt: "2026-08-18T00:00:00Z",
+            updatedAt: "2026-08-18T00:00:00Z",
+          },
+        ]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      if (command === "connection_list_brokers") return Promise.resolve([]);
+      if (command === "connection_list_topics")
+        return Promise.resolve([{ name: "orders" }, { name: "payments" }]);
+      if (command === "connection_list_consumer_groups") return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    await user.click(screen.getByTestId("category-Topics"));
+    await user.click(await screen.findByText("orders"));
+
+    await screen.findByRole("heading", { name: "orders" });
+
+    // Simulates a grid row click (real AG Grid rendering isn't exercised in
+    // this test — DataTab.test.tsx already covers that in isolation) —
+    // this test's job is the part that wasn't covered anywhere else: does
+    // switching topics via a real sidebar click actually hide the right
+    // pane end-to-end.
+    useMessageViewerStore
+      .getState()
+      .viewMessage(
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        "1",
+        "orders",
+      );
+
+    expect(await screen.findByTestId("resizable-pane-right")).toBeInTheDocument();
+
+    await user.click(screen.getByText("payments"));
+
+    await waitFor(() => expect(screen.queryByTestId("resizable-pane-right")).not.toBeInTheDocument());
+  });
+
+  it("closes the right pane when switching topics while on a non-Data sub-tab, where DataTab itself isn't even mounted", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") return Promise.resolve({ id: "tab-1", name: "Tab 1" });
+      if (command === "connection_list")
+        return Promise.resolve([
+          {
+            id: "1",
+            name: "Local Kafka",
+            bootstrapServers: "localhost:9092",
+            securityProtocol: "PLAINTEXT",
+            saslMechanism: null,
+            saslUsername: null,
+            createdAt: "2026-08-18T00:00:00Z",
+            updatedAt: "2026-08-18T00:00:00Z",
+          },
+        ]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      if (command === "connection_list_brokers") return Promise.resolve([]);
+      if (command === "connection_list_topics")
+        return Promise.resolve([{ name: "orders" }, { name: "payments" }]);
+      if (command === "connection_list_consumer_groups") return Promise.resolve([]);
+      if (command === "connection_count_topic_messages") return Promise.resolve(0);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    await user.click(screen.getByTestId("category-Topics"));
+    await user.click(await screen.findByText("orders"));
+    await screen.findByRole("heading", { name: "orders" });
+
+    useMessageViewerStore
+      .getState()
+      .viewMessage(
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        "1",
+        "orders",
+      );
+    expect(await screen.findByTestId("resizable-pane-right")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Properties" }));
+    await user.click(screen.getByText("payments"));
+
+    await waitFor(() => expect(screen.queryByTestId("resizable-pane-right")).not.toBeInTheDocument());
   });
 });
