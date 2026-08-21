@@ -38,69 +38,6 @@ fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> Str
     parts.join(": ")
 }
 
-/// The New Connection modal's SASL, Schema Registry, and broker-SSL secret
-/// fields, each stored under its own keyed slot in the OS keychain (see
-/// `kafkaoxide_secrets::SecretStore`) rather than in the database.
-const SECRET_KEYS: [&str; 8] = [
-    "sasl_password",
-    "schema_registry_basic_auth_credentials",
-    "schema_registry_trust_store_password",
-    "schema_registry_keystore_password",
-    "schema_registry_keystore_key_password",
-    "ssl_truststore_password",
-    "ssl_keystore_password",
-    "ssl_keystore_key_password",
-];
-
-fn secret_values(new_connection: &NewConnection) -> [Option<&str>; 8] {
-    [
-        new_connection.sasl_password.as_deref(),
-        new_connection.schema_registry_basic_auth_credentials.as_deref(),
-        new_connection.schema_registry_trust_store_password.as_deref(),
-        new_connection.schema_registry_keystore_password.as_deref(),
-        new_connection.schema_registry_keystore_key_password.as_deref(),
-        new_connection.ssl_truststore_password.as_deref(),
-        new_connection.ssl_keystore_password.as_deref(),
-        new_connection.ssl_keystore_key_password.as_deref(),
-    ]
-}
-
-/// `touched_secrets`: `None` means every secret field is authoritative (used
-/// by `connection_create`, where there's no prior state to preserve).
-/// `Some(keys)` means only those keys should be written/cleared — anything
-/// else is left alone in the keychain. This matters for `connection_update`
-/// specifically: the modal always shows secret fields blank when reopening
-/// a saved connection (secrets are never sent to the frontend), so a blank
-/// field there means "the user didn't touch this," not "clear it" — without
-/// this distinction, editing any other field (e.g. the trust store path)
-/// and clicking Update would silently wipe every untouched secret,
-/// including the SASL password.
-fn store_secrets(
-    state: &AppState,
-    connection_id: &str,
-    new_connection: &NewConnection,
-    touched_secrets: Option<&HashSet<String>>,
-) -> Result<(), CommandError> {
-    for (key, value) in SECRET_KEYS.iter().zip(secret_values(new_connection)) {
-        if let Some(touched) = touched_secrets {
-            if !touched.contains(*key) {
-                continue;
-            }
-        }
-        match value {
-            Some(value) => state.secrets.set_secret(connection_id, key, value)?,
-            None => state.secrets.delete_secret(connection_id, key)?,
-        }
-    }
-    Ok(())
-}
-
-/// Looks up a saved connection's SASL password from the OS keychain — `None`
-/// for connections with no SASL mechanism, or whose password was left blank.
-fn sasl_password(state: &AppState, connection_id: &str) -> Result<Option<String>, CommandError> {
-    Ok(state.secrets.get_password(connection_id)?)
-}
-
 #[tauri::command]
 pub async fn connection_list(state: State<'_, AppState>) -> Result<Vec<Connection>, CommandError> {
     Ok(kafkaoxide_db::connections::list(&state.pool).await?)
@@ -113,7 +50,6 @@ pub async fn connection_create(
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
     let connection = kafkaoxide_db::connections::create(&state.pool, &new_connection).await?;
-    store_secrets(&state, &connection.id, &new_connection, None)?;
     crate::logging::emit_log(&app, "info", format!("Created connection \"{}\"", connection.name));
     Ok(connection)
 }
@@ -124,11 +60,8 @@ pub async fn connection_update(
     state: State<'_, AppState>,
     id: String,
     new_connection: NewConnection,
-    touched_secrets: Vec<String>,
 ) -> Result<Connection, CommandError> {
     let connection = kafkaoxide_db::connections::update(&state.pool, &id, &new_connection).await?;
-    let touched: HashSet<String> = touched_secrets.into_iter().collect();
-    store_secrets(&state, &connection.id, &new_connection, Some(&touched))?;
     crate::logging::emit_log(&app, "info", format!("Updated connection \"{}\"", connection.name));
     Ok(connection)
 }
@@ -141,9 +74,6 @@ pub async fn connection_delete(
 ) -> Result<(), CommandError> {
     kafkaoxide_db::connections::delete(&state.pool, &id).await?;
     kafkaoxide_db::topic_schemas::delete_all_for_connection(&state.pool, &id).await?;
-    for key in SECRET_KEYS {
-        state.secrets.delete_secret(&id, key)?;
-    }
     state.connections.mark_disconnected(&id);
     crate::logging::emit_log(&app, "info", format!("Deleted connection {id}"));
     Ok(())
@@ -159,8 +89,9 @@ pub struct ImportSummary {
 /// (`ids: Some([id])`) and its "Export All" button (`ids: None`). `path` is
 /// resolved by the frontend beforehand via the native save dialog — this
 /// command only builds the file contents and writes them. Never includes
-/// credentials: `select_for_export` only ever produces `PortableConnection`s,
-/// which have no secret fields to begin with.
+/// credentials, even though `Connection` itself now carries them:
+/// `select_for_export` only ever produces `PortableConnection`s, whose field
+/// list deliberately excludes every secret (see its doc comment).
 #[tauri::command]
 pub async fn connections_export(
     state: State<'_, AppState>,
@@ -211,12 +142,11 @@ pub async fn connection_check_status(
     id: String,
 ) -> Result<ConnectionStatus, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state.kafka.check_status(&connection, password.as_deref()).await?)
+    Ok(state.kafka.check_status(&connection).await?)
 }
 
 /// Backs the ping button next to "Bootstrap servers" in the New Connection
-/// modal's General section — a plaintext reachability probe of whatever the
+/// modal's General section — a plain TCP reachability check of whatever the
 /// user has typed so far, independent of the Security tab.
 #[tauri::command]
 pub async fn connection_ping_bootstrap(
@@ -273,8 +203,7 @@ pub async fn connection_connect(
     id: String,
 ) -> Result<ConnectionStatus, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    let status = state.kafka.check_status(&connection, password.as_deref()).await?;
+    let status = state.kafka.check_status(&connection).await?;
     if status == ConnectionStatus::Reachable {
         state.connections.mark_connected(&id);
     }
@@ -300,8 +229,7 @@ pub async fn connection_list_brokers(
     id: String,
 ) -> Result<Vec<kafkaoxide_core::BrokerSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state.kafka.list_brokers(&connection, password.as_deref()).await?)
+    Ok(state.kafka.list_brokers(&connection).await?)
 }
 
 /// Backs the tree's "Topics" sub-list once a cluster is connected.
@@ -311,8 +239,7 @@ pub async fn connection_list_topics(
     id: String,
 ) -> Result<Vec<kafkaoxide_core::TopicSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state.kafka.list_topics(&connection, password.as_deref()).await?)
+    Ok(state.kafka.list_topics(&connection).await?)
 }
 
 /// Backs the tree's "Consumers" sub-list once a cluster is connected.
@@ -322,8 +249,7 @@ pub async fn connection_list_consumer_groups(
     id: String,
 ) -> Result<Vec<kafkaoxide_core::ConsumerGroupSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state.kafka.list_consumer_groups(&connection, password.as_deref()).await?)
+    Ok(state.kafka.list_consumer_groups(&connection).await?)
 }
 
 /// Backs the topic detail panel's Properties > Messages "Refresh" button.
@@ -334,11 +260,7 @@ pub async fn connection_count_topic_messages(
     topic: String,
 ) -> Result<u64, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state
-        .kafka
-        .count_topic_messages(&connection, &topic, password.as_deref())
-        .await?)
+    Ok(state.kafka.count_topic_messages(&connection, &topic).await?)
 }
 
 /// Backs the topic Data tab's Fetch button.
@@ -350,11 +272,7 @@ pub async fn connection_fetch_messages(
     filter: kafkaoxide_core::MessageFilter,
 ) -> Result<Vec<kafkaoxide_core::TopicMessage>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state
-        .kafka
-        .fetch_messages(&connection, &topic, &filter, password.as_deref())
-        .await?)
+    Ok(state.kafka.fetch_messages(&connection, &topic, &filter).await?)
 }
 
 /// Backs the topic detail panel's Partitions tab.
@@ -365,11 +283,7 @@ pub async fn connection_list_partitions(
     topic: String,
 ) -> Result<Vec<kafkaoxide_core::PartitionSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state
-        .kafka
-        .list_partitions(&connection, &topic, password.as_deref())
-        .await?)
+    Ok(state.kafka.list_partitions(&connection, &topic).await?)
 }
 
 /// Backs the topic detail panel's Config tab.
@@ -380,11 +294,7 @@ pub async fn connection_describe_topic_config(
     topic: String,
 ) -> Result<Vec<kafkaoxide_core::ConfigEntry>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state
-        .kafka
-        .describe_topic_config(&connection, &topic, password.as_deref())
-        .await?)
+    Ok(state.kafka.describe_topic_config(&connection, &topic).await?)
 }
 
 /// Backs the consumer group detail panel's "Refresh" button.
@@ -395,9 +305,5 @@ pub async fn connection_fetch_consumer_group_lag(
     group_id: String,
 ) -> Result<kafkaoxide_core::ConsumerGroupLag, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let password = sasl_password(&state, &id)?;
-    Ok(state
-        .kafka
-        .fetch_consumer_group_lag(&connection, &group_id, password.as_deref())
-        .await?)
+    Ok(state.kafka.fetch_consumer_group_lag(&connection, &group_id).await?)
 }

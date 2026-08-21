@@ -26,7 +26,6 @@ fn main() {
                     pool,
                     kafka: Arc::new(kafkaoxide_kafka::RdKafkaClient),
                     zookeeper: Arc::new(kafkaoxide_kafka::TcpZookeeperClient),
-                    secrets: Arc::new(kafkaoxide_secrets::KeyringSecretStore),
                     connections: kafkaoxide_core::ConnectionRegistry::default(),
                 });
 

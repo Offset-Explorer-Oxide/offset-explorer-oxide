@@ -30,11 +30,7 @@ const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
 pub trait KafkaClient: Send + Sync {
     /// Checks a saved connection (used for the periodic status dot in the
     /// connection tree).
-    async fn check_status(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<ConnectionStatus, AppError>;
+    async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError>;
 
     /// Plain TCP reachability check against each host:port in
     /// `bootstrap_servers` (comma-separated) — reports `Reachable` as soon
@@ -63,37 +59,20 @@ pub trait KafkaClient: Send + Sync {
     ) -> Result<ConnectionStatus, AppError>;
 
     /// Backs the tree's "Brokers" sub-list once a cluster is connected.
-    async fn list_brokers(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<BrokerSummary>, AppError>;
+    async fn list_brokers(&self, connection: &Connection) -> Result<Vec<BrokerSummary>, AppError>;
 
     /// Backs the tree's "Topics" sub-list once a cluster is connected.
-    async fn list_topics(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<TopicSummary>, AppError>;
+    async fn list_topics(&self, connection: &Connection) -> Result<Vec<TopicSummary>, AppError>;
 
     /// Backs the tree's "Consumers" sub-list once a cluster is connected.
-    async fn list_consumer_groups(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<ConsumerGroupSummary>, AppError>;
+    async fn list_consumer_groups(&self, connection: &Connection) -> Result<Vec<ConsumerGroupSummary>, AppError>;
 
     /// Sums (high watermark - low watermark) across every partition of the
     /// topic. Backs the topic detail panel's Properties > Messages section,
     /// which fetches this lazily only when its Refresh button is clicked —
     /// never on tab open, since this can be an expensive per-partition call
     /// on a topic with many partitions.
-    async fn count_topic_messages(
-        &self,
-        connection: &Connection,
-        topic: &str,
-        password: Option<&str>,
-    ) -> Result<u64, AppError>;
+    async fn count_topic_messages(&self, connection: &Connection, topic: &str) -> Result<u64, AppError>;
 
     /// Backs the topic Data tab's Fetch button. Pulls message metadata (plus
     /// base64 payload — decoded/rendered client-side when a row is
@@ -107,17 +86,11 @@ pub trait KafkaClient: Send + Sync {
         connection: &Connection,
         topic: &str,
         filter: &MessageFilter,
-        password: Option<&str>,
     ) -> Result<Vec<TopicMessage>, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
     /// ISR, and low/high offsets for every partition.
-    async fn list_partitions(
-        &self,
-        connection: &Connection,
-        topic: &str,
-        password: Option<&str>,
-    ) -> Result<Vec<PartitionSummary>, AppError>;
+    async fn list_partitions(&self, connection: &Connection, topic: &str) -> Result<Vec<PartitionSummary>, AppError>;
 
     /// Backs the topic detail panel's Config tab, via librdkafka's
     /// DescribeConfigs admin API.
@@ -125,7 +98,6 @@ pub trait KafkaClient: Send + Sync {
         &self,
         connection: &Connection,
         topic: &str,
-        password: Option<&str>,
     ) -> Result<Vec<ConfigEntry>, AppError>;
 
     /// Backs the consumer group detail panel's "Refresh" button. Decodes
@@ -138,7 +110,6 @@ pub trait KafkaClient: Send + Sync {
         &self,
         connection: &Connection,
         group_id: &str,
-        password: Option<&str>,
     ) -> Result<ConsumerGroupLag, AppError>;
 }
 
@@ -217,12 +188,8 @@ pub struct RdKafkaClient;
 
 #[async_trait]
 impl KafkaClient for RdKafkaClient {
-    async fn check_status(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<ConnectionStatus, AppError> {
-        run_probe(client_config(connection, password)).await
+    async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError> {
+        run_probe(client_config(connection)).await
     }
 
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError> {
@@ -254,12 +221,8 @@ impl KafkaClient for RdKafkaClient {
         .await
     }
 
-    async fn list_brokers(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<BrokerSummary>, AppError> {
-        let config = client_config(connection, password);
+    async fn list_brokers(&self, connection: &Connection) -> Result<Vec<BrokerSummary>, AppError> {
+        let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
                 .create()
@@ -285,12 +248,8 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_brokers task panicked")?
     }
 
-    async fn list_topics(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<TopicSummary>, AppError> {
-        let config = client_config(connection, password);
+    async fn list_topics(&self, connection: &Connection) -> Result<Vec<TopicSummary>, AppError> {
+        let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
                 .create()
@@ -315,12 +274,8 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_topics task panicked")?
     }
 
-    async fn list_consumer_groups(
-        &self,
-        connection: &Connection,
-        password: Option<&str>,
-    ) -> Result<Vec<ConsumerGroupSummary>, AppError> {
-        let config = client_config(connection, password);
+    async fn list_consumer_groups(&self, connection: &Connection) -> Result<Vec<ConsumerGroupSummary>, AppError> {
+        let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
                 .create()
@@ -345,13 +300,8 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_consumer_groups task panicked")?
     }
 
-    async fn count_topic_messages(
-        &self,
-        connection: &Connection,
-        topic: &str,
-        password: Option<&str>,
-    ) -> Result<u64, AppError> {
-        let config = client_config(connection, password);
+    async fn count_topic_messages(&self, connection: &Connection, topic: &str) -> Result<u64, AppError> {
+        let config = client_config(connection);
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -391,9 +341,8 @@ impl KafkaClient for RdKafkaClient {
         connection: &Connection,
         topic: &str,
         filter: &MessageFilter,
-        password: Option<&str>,
     ) -> Result<Vec<TopicMessage>, AppError> {
-        let mut config = client_config(connection, password);
+        let mut config = client_config(connection);
         config.set("group.id", "kafkaoxide-message-browser");
         config.set("enable.auto.commit", "false");
         let topic = topic.to_string();
@@ -514,13 +463,8 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("fetch_messages task panicked")?
     }
 
-    async fn list_partitions(
-        &self,
-        connection: &Connection,
-        topic: &str,
-        password: Option<&str>,
-    ) -> Result<Vec<PartitionSummary>, AppError> {
-        let config = client_config(connection, password);
+    async fn list_partitions(&self, connection: &Connection, topic: &str) -> Result<Vec<PartitionSummary>, AppError> {
+        let config = client_config(connection);
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -564,13 +508,8 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_partitions task panicked")?
     }
 
-    async fn describe_topic_config(
-        &self,
-        connection: &Connection,
-        topic: &str,
-        password: Option<&str>,
-    ) -> Result<Vec<ConfigEntry>, AppError> {
-        let config = client_config(connection, password);
+    async fn describe_topic_config(&self, connection: &Connection, topic: &str) -> Result<Vec<ConfigEntry>, AppError> {
+        let config = client_config(connection);
         let admin: AdminClient<DefaultClientContext> = config
             .create()
             .change_context(AppError::Kafka)
@@ -604,10 +543,9 @@ impl KafkaClient for RdKafkaClient {
         &self,
         connection: &Connection,
         group_id: &str,
-        password: Option<&str>,
     ) -> Result<ConsumerGroupLag, AppError> {
-        let config = client_config(connection, password);
-        let mut group_config = client_config(connection, password);
+        let config = client_config(connection);
+        let mut group_config = client_config(connection);
         let group_id = group_id.to_string();
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -775,12 +713,20 @@ mod tests {
             security_protocol: SecurityProtocol::Plaintext,
             sasl_mechanism: None,
             sasl_username: None,
+            sasl_password: None,
             sasl_oauth_url: None,
             schema_registry_endpoint: None,
+            schema_registry_basic_auth_credentials: None,
             schema_registry_trust_store_location: None,
+            schema_registry_trust_store_password: None,
             schema_registry_keystore_location: None,
+            schema_registry_keystore_password: None,
+            schema_registry_keystore_key_password: None,
             ssl_truststore_location: None,
+            ssl_truststore_password: None,
             ssl_keystore_location: None,
+            ssl_keystore_password: None,
+            ssl_keystore_key_password: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -789,7 +735,7 @@ mod tests {
     #[tokio::test]
     async fn reports_a_real_error_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.check_status(&sample_connection(), None).await;
+        let result = client.check_status(&sample_connection()).await;
         assert!(result.is_err(), "expected a real error, got {result:?}");
     }
 
@@ -874,21 +820,21 @@ mod tests {
     #[tokio::test]
     async fn list_brokers_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_brokers(&sample_connection(), None).await;
+        let result = client.list_brokers(&sample_connection()).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_topics_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_topics(&sample_connection(), None).await;
+        let result = client.list_topics(&sample_connection()).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_consumer_groups_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_consumer_groups(&sample_connection(), None).await;
+        let result = client.list_consumer_groups(&sample_connection()).await;
         assert!(result.is_err());
     }
 
@@ -896,7 +842,7 @@ mod tests {
     async fn count_topic_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .count_topic_messages(&sample_connection(), "orders", None)
+            .count_topic_messages(&sample_connection(), "orders")
             .await;
         assert!(result.is_err());
     }
@@ -905,7 +851,7 @@ mod tests {
     async fn fetch_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None)
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default())
             .await;
         assert!(result.is_err());
     }
@@ -913,14 +859,14 @@ mod tests {
     #[tokio::test]
     async fn list_partitions_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_partitions(&sample_connection(), "orders", None).await;
+        let result = client.list_partitions(&sample_connection(), "orders").await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn describe_topic_config_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.describe_topic_config(&sample_connection(), "orders", None).await;
+        let result = client.describe_topic_config(&sample_connection(), "orders").await;
         assert!(result.is_err());
     }
 
@@ -928,7 +874,7 @@ mod tests {
     async fn fetch_consumer_group_lag_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .fetch_consumer_group_lag(&sample_connection(), "billing-service", None)
+            .fetch_consumer_group_lag(&sample_connection(), "billing-service")
             .await;
         assert!(result.is_err());
     }

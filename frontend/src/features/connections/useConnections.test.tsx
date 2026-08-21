@@ -40,14 +40,10 @@ describe("useUpdateConnection", () => {
 
     const { result } = renderHook(() => useUpdateConnection(), { wrapper: createWrapper() });
 
-    result.current.mutate({ id: "1", connection: newConnection, touchedSecrets: ["sasl_password"] });
+    result.current.mutate({ id: "1", connection: newConnection });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(connectionUpdate).toHaveBeenCalledWith({
-      id: "1",
-      newConnection,
-      touchedSecrets: ["sasl_password"],
-    });
+    expect(connectionUpdate).toHaveBeenCalledWith({ id: "1", newConnection });
   });
 });
 

@@ -67,12 +67,20 @@ export interface Connection {
   securityProtocol: SecurityProtocol;
   saslMechanism: SaslMechanism | null;
   saslUsername: string | null;
+  saslPassword: string | null;
   saslOauthUrl: string | null;
   schemaRegistryEndpoint: string | null;
+  schemaRegistryBasicAuthCredentials: string | null;
   schemaRegistryTrustStoreLocation: string | null;
+  schemaRegistryTrustStorePassword: string | null;
   schemaRegistryKeystoreLocation: string | null;
+  schemaRegistryKeystorePassword: string | null;
+  schemaRegistryKeystoreKeyPassword: string | null;
   sslTruststoreLocation: string | null;
+  sslTruststorePassword: string | null;
   sslKeystoreLocation: string | null;
+  sslKeystorePassword: string | null;
+  sslKeystoreKeyPassword: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -191,8 +199,8 @@ export const api = {
   listConnections: () => invoke<Connection[]>("connection_list"),
   createConnection: (newConnection: NewConnection) =>
     invoke<Connection>("connection_create", { newConnection }),
-  updateConnection: (id: string, newConnection: NewConnection, touchedSecrets: string[]) =>
-    invoke<Connection>("connection_update", { id, newConnection, touchedSecrets }),
+  updateConnection: (id: string, newConnection: NewConnection) =>
+    invoke<Connection>("connection_update", { id, newConnection }),
   deleteConnection: (id: string) => invoke<void>("connection_delete", { id }),
   /** `ids: null` exports every connection; a specific list exports just those. */
   exportConnections: (ids: string[] | null, path: string) =>

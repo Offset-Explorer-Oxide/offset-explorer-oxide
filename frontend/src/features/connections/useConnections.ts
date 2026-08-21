@@ -18,8 +18,7 @@ export function useCreateConnection() {
 export function useUpdateConnection() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, connection, touchedSecrets }: { id: string; connection: NewConnection; touchedSecrets: string[] }) =>
-      api.updateConnection(id, connection, touchedSecrets),
+    mutationFn: ({ id, connection }: { id: string; connection: NewConnection }) => api.updateConnection(id, connection),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
   });
 }

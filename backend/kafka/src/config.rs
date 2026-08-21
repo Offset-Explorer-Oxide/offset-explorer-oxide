@@ -93,24 +93,22 @@ fn native_ca_bundle_pem() -> Option<String> {
     Some(pem)
 }
 
-/// Builds a `ClientConfig` for a saved connection. `sasl_username` and
-/// `ssl_truststore_location`/`ssl_keystore_location` come straight from the
-/// connection (not secrets); `password` is the connection's SASL password,
-/// looked up from the OS keychain by the Tauri command layer. The broker
-/// keystore passwords aren't retrieved from the keychain here yet — same
-/// scope boundary, just not wired up for that field yet.
-pub fn client_config(connection: &Connection, password: Option<&str>) -> ClientConfig {
+/// Builds a `ClientConfig` for a saved connection — every field, including
+/// secrets, comes straight from the connection (see `Connection`'s doc
+/// comment for why secrets live in plain columns rather than the OS
+/// keychain).
+pub fn client_config(connection: &Connection) -> ClientConfig {
     build_client_config(
         &connection.bootstrap_servers,
         connection.security_protocol,
         connection.sasl_mechanism,
         connection.sasl_username.as_deref(),
-        password,
+        connection.sasl_password.as_deref(),
         BrokerSslConfig {
             truststore_location: connection.ssl_truststore_location.as_deref(),
             keystore_location: connection.ssl_keystore_location.as_deref(),
-            keystore_password: None,
-            keystore_key_password: None,
+            keystore_password: connection.ssl_keystore_password.as_deref(),
+            keystore_key_password: connection.ssl_keystore_key_password.as_deref(),
         },
     )
 }
@@ -133,12 +131,20 @@ mod tests {
             security_protocol: SecurityProtocol::SaslSsl,
             sasl_mechanism: Some(SaslMechanism::ScramSha256),
             sasl_username: Some("kafka-user".into()),
+            sasl_password: None,
             sasl_oauth_url: None,
             schema_registry_endpoint: None,
+            schema_registry_basic_auth_credentials: None,
             schema_registry_trust_store_location: None,
+            schema_registry_trust_store_password: None,
             schema_registry_keystore_location: None,
+            schema_registry_keystore_password: None,
+            schema_registry_keystore_key_password: None,
             ssl_truststore_location: None,
+            ssl_truststore_password: None,
             ssl_keystore_location: None,
+            ssl_keystore_password: None,
+            ssl_keystore_key_password: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -146,14 +152,17 @@ mod tests {
 
     #[test]
     fn builds_bootstrap_servers_and_security_protocol() {
-        let config = client_config(&sample_connection(), None);
+        let config = client_config(&sample_connection());
         assert_eq!(config.get("bootstrap.servers"), Some("localhost:9092"));
         assert_eq!(config.get("security.protocol"), Some("sasl_ssl"));
     }
 
     #[test]
     fn builds_sasl_fields_when_password_given() {
-        let config = client_config(&sample_connection(), Some("hunter2"));
+        let mut connection = sample_connection();
+        connection.sasl_password = Some("hunter2".into());
+
+        let config = client_config(&connection);
         assert_eq!(config.get("sasl.mechanism"), Some("SCRAM-SHA-256"));
         assert_eq!(config.get("sasl.username"), Some("kafka-user"));
         assert_eq!(config.get("sasl.password"), Some("hunter2"));
@@ -163,8 +172,9 @@ mod tests {
     fn omits_sasl_username_when_a_saved_connection_has_none() {
         let mut connection = sample_connection();
         connection.sasl_username = None;
+        connection.sasl_password = Some("hunter2".into());
 
-        let config = client_config(&connection, Some("hunter2"));
+        let config = client_config(&connection);
         assert_eq!(config.get("sasl.username"), None);
     }
 
@@ -174,7 +184,7 @@ mod tests {
         connection.security_protocol = SecurityProtocol::Plaintext;
         connection.sasl_mechanism = None;
 
-        let config = client_config(&connection, None);
+        let config = client_config(&connection);
         assert_eq!(config.get("sasl.mechanism"), None);
     }
 
@@ -184,9 +194,24 @@ mod tests {
         connection.ssl_truststore_location = Some("/etc/broker-ts.pem".into());
         connection.ssl_keystore_location = Some("/etc/broker-ks.p12".into());
 
-        let config = client_config(&connection, None);
+        let config = client_config(&connection);
         assert_eq!(config.get("ssl.ca.location"), Some("/etc/broker-ts.pem"));
         assert_eq!(config.get("ssl.keystore.location"), Some("/etc/broker-ks.p12"));
+    }
+
+    #[test]
+    fn client_config_carries_a_saved_connections_keystore_passwords() {
+        // Regression test: previously these were hardcoded to `None`
+        // regardless of what was saved, since the keychain-backed design
+        // never wired this field up. Now that secrets are plain connection
+        // fields, there's no reason for this gap to exist.
+        let mut connection = sample_connection();
+        connection.ssl_keystore_password = Some("keystore-secret".into());
+        connection.ssl_keystore_key_password = Some("key-secret".into());
+
+        let config = client_config(&connection);
+        assert_eq!(config.get("ssl.keystore.password"), Some("keystore-secret"));
+        assert_eq!(config.get("ssl.key.password"), Some("key-secret"));
     }
 
     #[test]

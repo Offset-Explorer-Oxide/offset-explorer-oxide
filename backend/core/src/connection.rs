@@ -32,10 +32,14 @@ pub enum SaslMechanism {
     ScramSha512,
 }
 
-/// A saved Kafka connection profile, as returned to the frontend. Never
-/// carries secrets (schema-registry credentials/passwords) — those live only
-/// in the OS keychain via `kafkaoxide_secrets::SecretStore`, keyed by
-/// connection id.
+/// A saved Kafka connection profile, as returned to the frontend — including
+/// secrets (SASL password, schema-registry credentials, keystore/truststore
+/// passwords). These are stored as plaintext columns in the local SQLite
+/// database, a deliberate tradeoff made after the OS-keychain-backed storage
+/// this app used previously proved unreliable on Windows (writes to
+/// Credential Manager silently failing for some users, with no working
+/// fallback). This database is local to the user's machine, not synced or
+/// shared.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection {
@@ -50,27 +54,30 @@ pub struct Connection {
     pub zookeeper_chroot_path: Option<String>,
     pub security_protocol: SecurityProtocol,
     pub sasl_mechanism: Option<SaslMechanism>,
-    /// Not a secret — the matching `sasl_password` lives only in the OS
-    /// keychain (see `NewConnection` below), same split as the SSL
-    /// location/password fields.
     pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
     pub sasl_oauth_url: Option<String>,
     pub schema_registry_endpoint: Option<String>,
+    pub schema_registry_basic_auth_credentials: Option<String>,
     pub schema_registry_trust_store_location: Option<String>,
+    pub schema_registry_trust_store_password: Option<String>,
     pub schema_registry_keystore_location: Option<String>,
-    /// Broker security tab — SSL/TLS material. Locations aren't secrets;
-    /// the matching passwords live only in the OS keychain (see
-    /// `NewConnection` below), same treatment as the schema registry fields.
+    pub schema_registry_keystore_password: Option<String>,
+    pub schema_registry_keystore_key_password: Option<String>,
+    /// Broker security tab — SSL/TLS material.
     pub ssl_truststore_location: Option<String>,
+    pub ssl_truststore_password: Option<String>,
     pub ssl_keystore_location: Option<String>,
+    pub ssl_keystore_password: Option<String>,
+    pub ssl_keystore_key_password: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
 /// The full set of fields submitted from the New/Edit Connection modal,
-/// including secrets. Secret fields are stripped out before anything is
-/// persisted to the database (see `kafkaoxide_db::connections`) and are
-/// instead written to the OS keychain by the Tauri command layer.
+/// including secrets — persisted as-is (see `kafkaoxide_db::connections`).
+/// `Debug` still redacts secret values (see below), so they never end up in
+/// logs even though they're stored in plain columns.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewConnection {
@@ -208,12 +215,20 @@ mod tests {
             security_protocol: SecurityProtocol::Plaintext,
             sasl_mechanism: None,
             sasl_username: None,
+            sasl_password: None,
             sasl_oauth_url: None,
             schema_registry_endpoint: None,
+            schema_registry_basic_auth_credentials: None,
             schema_registry_trust_store_location: None,
+            schema_registry_trust_store_password: None,
             schema_registry_keystore_location: None,
+            schema_registry_keystore_password: None,
+            schema_registry_keystore_key_password: None,
             ssl_truststore_location: None,
+            ssl_truststore_password: None,
             ssl_keystore_location: None,
+            ssl_keystore_password: None,
+            ssl_keystore_key_password: None,
             created_at: "now".into(),
             updated_at: "now".into(),
         }

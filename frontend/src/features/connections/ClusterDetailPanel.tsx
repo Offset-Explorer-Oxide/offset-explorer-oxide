@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ConnectionTabId, ConnectionTabsView } from "./modal/ConnectionTabsView";
-import { ConnectionDraft, connectionToDraft, draftsEqual, toNewConnection, touchedSecretKeys } from "./modal/draft";
+import { ConnectionDraft, connectionToDraft, draftsEqual, toNewConnection } from "./modal/draft";
 import { PingResult } from "./modal/PingResult";
 import {
   useConnect,
@@ -65,14 +65,10 @@ export function ClusterDetailPanel({ connectionId }: ClusterDetailPanelProps) {
   }
 
   async function handleUpdate() {
-    if (!draft || !originalDraft) return;
+    if (!draft) return;
     setError(null);
     try {
-      await updateConnection.mutateAsync({
-        id: connectionId,
-        connection: toNewConnection(draft),
-        touchedSecrets: touchedSecretKeys(draft, originalDraft),
-      });
+      await updateConnection.mutateAsync({ id: connectionId, connection: toNewConnection(draft) });
       setOriginalDraft(draft);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update connection");

@@ -9,7 +9,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 kafkaoxide-core = { workspace = true }
 kafkaoxide-db = { workspace = true }
-kafkaoxide-secrets = { workspace = true }
 kafkaoxide-kafka = { workspace = true }
 kafkaoxide-avro = { workspace = true }
 kafkaoxide-schema-registry = { workspace = true }

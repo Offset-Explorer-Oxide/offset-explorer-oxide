@@ -84,13 +84,11 @@ pub async fn connection_decode_avro(
         ))
     })?;
 
-    let basic_auth_credentials = state.secrets.get_secret(&id, "schema_registry_basic_auth_credentials")?;
-    let keystore_password = state.secrets.get_secret(&id, "schema_registry_keystore_password")?;
     let auth = SchemaRegistryAuth {
-        basic_auth_credentials: basic_auth_credentials.as_deref(),
+        basic_auth_credentials: connection.schema_registry_basic_auth_credentials.as_deref(),
         trust_store_location: connection.schema_registry_trust_store_location.as_deref(),
         keystore_location: connection.schema_registry_keystore_location.as_deref(),
-        keystore_password: keystore_password.as_deref(),
+        keystore_password: connection.schema_registry_keystore_password.as_deref(),
     };
     let client = SchemaRegistryClient::new(endpoint, auth)?;
     let schema_text = client.fetch_schema_by_id(schema_id).await?;
