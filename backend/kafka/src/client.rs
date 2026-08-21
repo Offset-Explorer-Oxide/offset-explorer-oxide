@@ -182,10 +182,18 @@ impl ConsumerContext for ProbeContext {}
 async fn run_probe(config: ClientConfig) -> Result<ConnectionStatus, AppError> {
     tokio::task::spawn_blocking(move || {
         let context = ProbeContext::default();
-        let consumer: BaseConsumer<ProbeContext> = config
-            .create_with_context(context.clone())
-            .change_context(AppError::Kafka)
-            .attach_printable("failed to create kafka consumer")?;
+        let consumer: BaseConsumer<ProbeContext> = match config.create_with_context(context.clone()) {
+            Ok(consumer) => consumer,
+            Err(create_err) => {
+                // `create_err.to_string()` carries librdkafka's actual reason
+                // (e.g. "Invalid sasl.username: not set") — attaching only
+                // the generic "failed to create kafka consumer" string here
+                // (the previous behavior) meant that specific reason never
+                // reached the user, no matter how informative it was.
+                let message = create_err.to_string();
+                return Err(error_stack::Report::new(AppError::Kafka).attach_printable(message));
+            }
+        };
 
         match consumer.fetch_metadata(None, Duration::from_secs(3)) {
             Ok(_) => Ok(ConnectionStatus::Reachable),
@@ -925,12 +933,32 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Mirrors `format_report` in `src-tauri/src/commands/connections.rs` —
+    // that's the ONLY thing that actually reaches the frontend
+    // (`CommandError.message`), and it walks exclusively `Printable`
+    // attachments, ignoring everything else in the report (including
+    // whatever `format!("{:?}", report)` would show, which is much more
+    // verbose and can make a bug look fixed when it isn't).
+    fn printable_attachments(report: &error_stack::Report<AppError>) -> Vec<String> {
+        use error_stack::{AttachmentKind, FrameKind};
+        report
+            .frames()
+            .filter_map(|frame| match frame.kind() {
+                FrameKind::Attachment(AttachmentKind::Printable(printable)) => Some(printable.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn test_connection_surfaces_a_config_error_for_sasl_mechanisms_missing_a_username() {
         // PLAIN/SCRAM mechanisms need sasl.username — if the Authentication
         // tab's Username field was left blank, librdkafka refuses to even
         // build a client, which is surfaced as an error rather than
-        // misreported as "unreachable".
+        // misreported as "unreachable". The user-visible message must
+        // contain librdkafka's actual reason, not just the generic "failed
+        // to create kafka consumer" wrapper text — that alone isn't
+        // actionable for someone staring at an error dialog.
         let client = RdKafkaClient;
         let result = client
             .test_connection(
@@ -942,7 +970,12 @@ mod tests {
                 BrokerSslConfig::default(),
             )
             .await;
-        assert!(result.is_err());
+        let report = result.expect_err("expected a config error");
+        let printable = printable_attachments(&report).join(" | ").to_lowercase();
+        assert!(
+            printable.contains("sasl") || printable.contains("username"),
+            "expected the real librdkafka reason in a user-visible (Printable) attachment, got: {printable:?}"
+        );
     }
 
     #[tokio::test]
