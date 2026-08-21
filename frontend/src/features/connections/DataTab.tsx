@@ -296,7 +296,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         <input
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
-          placeholder="Search…"
+          placeholder="Search by key or value"
         />
       </label>
 

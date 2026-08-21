@@ -22,14 +22,9 @@ use tokio::time::timeout;
 
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
-use crate::messages::{apply_total_cap, clamp_offset, newest_first_start_offset, partition_limits};
-
-/// Per-partition message count used to resolve the newest-first start
-/// offset when the caller gives no explicit `offset`/`from_timestamp_ms`
-/// filter and no `max_messages_per_partition` — without a default, an
-/// unfiltered fetch on a large topic scans from the low watermark with no
-/// cap at all.
-const DEFAULT_MESSAGE_CAP: u32 = 100;
+use crate::messages::{
+    apply_total_cap, clamp_offset, effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
+};
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
@@ -435,7 +430,7 @@ impl KafkaClient for RdKafkaClient {
                     watermarks(p).map(|(low, _)| low)
                 })?
             } else {
-                let cap = i64::from(filter.max_messages_per_partition.unwrap_or(DEFAULT_MESSAGE_CAP));
+                let cap = i64::from(effective_max_messages_per_partition(filter.max_messages_per_partition));
                 target_partitions
                     .iter()
                     .map(|&p| watermarks(p).map(|(low, high)| (p, newest_first_start_offset(low, high, cap))))
@@ -453,7 +448,21 @@ impl KafkaClient for RdKafkaClient {
                     .collect::<Result<_, _>>()?
             };
 
-            let limits = partition_limits(&start_offsets, &end_offsets, filter.max_messages_per_partition);
+            // `partition_limits` treats `None` as "uncapped" — correct for
+            // it as a generic utility, but wrong for this caller: an
+            // offset- or timestamp-filtered fetch with no explicit count
+            // set must still fall back to a sane per-partition cap (the
+            // unfiltered/newest-first branch above already gets this via
+            // `effective_max_messages_per_partition`, since its start
+            // offset is derived from the same cap — this is that same
+            // fallback applied for every other branch too, or an explicit
+            // offset/timestamp filter would try to pull every message from
+            // its start point to the end of the partition).
+            let limits = partition_limits(
+                &start_offsets,
+                &end_offsets,
+                Some(effective_max_messages_per_partition(filter.max_messages_per_partition)),
+            );
             let limits = apply_total_cap(&limits, filter.max_total_messages);
 
             let mut assign_tpl = TopicPartitionList::new();
