@@ -167,8 +167,8 @@ export const api = {
   listConnections: () => invoke<Connection[]>("connection_list"),
   createConnection: (newConnection: NewConnection) =>
     invoke<Connection>("connection_create", { newConnection }),
-  updateConnection: (id: string, newConnection: NewConnection) =>
-    invoke<Connection>("connection_update", { id, newConnection }),
+  updateConnection: (id: string, newConnection: NewConnection, touchedSecrets: string[]) =>
+    invoke<Connection>("connection_update", { id, newConnection, touchedSecrets }),
   deleteConnection: (id: string) => invoke<void>("connection_delete", { id }),
   /** `ids: null` exports every connection; a specific list exports just those. */
   exportConnections: (ids: string[] | null, path: string) =>

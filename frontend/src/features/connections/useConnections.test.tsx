@@ -7,12 +7,15 @@ import {
   useConnect,
   useConnectionConnected,
   useConnectionsQuery,
+  useDeleteConnection,
   useDisconnect,
   useExportConnections,
   useImportConnections,
   useUpdateConnection,
 } from "./useConnections";
 import { sampleNewConnection } from "./connectionTestFixtures";
+import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -37,10 +40,14 @@ describe("useUpdateConnection", () => {
 
     const { result } = renderHook(() => useUpdateConnection(), { wrapper: createWrapper() });
 
-    result.current.mutate({ id: "1", connection: newConnection });
+    result.current.mutate({ id: "1", connection: newConnection, touchedSecrets: ["sasl_password"] });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(connectionUpdate).toHaveBeenCalledWith({ id: "1", newConnection });
+    expect(connectionUpdate).toHaveBeenCalledWith({
+      id: "1",
+      newConnection,
+      touchedSecrets: ["sasl_password"],
+    });
   });
 });
 
@@ -84,6 +91,22 @@ describe("useDisconnect", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(connectionDisconnect).toHaveBeenCalledWith({ id: "1" });
+  });
+});
+
+describe("useDeleteConnection", () => {
+  it("clears the deleted connection's selection and viewed message from the workspace", async () => {
+    const connectionDelete = vi.fn(() => undefined);
+    setInvokeHandlers({ connection_delete: connectionDelete });
+    const clearSelectionForConnection = vi.spyOn(useWorkspaceSelectionStore.getState(), "clearForConnection");
+    const clearMessageForConnection = vi.spyOn(useMessageViewerStore.getState(), "clearForConnection");
+
+    const { result } = renderHook(() => useDeleteConnection(), { wrapper: createWrapper() });
+    result.current.mutate("conn-1");
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(clearSelectionForConnection).toHaveBeenCalledWith("conn-1");
+    expect(clearMessageForConnection).toHaveBeenCalledWith("conn-1");
   });
 });
 

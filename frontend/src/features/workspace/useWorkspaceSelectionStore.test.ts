@@ -137,3 +137,56 @@ describe("useWorkspaceSelectionStore per-tab isolation", () => {
     expect(useWorkspaceSelectionStore.getState().selection).toBeNull();
   });
 });
+
+describe("useWorkspaceSelectionStore clearForConnection", () => {
+  it("clears the active selection when it belongs to the deleted connection", () => {
+    const store = useWorkspaceSelectionStore.getState();
+    store.selectConnection("conn-1", "Local Kafka");
+
+    store.clearForConnection("conn-1");
+
+    expect(useWorkspaceSelectionStore.getState().selection).toBeNull();
+  });
+
+  it("clears a child selection (topic/broker/etc.) belonging to the deleted connection", () => {
+    const store = useWorkspaceSelectionStore.getState();
+    store.selectTopic("conn-1", "orders");
+
+    store.clearForConnection("conn-1");
+
+    expect(useWorkspaceSelectionStore.getState().selection).toBeNull();
+  });
+
+  it("leaves the selection alone when it belongs to a different connection", () => {
+    const store = useWorkspaceSelectionStore.getState();
+    store.selectTopic("conn-2", "orders");
+
+    store.clearForConnection("conn-1");
+
+    expect(useWorkspaceSelectionStore.getState().selection).toEqual({
+      type: "topic",
+      connectionId: "conn-2",
+      topicName: "orders",
+    });
+  });
+
+  it("clears every tab's cached selection for the deleted connection, not just the active tab", () => {
+    const store = useWorkspaceSelectionStore.getState();
+    store.setActiveTab("tab-1");
+    store.selectTopic("conn-1", "orders");
+    store.setActiveTab("tab-2");
+    store.selectTopic("conn-2", "payments");
+
+    store.clearForConnection("conn-1");
+
+    store.setActiveTab("tab-1");
+    expect(useWorkspaceSelectionStore.getState().selection).toBeNull();
+
+    store.setActiveTab("tab-2");
+    expect(useWorkspaceSelectionStore.getState().selection).toEqual({
+      type: "topic",
+      connectionId: "conn-2",
+      topicName: "payments",
+    });
+  });
+});
