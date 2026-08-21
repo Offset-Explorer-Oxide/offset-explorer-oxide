@@ -41,7 +41,9 @@ describe("TopicPropertiesTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await waitFor(() => expect(countMessages).toHaveBeenCalledWith({ id: "1", topic: "orders" }));
+    await waitFor(() =>
+      expect(countMessages).toHaveBeenCalledWith({ id: "1", topic: "orders", readTimeoutMs: 10_000 }),
+    );
     expect(await screen.findByLabelText("Total number of messages")).toHaveValue("42");
   });
 

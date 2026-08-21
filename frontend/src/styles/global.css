@@ -319,12 +319,60 @@ body {
   gap: 16px;
   max-width: 360px;
 }
+.settings-panel__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+}
+.settings-panel__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-fg-muted);
+  font-size: 13px;
+  padding: 6px 4px;
+  cursor: pointer;
+}
+.settings-panel__tab:hover {
+  color: var(--color-fg);
+}
+.settings-panel__tab[aria-selected="true"] {
+  color: var(--color-fg);
+  border-bottom-color: var(--color-accent);
+}
+.settings-panel__tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.settings-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings-panel__section h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
 .dropdown-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
   color: var(--color-fg-muted);
+}
+.dropdown-field input {
+  font: inherit;
+  color: var(--color-fg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  max-width: 160px;
 }
 .dropdown {
   position: relative;

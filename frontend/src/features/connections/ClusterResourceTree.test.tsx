@@ -41,9 +41,9 @@ describe("ClusterResourceTree", () => {
     });
     renderWithClient(<ClusterResourceTree connectionId="1" />);
 
-    await waitFor(() => expect(listBrokers).toHaveBeenCalledWith({ id: "1" }));
-    await waitFor(() => expect(listTopics).toHaveBeenCalledWith({ id: "1" }));
-    await waitFor(() => expect(listConsumerGroups).toHaveBeenCalledWith({ id: "1" }));
+    await waitFor(() => expect(listBrokers).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
+    await waitFor(() => expect(listTopics).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
+    await waitFor(() => expect(listConsumerGroups).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
   });
 
   it("fetches and shows brokers once Brokers is expanded", async () => {
@@ -54,7 +54,7 @@ describe("ClusterResourceTree", () => {
 
     await user.click(screen.getByTestId("category-Brokers"));
 
-    await waitFor(() => expect(listBrokers).toHaveBeenCalledWith({ id: "1" }));
+    await waitFor(() => expect(listBrokers).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
     expect(await screen.findByText("1 — broker1:9092")).toBeInTheDocument();
   });
 
@@ -82,7 +82,7 @@ describe("ClusterResourceTree", () => {
 
     await user.click(screen.getByTestId("category-Topics"));
 
-    await waitFor(() => expect(listTopics).toHaveBeenCalledWith({ id: "1" }));
+    await waitFor(() => expect(listTopics).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
     expect(await screen.findByText("orders")).toBeInTheDocument();
   });
 
@@ -203,7 +203,7 @@ describe("ClusterResourceTree", () => {
 
     await user.click(screen.getByTestId("category-Consumers"));
 
-    await waitFor(() => expect(listGroups).toHaveBeenCalledWith({ id: "1" }));
+    await waitFor(() => expect(listGroups).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
     expect(await screen.findByText("billing")).toBeInTheDocument();
   });
 

@@ -6,6 +6,7 @@ use kafkaoxide_core::{
 };
 use kafkaoxide_kafka::BrokerSslConfig;
 use std::collections::HashSet;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(serde::Serialize)]
@@ -157,14 +158,16 @@ pub async fn connection_ping_bootstrap(
 }
 
 /// Backs the ping button next to "Host" in the New Connection modal's
-/// Zookeeper section.
+/// Zookeeper section. `timeout_ms` is the user's General settings >
+/// Zookeeper > Timeout value.
 #[tauri::command]
 pub async fn connection_ping_zookeeper(
     state: State<'_, AppState>,
     host: String,
     port: u16,
+    timeout_ms: u64,
 ) -> Result<ConnectionStatus, CommandError> {
-    Ok(state.zookeeper.ping(&host, port).await)
+    Ok(state.zookeeper.ping(&host, port, timeout_ms).await)
 }
 
 /// Backs the New Connection modal's bottom "Test" button — tests
@@ -223,13 +226,16 @@ pub async fn connection_is_connected(state: State<'_, AppState>, id: String) -> 
 }
 
 /// Backs the tree's "Brokers" sub-list once a cluster is connected.
+/// `read_timeout_ms` is the user's General settings > Brokers > Read Timeout
+/// value.
 #[tauri::command]
 pub async fn connection_list_brokers(
     state: State<'_, AppState>,
     id: String,
+    read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::BrokerSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_brokers(&connection).await?)
+    Ok(state.kafka.list_brokers(&connection, Duration::from_millis(read_timeout_ms)).await?)
 }
 
 /// Backs the tree's "Topics" sub-list once a cluster is connected.
@@ -237,9 +243,10 @@ pub async fn connection_list_brokers(
 pub async fn connection_list_topics(
     state: State<'_, AppState>,
     id: String,
+    read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::TopicSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_topics(&connection).await?)
+    Ok(state.kafka.list_topics(&connection, Duration::from_millis(read_timeout_ms)).await?)
 }
 
 /// Backs the tree's "Consumers" sub-list once a cluster is connected.
@@ -247,9 +254,13 @@ pub async fn connection_list_topics(
 pub async fn connection_list_consumer_groups(
     state: State<'_, AppState>,
     id: String,
+    read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::ConsumerGroupSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_consumer_groups(&connection).await?)
+    Ok(state
+        .kafka
+        .list_consumer_groups(&connection, Duration::from_millis(read_timeout_ms))
+        .await?)
 }
 
 /// Backs the topic detail panel's Properties > Messages "Refresh" button.
@@ -258,9 +269,13 @@ pub async fn connection_count_topic_messages(
     state: State<'_, AppState>,
     id: String,
     topic: String,
+    read_timeout_ms: u64,
 ) -> Result<u64, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.count_topic_messages(&connection, &topic).await?)
+    Ok(state
+        .kafka
+        .count_topic_messages(&connection, &topic, Duration::from_millis(read_timeout_ms))
+        .await?)
 }
 
 /// One incrementally-fetched message, emitted on the `"messages-batch"`
@@ -286,6 +301,7 @@ const PROGRESS_LOG_INTERVAL: usize = 25;
 /// result once the fetch completes — the frontend uses the stream to paint
 /// rows incrementally and then reconciles with the final `Vec` on success.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn connection_fetch_messages(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -293,6 +309,8 @@ pub async fn connection_fetch_messages(
     topic: String,
     filter: kafkaoxide_core::MessageFilter,
     request_id: String,
+    read_timeout_ms: u64,
+    max_message_size_bytes: u32,
 ) -> Result<Vec<kafkaoxide_core::TopicMessage>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
@@ -324,7 +342,17 @@ pub async fn connection_fetch_messages(
         })
     };
 
-    let result = state.kafka.fetch_messages(&connection, &topic, &filter, Some(tx)).await;
+    let result = state
+        .kafka
+        .fetch_messages(
+            &connection,
+            &topic,
+            &filter,
+            Some(tx),
+            Duration::from_millis(read_timeout_ms),
+            max_message_size_bytes,
+        )
+        .await;
     let _ = forward_task.await;
 
     match result {
@@ -354,9 +382,13 @@ pub async fn connection_list_partitions(
     state: State<'_, AppState>,
     id: String,
     topic: String,
+    read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::PartitionSummary>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_partitions(&connection, &topic).await?)
+    Ok(state
+        .kafka
+        .list_partitions(&connection, &topic, Duration::from_millis(read_timeout_ms))
+        .await?)
 }
 
 /// Backs the topic detail panel's Config tab.
@@ -365,9 +397,13 @@ pub async fn connection_describe_topic_config(
     state: State<'_, AppState>,
     id: String,
     topic: String,
+    read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::ConfigEntry>, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.describe_topic_config(&connection, &topic).await?)
+    Ok(state
+        .kafka
+        .describe_topic_config(&connection, &topic, Duration::from_millis(read_timeout_ms))
+        .await?)
 }
 
 /// Backs the consumer group detail panel's "Refresh" button.
@@ -376,7 +412,11 @@ pub async fn connection_fetch_consumer_group_lag(
     state: State<'_, AppState>,
     id: String,
     group_id: String,
+    read_timeout_ms: u64,
 ) -> Result<kafkaoxide_core::ConsumerGroupLag, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.fetch_consumer_group_lag(&connection, &group_id).await?)
+    Ok(state
+        .kafka
+        .fetch_consumer_group_lag(&connection, &group_id, Duration::from_millis(read_timeout_ms))
+        .await?)
 }

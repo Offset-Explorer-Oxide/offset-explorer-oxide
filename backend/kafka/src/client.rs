@@ -26,8 +26,20 @@ use crate::messages::{
     apply_total_cap, clamp_offset, effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
 };
 
-const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Fallback broker read timeout used only by this crate's own unit tests
+/// (which call `KafkaClient` methods directly, bypassing the Tauri command
+/// layer). Real callers always pass the user's configured General settings >
+/// Brokers > Read Timeout value — see `frontend/src/features/settings/useGeneralSettingsStore.ts`
+/// and its default, which this mirrors.
+#[cfg(test)]
+const TEST_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
+
+/// Fallback max message size used only by this crate's own unit tests — see
+/// `TEST_READ_TIMEOUT`'s doc comment.
+#[cfg(test)]
+const TEST_MAX_MESSAGE_SIZE_BYTES: u32 = 1_048_576;
 
 #[async_trait]
 pub trait KafkaClient: Send + Sync {
@@ -75,20 +87,26 @@ pub trait KafkaClient: Send + Sync {
     ) -> Result<ConnectionStatus, AppError>;
 
     /// Backs the tree's "Brokers" sub-list once a cluster is connected.
-    async fn list_brokers(&self, connection: &Connection) -> Result<Vec<BrokerSummary>, AppError>;
+    /// `read_timeout` is the user's configured General settings > Brokers >
+    /// Read Timeout value.
+    async fn list_brokers(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<BrokerSummary>, AppError>;
 
     /// Backs the tree's "Topics" sub-list once a cluster is connected.
-    async fn list_topics(&self, connection: &Connection) -> Result<Vec<TopicSummary>, AppError>;
+    async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError>;
 
     /// Backs the tree's "Consumers" sub-list once a cluster is connected.
-    async fn list_consumer_groups(&self, connection: &Connection) -> Result<Vec<ConsumerGroupSummary>, AppError>;
+    async fn list_consumer_groups(
+        &self,
+        connection: &Connection,
+        read_timeout: Duration,
+    ) -> Result<Vec<ConsumerGroupSummary>, AppError>;
 
     /// Sums (high watermark - low watermark) across every partition of the
     /// topic. Backs the topic detail panel's Properties > Messages section,
     /// which fetches this lazily only when its Refresh button is clicked —
     /// never on tab open, since this can be an expensive per-partition call
     /// on a topic with many partitions.
-    async fn count_topic_messages(&self, connection: &Connection, topic: &str) -> Result<u64, AppError>;
+    async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError>;
 
     /// Backs the topic Data tab's Fetch button. Pulls message metadata (plus
     /// base64 payload — decoded/rendered client-side when a row is
@@ -105,17 +123,28 @@ pub trait KafkaClient: Send + Sync {
     /// finish. The channel is purely a progress feed: its receiver going
     /// away (e.g. the caller stopped listening) does not affect the fetch,
     /// which still runs to completion and returns the full result.
+    ///
+    /// `max_message_size_bytes` is the user's configured General settings >
+    /// Messages > Max Message Size value, applied as librdkafka's
+    /// `max.partition.fetch.bytes`.
     async fn fetch_messages(
         &self,
         connection: &Connection,
         topic: &str,
         filter: &MessageFilter,
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
+        read_timeout: Duration,
+        max_message_size_bytes: u32,
     ) -> Result<Vec<TopicMessage>, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
     /// ISR, and low/high offsets for every partition.
-    async fn list_partitions(&self, connection: &Connection, topic: &str) -> Result<Vec<PartitionSummary>, AppError>;
+    async fn list_partitions(
+        &self,
+        connection: &Connection,
+        topic: &str,
+        read_timeout: Duration,
+    ) -> Result<Vec<PartitionSummary>, AppError>;
 
     /// Backs the topic detail panel's Config tab, via librdkafka's
     /// DescribeConfigs admin API.
@@ -123,6 +152,7 @@ pub trait KafkaClient: Send + Sync {
         &self,
         connection: &Connection,
         topic: &str,
+        read_timeout: Duration,
     ) -> Result<Vec<ConfigEntry>, AppError>;
 
     /// Backs the consumer group detail panel's "Refresh" button. Decodes
@@ -135,6 +165,7 @@ pub trait KafkaClient: Send + Sync {
         &self,
         connection: &Connection,
         group_id: &str,
+        read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError>;
 }
 
@@ -247,7 +278,7 @@ impl KafkaClient for RdKafkaClient {
         .await
     }
 
-    async fn list_brokers(&self, connection: &Connection) -> Result<Vec<BrokerSummary>, AppError> {
+    async fn list_brokers(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<BrokerSummary>, AppError> {
         let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -255,7 +286,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
             let metadata = consumer
-                .fetch_metadata(None, METADATA_TIMEOUT)
+                .fetch_metadata(None, read_timeout)
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to fetch broker metadata")?;
 
@@ -274,7 +305,7 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_brokers task panicked")?
     }
 
-    async fn list_topics(&self, connection: &Connection) -> Result<Vec<TopicSummary>, AppError> {
+    async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError> {
         let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -282,7 +313,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
             let metadata = consumer
-                .fetch_metadata(None, METADATA_TIMEOUT)
+                .fetch_metadata(None, read_timeout)
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to fetch topic metadata")?;
 
@@ -300,7 +331,11 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_topics task panicked")?
     }
 
-    async fn list_consumer_groups(&self, connection: &Connection) -> Result<Vec<ConsumerGroupSummary>, AppError> {
+    async fn list_consumer_groups(
+        &self,
+        connection: &Connection,
+        read_timeout: Duration,
+    ) -> Result<Vec<ConsumerGroupSummary>, AppError> {
         let config = client_config(connection);
         tokio::task::spawn_blocking(move || {
             let consumer: BaseConsumer = config
@@ -308,7 +343,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
             let groups = consumer
-                .fetch_group_list(None, METADATA_TIMEOUT)
+                .fetch_group_list(None, read_timeout)
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to fetch consumer group list")?;
 
@@ -326,7 +361,7 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_consumer_groups task panicked")?
     }
 
-    async fn count_topic_messages(&self, connection: &Connection, topic: &str) -> Result<u64, AppError> {
+    async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError> {
         let config = client_config(connection);
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
@@ -334,7 +369,7 @@ impl KafkaClient for RdKafkaClient {
                 .create()
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
                 // `.change_context(AppError::Kafka)` alone would demote this
                 // `KafkaError` to a non-`Printable` context frame that
                 // `format_report` (src-tauri/src/commands/connections.rs)
@@ -356,7 +391,7 @@ impl KafkaClient for RdKafkaClient {
             let mut total: u64 = 0;
             for partition in topic_metadata.partitions() {
                 let (low, high) = consumer
-                    .fetch_watermarks(&topic, partition.id(), METADATA_TIMEOUT)
+                    .fetch_watermarks(&topic, partition.id(), read_timeout)
                     .change_context(AppError::Kafka)
                     .attach_printable_lazy(|| {
                         format!("failed to fetch watermarks for {topic}:{}", partition.id())
@@ -376,10 +411,13 @@ impl KafkaClient for RdKafkaClient {
         topic: &str,
         filter: &MessageFilter,
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
+        read_timeout: Duration,
+        max_message_size_bytes: u32,
     ) -> Result<Vec<TopicMessage>, AppError> {
         let mut config = client_config(connection);
         config.set("group.id", "kafkaoxide-message-browser");
         config.set("enable.auto.commit", "false");
+        config.set("max.partition.fetch.bytes", max_message_size_bytes.to_string());
         let topic = topic.to_string();
         let filter = filter.clone();
 
@@ -389,7 +427,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
 
-            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
                 // `.change_context(AppError::Kafka)` alone would demote this
                 // `KafkaError` to a non-`Printable` context frame that
                 // `format_report` (src-tauri/src/commands/connections.rs)
@@ -415,7 +453,7 @@ impl KafkaClient for RdKafkaClient {
 
             let watermarks = |partition: i32| -> Result<(i64, i64), AppError> {
                 consumer
-                    .fetch_watermarks(&topic, partition, METADATA_TIMEOUT)
+                    .fetch_watermarks(&topic, partition, read_timeout)
                     .change_context(AppError::Kafka)
                     .attach_printable_lazy(|| format!("failed to fetch watermarks for {topic}:{partition}"))
             };
@@ -426,7 +464,7 @@ impl KafkaClient for RdKafkaClient {
                     .map(|&p| watermarks(p).map(|(low, high)| (p, clamp_offset(offset, low, high))))
                     .collect::<Result<_, _>>()?
             } else if let Some(from_ms) = filter.from_timestamp_ms {
-                resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, from_ms, |p| {
+                resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, from_ms, read_timeout, |p| {
                     watermarks(p).map(|(low, _)| low)
                 })?
             } else {
@@ -438,7 +476,7 @@ impl KafkaClient for RdKafkaClient {
             };
 
             let end_offsets: BTreeMap<i32, i64> = if let Some(to_ms) = filter.to_timestamp_ms {
-                resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, to_ms, |p| {
+                resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, to_ms, read_timeout, |p| {
                     watermarks(p).map(|(_, high)| high)
                 })?
             } else {
@@ -525,7 +563,12 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("fetch_messages task panicked")?
     }
 
-    async fn list_partitions(&self, connection: &Connection, topic: &str) -> Result<Vec<PartitionSummary>, AppError> {
+    async fn list_partitions(
+        &self,
+        connection: &Connection,
+        topic: &str,
+        read_timeout: Duration,
+    ) -> Result<Vec<PartitionSummary>, AppError> {
         let config = client_config(connection);
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
@@ -533,7 +576,7 @@ impl KafkaClient for RdKafkaClient {
                 .create()
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
                 // `.change_context(AppError::Kafka)` alone would demote this
                 // `KafkaError` to a non-`Printable` context frame that
                 // `format_report` (src-tauri/src/commands/connections.rs)
@@ -557,7 +600,7 @@ impl KafkaClient for RdKafkaClient {
                 .iter()
                 .map(|partition| {
                     let (low, high) = consumer
-                        .fetch_watermarks(&topic, partition.id(), METADATA_TIMEOUT)
+                        .fetch_watermarks(&topic, partition.id(), read_timeout)
                         .change_context(AppError::Kafka)
                         .attach_printable_lazy(|| {
                             format!("failed to fetch watermarks for {topic}:{}", partition.id())
@@ -578,7 +621,12 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("list_partitions task panicked")?
     }
 
-    async fn describe_topic_config(&self, connection: &Connection, topic: &str) -> Result<Vec<ConfigEntry>, AppError> {
+    async fn describe_topic_config(
+        &self,
+        connection: &Connection,
+        topic: &str,
+        read_timeout: Duration,
+    ) -> Result<Vec<ConfigEntry>, AppError> {
         let config = client_config(connection);
         let admin: AdminClient<DefaultClientContext> = config
             .create()
@@ -586,7 +634,7 @@ impl KafkaClient for RdKafkaClient {
             .attach_printable("failed to create kafka admin client")?;
 
         let specifier = ResourceSpecifier::Topic(topic);
-        let options = AdminOptions::new().request_timeout(Some(METADATA_TIMEOUT));
+        let options = AdminOptions::new().request_timeout(Some(read_timeout));
         let results = admin
             .describe_configs([&specifier], &options)
             .await
@@ -613,6 +661,7 @@ impl KafkaClient for RdKafkaClient {
         &self,
         connection: &Connection,
         group_id: &str,
+        read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError> {
         let config = client_config(connection);
         let mut group_config = client_config(connection);
@@ -623,7 +672,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
             let groups = consumer
-                .fetch_group_list(Some(&group_id), METADATA_TIMEOUT)
+                .fetch_group_list(Some(&group_id), read_timeout)
                 .change_context(AppError::Kafka)
                 .attach_printable_lazy(|| format!("failed to fetch group list for {group_id}"))?;
             let group = groups
@@ -681,7 +730,7 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create group-scoped kafka consumer")?;
             let committed = group_consumer
-                .committed_offsets(tpl, METADATA_TIMEOUT)
+                .committed_offsets(tpl, read_timeout)
                 .change_context(AppError::Kafka)
                 .attach_printable_lazy(|| format!("failed to fetch committed offsets for {group_id}"))?;
 
@@ -692,7 +741,7 @@ impl KafkaClient for RdKafkaClient {
                 let current_offset = element.offset().to_raw().filter(|&o| o >= 0);
 
                 let (_low, high) = consumer
-                    .fetch_watermarks(&topic, partition, METADATA_TIMEOUT)
+                    .fetch_watermarks(&topic, partition, read_timeout)
                     .change_context(AppError::Kafka)
                     .attach_printable_lazy(|| {
                         format!("failed to fetch watermarks for {topic}:{partition}")
@@ -733,6 +782,7 @@ fn resolve_offsets_by_timestamp(
     topic: &str,
     partitions: &[i32],
     timestamp_ms: i64,
+    read_timeout: Duration,
     fallback: impl Fn(i32) -> Result<i64, AppError>,
 ) -> Result<BTreeMap<i32, i64>, AppError> {
     let mut request = TopicPartitionList::new();
@@ -744,7 +794,7 @@ fn resolve_offsets_by_timestamp(
     }
 
     let resolved = consumer
-        .offsets_for_times(request, METADATA_TIMEOUT)
+        .offsets_for_times(request, read_timeout)
         .change_context(AppError::Kafka)
         .attach_printable("failed to resolve timestamp to offsets")?;
 
@@ -899,21 +949,21 @@ mod tests {
     #[tokio::test]
     async fn list_brokers_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_brokers(&sample_connection()).await;
+        let result = client.list_brokers(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_topics_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_topics(&sample_connection()).await;
+        let result = client.list_topics(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_consumer_groups_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_consumer_groups(&sample_connection()).await;
+        let result = client.list_consumer_groups(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
@@ -921,7 +971,7 @@ mod tests {
     async fn count_topic_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .count_topic_messages(&sample_connection(), "orders")
+            .count_topic_messages(&sample_connection(), "orders", TEST_READ_TIMEOUT)
             .await;
         assert!(result.is_err());
     }
@@ -930,7 +980,7 @@ mod tests {
     async fn fetch_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None)
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
             .await;
         assert!(result.is_err());
     }
@@ -945,7 +995,7 @@ mod tests {
         // useless for diagnosing an intermittent broker/network issue.
         let client = RdKafkaClient;
         let report = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None)
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
             .await
             .expect_err("expected a metadata-fetch failure against a closed port");
         let printable = printable_attachments(&report).join(" | ").to_lowercase();
@@ -966,7 +1016,7 @@ mod tests {
         let client = RdKafkaClient;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), Some(tx))
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), Some(tx), TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
             .await;
         assert!(result.is_err());
         assert!(rx.recv().await.is_none());
@@ -975,14 +1025,14 @@ mod tests {
     #[tokio::test]
     async fn list_partitions_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.list_partitions(&sample_connection(), "orders").await;
+        let result = client.list_partitions(&sample_connection(), "orders", TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn describe_topic_config_errors_for_a_closed_port() {
         let client = RdKafkaClient;
-        let result = client.describe_topic_config(&sample_connection(), "orders").await;
+        let result = client.describe_topic_config(&sample_connection(), "orders", TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
@@ -990,7 +1040,7 @@ mod tests {
     async fn fetch_consumer_group_lag_errors_for_a_closed_port() {
         let client = RdKafkaClient;
         let result = client
-            .fetch_consumer_group_lag(&sample_connection(), "billing-service")
+            .fetch_consumer_group_lag(&sample_connection(), "billing-service", TEST_READ_TIMEOUT)
             .await;
         assert!(result.is_err());
     }

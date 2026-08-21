@@ -234,6 +234,8 @@ describe("DataTab", () => {
           includePayload: false,
         },
         requestId: expect.any(String),
+        readTimeoutMs: 10_000,
+        maxMessageSizeBytes: 1_048_576,
       }),
     );
   });
@@ -554,6 +556,8 @@ describe("DataTab", () => {
         includePayload: true,
       },
       requestId: expect.any(String),
+      readTimeoutMs: 10_000,
+      maxMessageSizeBytes: 1_048_576,
     });
     expect(lastGridProps?.rowData).toEqual([
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
