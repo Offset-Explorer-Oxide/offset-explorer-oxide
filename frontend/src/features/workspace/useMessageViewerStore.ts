@@ -5,6 +5,8 @@ interface ViewedMessage {
   message: TopicMessage;
   connectionId: string;
   topic: string;
+  /** The Data tab's partition scope the message was viewed from — `undefined` for a topic-wide Data tab, a partition id for one of its partitions'. Lets a consumer tell "still the same topic-wide Data tab" apart from "moved to (or away from) one of its partitions' Data tab", which share the same `topic`. */
+  partitionId?: number;
 }
 
 interface MessageViewerState {
@@ -13,12 +15,13 @@ interface MessageViewerState {
   /** The connection/topic the viewed message came from — needed to decode it (e.g. Avro) on demand. */
   connectionId: string | null;
   topic: string | null;
+  partitionId: number | undefined;
   activeTabId: string | null;
   /** Per-tab cache, so each tab's right pane stays independent. */
   byTab: Record<string, ViewedMessage | null>;
   /** Called whenever the active tab changes, so writes below land in the right tab's slot. */
   setActiveTab: (tabId: string | null) => void;
-  viewMessage: (message: TopicMessage, connectionId: string, topic: string) => void;
+  viewMessage: (message: TopicMessage, connectionId: string, topic: string, partitionId?: number) => void;
   clear: () => void;
   /** Resets a tab's cached message back to blank — the Bottom panel's "Clear memory" button. Defaults to the active tab. */
   clearTabMemory: (tabId?: string) => void;
@@ -26,7 +29,7 @@ interface MessageViewerState {
   clearForConnection: (connectionId: string) => void;
 }
 
-/** Drives the right pane's payload viewer — set when a row is clicked in the topic Data tab's grid. */
+/** Backs the right pane's payload viewer — set when a row is clicked in the topic Data tab's grid. */
 export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
   function write(viewed: ViewedMessage | null) {
     const tabId = get().activeTabId;
@@ -34,6 +37,7 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
       message: viewed?.message ?? null,
       connectionId: viewed?.connectionId ?? null,
       topic: viewed?.topic ?? null,
+      partitionId: viewed?.partitionId,
       byTab: tabId ? { ...state.byTab, [tabId]: viewed } : state.byTab,
     }));
   }
@@ -42,6 +46,7 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
     message: null,
     connectionId: null,
     topic: null,
+    partitionId: undefined,
     activeTabId: null,
     byTab: {},
     setActiveTab: (tabId) => {
@@ -51,9 +56,10 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
         message: viewed?.message ?? null,
         connectionId: viewed?.connectionId ?? null,
         topic: viewed?.topic ?? null,
+        partitionId: viewed?.partitionId,
       });
     },
-    viewMessage: (message, connectionId, topic) => write({ message, connectionId, topic }),
+    viewMessage: (message, connectionId, topic, partitionId) => write({ message, connectionId, topic, partitionId }),
     clear: () => write(null),
     clearTabMemory: (tabId) => {
       const target = tabId ?? get().activeTabId;
@@ -63,6 +69,7 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
         message: state.activeTabId === target ? null : state.message,
         connectionId: state.activeTabId === target ? null : state.connectionId,
         topic: state.activeTabId === target ? null : state.topic,
+        partitionId: state.activeTabId === target ? undefined : state.partitionId,
       }));
     },
     clearForConnection: (connectionId) => {
@@ -79,6 +86,7 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
           message: activeBelongs ? null : state.message,
           connectionId: activeBelongs ? null : state.connectionId,
           topic: activeBelongs ? null : state.topic,
+          partitionId: activeBelongs ? undefined : state.partitionId,
         };
       });
     },

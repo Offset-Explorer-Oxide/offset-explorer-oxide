@@ -36,8 +36,21 @@ const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[async_trait]
 pub trait KafkaClient: Send + Sync {
-    /// Checks a saved connection (used for the periodic status dot in the
-    /// connection tree).
+    /// Checks a saved connection (used for the periodic, every-10s status
+    /// dot poll in the connection tree — one call per saved connection, for
+    /// as long as the app runs). Deliberately a plain TCP reachability
+    /// check (see `ping_bootstrap`'s doc comment for the "why" behind that
+    /// trade-off), NOT a real librdkafka client probe: creating and
+    /// destroying a native Kafka client on this timer, forever, for every
+    /// saved connection regardless of whether any of them are actually
+    /// "Connected", was a real source of continuous native-resource churn —
+    /// harmless in isolated bursts, but compounding into a slow, steady
+    /// memory climb over a long-running session (worse on Windows, where
+    /// librdkafka's client teardown is reportedly less prompt than on
+    /// Unix). The deeper, protocol-level check (real SASL/SSL handshake,
+    /// actual errors surfaced) still happens at Connect time via
+    /// `test_connection`/the modal's "Test" button — this poll only ever
+    /// needs to answer "is the network still there".
     async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError>;
 
     /// Plain TCP reachability check against each host:port in
@@ -207,7 +220,7 @@ pub struct RdKafkaClient;
 #[async_trait]
 impl KafkaClient for RdKafkaClient {
     async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError> {
-        run_probe(client_config(connection)).await
+        self.ping_bootstrap(&connection.bootstrap_servers).await
     }
 
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError> {
@@ -326,10 +339,18 @@ impl KafkaClient for RdKafkaClient {
                 .create()
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer
-                .fetch_metadata(Some(&topic), METADATA_TIMEOUT)
-                .change_context(AppError::Kafka)
-                .attach_printable_lazy(|| format!("failed to fetch metadata for topic {topic}"))?;
+            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+                // `.change_context(AppError::Kafka)` alone would demote this
+                // `KafkaError` to a non-`Printable` context frame that
+                // `format_report` (src-tauri/src/commands/connections.rs)
+                // never surfaces to the user — capturing `.to_string()`
+                // explicitly is the only way the real reason (e.g. "Local:
+                // Broker transport failure", "Local: Timed out") reaches
+                // them instead of just the generic wrapper text below.
+                let reason = err.to_string();
+                error_stack::Report::new(AppError::Kafka)
+                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+            })?;
             let topic_metadata = metadata
                 .topics()
                 .iter()
@@ -373,10 +394,18 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
 
-            let metadata = consumer
-                .fetch_metadata(Some(&topic), METADATA_TIMEOUT)
-                .change_context(AppError::Kafka)
-                .attach_printable_lazy(|| format!("failed to fetch metadata for topic {topic}"))?;
+            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+                // `.change_context(AppError::Kafka)` alone would demote this
+                // `KafkaError` to a non-`Printable` context frame that
+                // `format_report` (src-tauri/src/commands/connections.rs)
+                // never surfaces to the user — capturing `.to_string()`
+                // explicitly is the only way the real reason (e.g. "Local:
+                // Broker transport failure", "Local: Timed out") reaches
+                // them instead of just the generic wrapper text below.
+                let reason = err.to_string();
+                error_stack::Report::new(AppError::Kafka)
+                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+            })?;
             let topic_metadata = metadata
                 .topics()
                 .iter()
@@ -495,10 +524,18 @@ impl KafkaClient for RdKafkaClient {
                 .create()
                 .change_context(AppError::Kafka)
                 .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer
-                .fetch_metadata(Some(&topic), METADATA_TIMEOUT)
-                .change_context(AppError::Kafka)
-                .attach_printable_lazy(|| format!("failed to fetch metadata for topic {topic}"))?;
+            let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT).map_err(|err| {
+                // `.change_context(AppError::Kafka)` alone would demote this
+                // `KafkaError` to a non-`Printable` context frame that
+                // `format_report` (src-tauri/src/commands/connections.rs)
+                // never surfaces to the user — capturing `.to_string()`
+                // explicitly is the only way the real reason (e.g. "Local:
+                // Broker transport failure", "Local: Timed out") reaches
+                // them instead of just the generic wrapper text below.
+                let reason = err.to_string();
+                error_stack::Report::new(AppError::Kafka)
+                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+            })?;
             let topic_metadata = metadata
                 .topics()
                 .iter()
@@ -757,10 +794,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_a_real_error_for_a_closed_port() {
+    async fn check_status_reports_unreachable_for_a_closed_port_without_creating_a_kafka_client() {
+        // Regression test: check_status used to create+destroy a real
+        // librdkafka client on every call (via run_probe), and this is the
+        // periodic every-10s status-dot poll — one such cycle per saved
+        // connection, forever, for as long as the app runs, entirely
+        // independent of whether the user ever actually "Connects". That
+        // continuous native-client churn was a plausible source of the
+        // slow memory growth reported on long-running Windows sessions.
+        // check_status must now be a plain TCP check (like ping_bootstrap)
+        // and therefore never produce a hard Err for a merely-closed port.
         let client = RdKafkaClient;
-        let result = client.check_status(&sample_connection()).await;
-        assert!(result.is_err(), "expected a real error, got {result:?}");
+        let status = client.check_status(&sample_connection()).await.unwrap();
+        assert_eq!(status, ConnectionStatus::Unreachable);
     }
 
     #[tokio::test]
@@ -881,6 +927,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_messages_surfaces_the_real_metadata_fetch_failure_reason() {
+        // Regression test: `.change_context(AppError::Kafka)` alone silently
+        // drops the underlying `KafkaError`'s message (it becomes a
+        // non-`Printable` context frame `format_report` never walks), so a
+        // metadata-fetch failure used to reach the user as just "failed to
+        // fetch metadata for topic orders" with no indication of *why* —
+        // useless for diagnosing an intermittent broker/network issue.
+        let client = RdKafkaClient;
+        let report = client
+            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None)
+            .await
+            .expect_err("expected a metadata-fetch failure against a closed port");
+        let printable = printable_attachments(&report).join(" | ").to_lowercase();
+        assert!(
+            printable.contains("transport") || printable.contains("timed out") || printable.contains("connect"),
+            "expected the real librdkafka failure reason in a Printable attachment, got: {printable:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn fetch_messages_streams_each_message_on_the_given_channel_as_it_arrives() {
         // A closed-port fetch fails before ever polling a message, so this
         // only proves the sender is accepted and the channel closes cleanly
@@ -991,3 +1057,4 @@ mod tests {
         );
     }
 }
+

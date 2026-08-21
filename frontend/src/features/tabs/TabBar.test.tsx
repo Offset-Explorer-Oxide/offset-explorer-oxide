@@ -6,7 +6,7 @@ import { setInvokeHandlers } from "../../lib/testInvoke";
 import { useTabsStore } from "./useTabsStore";
 import { useJsonViewerTabsStore } from "./useJsonViewerTabsStore";
 import { useTabOrderStore } from "./useTabOrderStore";
-import { useSettingsPanelStore } from "../settings/useSettingsPanelStore";
+import { SETTINGS_TAB_ID, useSettingsPanelStore } from "../settings/useSettingsPanelStore";
 import { closeAppWindow } from "../../lib/appWindow";
 import { TabBar } from "./TabBar";
 
@@ -188,8 +188,9 @@ describe("TabBar", () => {
     expect(useTabsStore.getState().tabs).toHaveLength(1);
   });
 
-  it("shows a closable Settings pill when the settings panel is open", async () => {
+  it("shows a closable, selected Settings pill when the settings panel is open and active", async () => {
     useSettingsPanelStore.setState({ isOpen: true });
+    useTabsStore.setState({ activeTabId: SETTINGS_TAB_ID });
     const user = userEvent.setup();
     render(<TabBar />);
 
@@ -205,7 +206,7 @@ describe("TabBar", () => {
     expect(screen.queryByRole("tab", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("does not mark a regular tab as selected while Settings is open, even if it is the active tab", () => {
+  it("marks only the truly active tab as selected when Settings is open but a regular tab is active", () => {
     useTabsStore.setState({
       tabs: [{ id: "1", name: "Alpha", position: 0 }],
       activeTabId: "1",
@@ -213,11 +214,29 @@ describe("TabBar", () => {
     useSettingsPanelStore.setState({ isOpen: true });
     render(<TabBar />);
 
-    expect(screen.getByRole("tab", { name: "Alpha" })).toHaveAttribute("aria-selected", "false");
-    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Alpha" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "false");
   });
 
-  it("closes Settings when a regular tab is clicked while Settings is open", async () => {
+  it("keeps Settings open (just inactive) when a regular tab is clicked while Settings is active — behaves like a JSON viewer tab, not an overlay that gets force-closed", async () => {
+    useTabsStore.setState({
+      tabs: [{ id: "1", name: "Alpha", position: 0 }],
+      activeTabId: "1",
+    });
+    useSettingsPanelStore.setState({ isOpen: true });
+    useTabsStore.setState({ activeTabId: SETTINGS_TAB_ID });
+    const user = userEvent.setup();
+    render(<TabBar />);
+
+    await user.click(screen.getByText("Alpha"));
+
+    expect(useSettingsPanelStore.getState().isOpen).toBe(true);
+    expect(useTabsStore.getState().activeTabId).toBe("1");
+    expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("reactivates Settings when its pill is clicked again after switching away", async () => {
     useTabsStore.setState({
       tabs: [{ id: "1", name: "Alpha", position: 0 }],
       activeTabId: "1",
@@ -226,9 +245,11 @@ describe("TabBar", () => {
     const user = userEvent.setup();
     render(<TabBar />);
 
-    await user.click(screen.getByText("Alpha"));
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
 
-    expect(useSettingsPanelStore.getState().isOpen).toBe(false);
+    expect(useTabsStore.getState().activeTabId).toBe(SETTINGS_TAB_ID);
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Alpha" })).toHaveAttribute("aria-selected", "false");
   });
 
   it("opens rename editing via right-click on a tab", () => {

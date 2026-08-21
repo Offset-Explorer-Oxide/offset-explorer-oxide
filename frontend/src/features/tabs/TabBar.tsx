@@ -2,7 +2,7 @@ import { KeyboardEvent, PointerEvent as ReactPointerEvent, useEffect, useRef, us
 import { useTabsStore } from "./useTabsStore";
 import { useJsonViewerTabsStore } from "./useJsonViewerTabsStore";
 import { mergeTabOrder, useTabOrderStore } from "./useTabOrderStore";
-import { useSettingsPanelStore } from "../settings/useSettingsPanelStore";
+import { SETTINGS_TAB_ID, useSettingsPanelStore } from "../settings/useSettingsPanelStore";
 import { closeAppWindow } from "../../lib/appWindow";
 
 type PendingClose = { kind: "tab" | "json"; id: string };
@@ -23,7 +23,7 @@ export function TabBar() {
   const anchors = useTabOrderStore((s) => s.anchors);
   const clearAnchor = useTabOrderStore((s) => s.clearAnchor);
   const settingsOpen = useSettingsPanelStore((s) => s.isOpen);
-  const closeSettings = useSettingsPanelStore((s) => s.close);
+  const closeSettingsTab = useSettingsPanelStore((s) => s.close);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -90,7 +90,6 @@ export function TabBar() {
       return;
     }
     selectTab(id);
-    closeSettings();
   }
 
   function commitEditing() {
@@ -112,7 +111,6 @@ export function TabBar() {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       selectTab(id);
-      closeSettings();
     }
   }
 
@@ -126,12 +124,25 @@ export function TabBar() {
     }
   }
 
+  // Same fallback idea as handleCloseJsonTab — Settings is also a single
+  // fixed-id ephemeral tab outside useTabsStore's own array.
+  function handleCloseSettingsTab() {
+    closeSettingsTab();
+    if (activeTabId === SETTINGS_TAB_ID) {
+      useTabsStore.setState({ activeTabId: tabs[tabs.length - 1]?.id ?? null });
+    }
+  }
+
   const liveIds = new Set<string>([...tabs.map((t) => t.id), ...jsonTabs.map((t) => t.id)]);
   const rootOrder = tabs.filter((t) => (anchors[t.id] ?? null) === null).map((t) => t.id);
   const anchoredIds = [
     ...tabs.filter((t) => (anchors[t.id] ?? null) !== null).map((t) => t.id),
     ...jsonTabs.map((t) => t.id),
   ];
+  // Settings is rendered separately, as a fixed tab pinned right before the
+  // "+" button (see below) rather than through this order — it's a
+  // singleton utility view, not a workspace tab someone would drag around
+  // or expect interleaved among their real tabs.
   const order = mergeTabOrder(rootOrder, anchoredIds, anchors, liveIds);
   const isLastTab = order.length === 1;
 
@@ -180,7 +191,7 @@ export function TabBar() {
                 }}
                 role="tab"
                 aria-label={tab.name}
-                aria-selected={tab.id === activeTabId && !settingsOpen}
+                aria-selected={tab.id === activeTabId}
                 tabIndex={0}
                 className={`tab${draggingId === tab.id ? " tab--dragging" : ""}`}
                 onClick={() => handleTabClick(tab.id)}
@@ -231,7 +242,7 @@ export function TabBar() {
               key={jsonTab.id}
               role="tab"
               aria-label={jsonTab.title}
-              aria-selected={jsonTab.id === activeTabId && !settingsOpen}
+              aria-selected={jsonTab.id === activeTabId}
               tabIndex={0}
               className="tab"
               onClick={() => handleTabClick(jsonTab.id)}
@@ -274,7 +285,15 @@ export function TabBar() {
           );
         })}
         {settingsOpen && (
-          <div role="tab" aria-label="Settings" aria-selected="true" tabIndex={0} className="tab">
+          <div
+            role="tab"
+            aria-label="Settings"
+            aria-selected={activeTabId === SETTINGS_TAB_ID}
+            tabIndex={0}
+            className="tab"
+            onClick={() => handleTabClick(SETTINGS_TAB_ID)}
+            onKeyDown={(e) => handleTabKeyDown(e, SETTINGS_TAB_ID)}
+          >
             <span>Settings</span>
             <button
               type="button"
@@ -282,7 +301,7 @@ export function TabBar() {
               aria-label="Close tab Settings"
               onClick={(e) => {
                 e.stopPropagation();
-                closeSettings();
+                handleCloseSettingsTab();
               }}
             >
               ×

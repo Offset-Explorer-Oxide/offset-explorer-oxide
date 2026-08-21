@@ -670,6 +670,11 @@ body {
   border-radius: 4px;
   padding: 5px 8px;
 }
+.data-tab-message-count {
+  font-size: 12px;
+  color: var(--color-fg-muted);
+  margin: 0 0 6px;
+}
 .data-tab-grid {
   /* AG Grid's own root div is styled inline `height: 100%`. Percentage
      heights only resolve against a parent's `height` property specifically
@@ -738,6 +743,12 @@ body {
 
 .message-payload-viewer {
   font-size: 12px;
+}
+.message-payload-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
 }
 .message-payload-meta {
   color: var(--color-fg-muted);

@@ -1,4 +1,5 @@
 :root[data-theme="zed-dark"] {
+  color-scheme: dark;
   --color-bg: #1e1e2e;
   --color-bg-elevated: #262638;
   --color-fg: #cdd6f4;
@@ -11,6 +12,7 @@
 }
 
 :root[data-theme="zed-light"] {
+  color-scheme: light;
   --color-bg: #fafafa;
   --color-bg-elevated: #ffffff;
   --color-fg: #1e1e2e;
@@ -23,6 +25,7 @@
 }
 
 :root[data-theme="ayu-dark"] {
+  color-scheme: dark;
   --color-bg: #0b0e14;
   --color-bg-elevated: #131721;
   --color-fg: #bfbdb6;
@@ -35,6 +38,7 @@
 }
 
 :root[data-theme="one-light"] {
+  color-scheme: light;
   --color-bg: #fafafa;
   --color-bg-elevated: #eaeaeb;
   --color-fg: #383a42;
@@ -47,6 +51,7 @@
 }
 
 :root[data-theme="one-dark"] {
+  color-scheme: dark;
   --color-bg: #282c34;
   --color-bg-elevated: #2c313c;
   --color-fg: #abb2bf;
@@ -59,6 +64,7 @@
 }
 
 :root[data-theme="gruvbox-light-soft"] {
+  color-scheme: light;
   --color-bg: #f2e5bc;
   --color-bg-elevated: #ebdbb2;
   --color-fg: #3c3836;
@@ -71,6 +77,7 @@
 }
 
 :root[data-theme="gruvbox-light-hard"] {
+  color-scheme: light;
   --color-bg: #f9f5d7;
   --color-bg-elevated: #f2e5bc;
   --color-fg: #3c3836;
@@ -83,6 +90,7 @@
 }
 
 :root[data-theme="gruvbox-dark-soft"] {
+  color-scheme: dark;
   --color-bg: #32302f;
   --color-bg-elevated: #3c3836;
   --color-fg: #ebdbb2;
@@ -95,6 +103,7 @@
 }
 
 :root[data-theme="gruvbox-dark-hard"] {
+  color-scheme: dark;
   --color-bg: #1d2021;
   --color-bg-elevated: #282828;
   --color-fg: #ebdbb2;

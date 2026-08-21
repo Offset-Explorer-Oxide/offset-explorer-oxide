@@ -33,6 +33,17 @@ export function dataTabCacheKey(
   return `${tabDataKey(activeTabId)}:${connectionId}:${topicName}:${partitionId ?? "all"}`;
 }
 
+/**
+ * Every `dataTabCacheKey` minted for a given top-level tab shares this
+ * prefix, regardless of which connection/topic/partition it's for — lets
+ * the bottom panel total up (or clear) everything a tab has cached across
+ * every topic it's ever fetched, not just whichever one happens to be
+ * selected right now.
+ */
+export function tabDataPrefix(activeTabId: string | null): string {
+  return `${tabDataKey(activeTabId)}:`;
+}
+
 interface TabDataState {
   /**
    * Per-tab cache of the Data tab's last-fetched message rows. Without
@@ -46,6 +57,8 @@ interface TabDataState {
   /** Appends one streamed message onto a tab's rows — backs the Data tab's live-streaming Fetch, which paints rows in as they arrive instead of waiting for the whole fetch to finish. */
   appendTabMessage: (tabId: string, message: TopicMessage) => void;
   clearTabMessages: (tabId: string) => void;
+  /** Clears every entry cached under a tab's prefix (every topic/partition it's ever fetched), not just one exact key — backs the bottom panel's "Clear memory", which now clears the full total it displays. */
+  clearAllMessagesForTab: (activeTabId: string | null) => void;
 }
 
 export const useTabDataStore = create<TabDataState>((set) => ({
@@ -60,5 +73,13 @@ export const useTabDataStore = create<TabDataState>((set) => ({
     set((state) => {
       const { [tabId]: _removed, ...rest } = state.messagesByTab;
       return { messagesByTab: rest };
+    }),
+  clearAllMessagesForTab: (activeTabId) =>
+    set((state) => {
+      const prefix = tabDataPrefix(activeTabId);
+      const messagesByTab = Object.fromEntries(
+        Object.entries(state.messagesByTab).filter(([key]) => !key.startsWith(prefix)),
+      );
+      return { messagesByTab };
     }),
 }));

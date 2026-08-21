@@ -30,6 +30,16 @@ describe("useMessageViewerStore", () => {
     expect(useMessageViewerStore.getState().connectionId).toBeNull();
     expect(useMessageViewerStore.getState().topic).toBeNull();
   });
+
+  it("leaves partitionId undefined when a message is viewed from a topic-wide Data tab", () => {
+    useMessageViewerStore.getState().viewMessage(sample, "conn-1", "orders");
+    expect(useMessageViewerStore.getState().partitionId).toBeUndefined();
+  });
+
+  it("records partitionId when a message is viewed from a partition's own Data tab", () => {
+    useMessageViewerStore.getState().viewMessage(sample, "conn-1", "orders", 2);
+    expect(useMessageViewerStore.getState().partitionId).toBe(2);
+  });
 });
 
 describe("useMessageViewerStore per-tab isolation", () => {
