@@ -6,6 +6,7 @@ import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "./features/tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
+import { dataTabCacheKey, useTabDataStore } from "./features/workspace/useTabDataStore";
 import { useTreeUiStore } from "./features/connections/useTreeUiStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -28,6 +29,8 @@ beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useJsonViewerTabsStore.setState({ tabs: [] });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
+  useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, activeTabId: null, byTab: {} });
+  useTabDataStore.setState({ messagesByTab: {} });
   useTreeUiStore.setState({ expanded: {}, searchText: {} });
   capturedFocusHandler = null;
 });
@@ -552,5 +555,84 @@ describe("App", () => {
     await user.click(screen.getByText("payments"));
 
     await waitFor(() => expect(screen.queryByTestId("resizable-pane-right")).not.toBeInTheDocument());
+  });
+
+  it("Clear memory only clears the active top-level tab's data, leaving other tabs' cached topics/selection/viewed message untouched", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let nextTabId = 1;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") {
+        const id = `tab-${nextTabId++}`;
+        const name = (args as { name?: string } | undefined)?.name ?? "New Tab";
+        return Promise.resolve({ id, name });
+      }
+      if (command === "connection_list") return Promise.resolve([{ id: "1", name: "Local Kafka" }]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      if (command === "connection_list_brokers") return Promise.resolve([]);
+      if (command === "connection_list_topics")
+        return Promise.resolve([{ name: "orders" }, { name: "payments" }]);
+      if (command === "connection_list_consumer_groups") return Promise.resolve([]);
+      if (command === "trim_process_memory") return Promise.resolve(undefined);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    const tab1Id = useTabsStore.getState().activeTabId as string;
+
+    // Seed tab 1's data while it's the real active tab.
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    await user.click(screen.getByTestId("category-Topics"));
+    await user.click(await screen.findByText("orders"));
+    useTabDataStore
+      .getState()
+      .setTabMessages(dataTabCacheKey(tab1Id, "1", "orders"), [
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      ]);
+    useMessageViewerStore
+      .getState()
+      .viewMessage(
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        "1",
+        "orders",
+      );
+
+    // Open a second tab and seed ITS data while IT is the real active tab.
+    // The tree starts fresh/collapsed for a new tab (per the earlier tab-
+    // independence fix), so it needs re-expanding here too.
+    await user.click(screen.getByLabelText("New tab"));
+    const tab2Id = useTabsStore.getState().activeTabId as string;
+    expect(tab2Id).not.toBe(tab1Id);
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    await user.click(screen.getByTestId("category-Topics"));
+    await user.click(await screen.findByText("payments"));
+    useTabDataStore
+      .getState()
+      .setTabMessages(dataTabCacheKey(tab2Id, "1", "payments"), [
+        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      ]);
+    useMessageViewerStore
+      .getState()
+      .viewMessage(
+        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eQ==", headers: [] },
+        "1",
+        "payments",
+      );
+
+    // Switch back to tab 1 and clear memory there.
+    await user.click(screen.getByRole("tab", { name: "Tab 1" }));
+    await user.click(screen.getByLabelText("Clear tab memory"));
+
+    expect(useTabDataStore.getState().messagesByTab[dataTabCacheKey(tab1Id, "1", "orders")]).toBeUndefined();
+
+    // Tab 2's cached data, selection, and viewed message must all survive.
+    expect(useTabDataStore.getState().messagesByTab[dataTabCacheKey(tab2Id, "1", "payments")]).toBeDefined();
+
+    await user.click(screen.getByRole("tab", { name: "New Tab" }));
+    expect(screen.getByRole("heading", { name: "payments" })).toBeInTheDocument();
+    expect(screen.getByTestId("resizable-pane-right")).toBeInTheDocument();
   });
 });

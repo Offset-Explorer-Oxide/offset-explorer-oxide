@@ -8,6 +8,7 @@ import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, EMPTY_TAB_MESSAGES, useTabDataStore } from "../workspace/useTabDataStore";
 import { APP_GRID_THEME } from "./agGridTheme";
 import { emptyFilterForm, FilterFormState, toMessageFilter } from "./dataFilters";
+import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { base64ToBytes, base64ToDisplayText, bytesToText, detectConfluentAvro } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
@@ -86,9 +87,6 @@ export interface DataTabProps {
  * updates with data the user already asked to stop waiting for.
  */
 export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) {
-  const [form, setForm] = useState<FilterFormState>(() =>
-    partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) },
-  );
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -97,6 +95,13 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const stoppedRef = useRef(false);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const tabKey = dataTabCacheKey(activeTabId, connectionId, topicName, partitionId);
+  // Keyed the same way as the cached messages below, so returning to a
+  // topic (or partition) you've already set filters on shows them exactly
+  // as you left them, instead of resetting every time this component's
+  // props change to a different topic and back.
+  const defaultForm = partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) };
+  const form = useDataTabFiltersStore((s) => s.formByTab[tabKey]) ?? defaultForm;
+  const setStoredForm = useDataTabFiltersStore((s) => s.setForm);
   const tabKeyRef = useRef(tabKey);
   tabKeyRef.current = tabKey;
   const messages = useTabDataStore((s) => s.messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES);
@@ -128,12 +133,14 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // DataTab is reused (not remounted) when switching between topics,
   // partitions, or connections within the same top-level tab — neither
   // App.tsx's <TopicDetailPanel>/<PartitionDetailPanel> nor this component
-  // are keyed by topic/partition, only by the top-level tab. Without this,
-  // a filter (or a leftover "Search messages" quick-filter) entered while
-  // looking at one topic would silently carry over and hide/skew results
-  // after switching to a completely different topic — e.g. leftover search
-  // text that doesn't match any of the new topic's rows makes a
-  // successful Fetch look like it returned nothing.
+  // are keyed by topic/partition, only by the top-level tab. The fetch
+  // filter form is keyed per-topic above so it doesn't need resetting here
+  // (and correctly persists if you come back to a topic you'd already set
+  // it on) — but the quick-filter search box and any leftover error from a
+  // previous fetch are deliberately NOT persisted per topic, so they still
+  // need an explicit reset: a leftover "Search messages" quick-filter
+  // carrying over to a completely different topic could silently hide/skew
+  // its results, making a successful Fetch look like it returned nothing.
   //
   // The right pane's viewed message needs a reset for the same underlying
   // reason, but is deliberately NOT handled here — this component isn't
@@ -144,15 +151,12 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // always changes on a topic/partition switch regardless of which sub-tab
   // (or component) happens to be mounted at the time.
   useEffect(() => {
-    setForm(
-      partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) },
-    );
     setSearchText("");
     setError(null);
   }, [connectionId, topicName, partitionId]);
 
   function updateForm(patch: Partial<FilterFormState>) {
-    setForm((prev) => ({ ...prev, ...patch }));
+    setStoredForm(tabKey, { ...form, ...patch });
   }
 
   async function handlePlay() {
