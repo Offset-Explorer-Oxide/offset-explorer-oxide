@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use kafkaoxide_core::{Connection, SaslMechanism, SecurityProtocol};
 use rdkafka::ClientConfig;
 
@@ -45,6 +47,10 @@ pub fn build_client_config(
 
     if let Some(location) = ssl.truststore_location {
         config.set("ssl.ca.location", location);
+    } else if matches!(security_protocol, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl) {
+        if let Some(pem) = native_ca_bundle_pem() {
+            config.set("ssl.ca.pem", pem);
+        }
     }
     if let Some(location) = ssl.keystore_location {
         config.set("ssl.keystore.location", location);
@@ -57,6 +63,34 @@ pub fn build_client_config(
     }
 
     config
+}
+
+/// Loads the OS's native trust store (Windows cert store / macOS Keychain /
+/// Linux's /etc/ssl/certs, via `rustls-native-certs`) and re-encodes it as a
+/// PEM bundle for librdkafka's `ssl.ca.pem`. Needed because the vendored
+/// OpenSSL that rdkafka links against (see `ssl-vendored` in Cargo.toml) has
+/// no default CA directory that exists on the runtime machine — without
+/// this, TLS certificate verification fails for every broker, even ones
+/// using a certificate signed by a public CA the OS already trusts.
+/// Returns `None` if no certs could be loaded at all (better to leave
+/// librdkafka with its own — broken — default than to set an empty bundle).
+fn native_ca_bundle_pem() -> Option<String> {
+    let result = rustls_native_certs::load_native_certs();
+    if result.certs.is_empty() {
+        return None;
+    }
+
+    let mut pem = String::new();
+    for cert in &result.certs {
+        pem.push_str("-----BEGIN CERTIFICATE-----\n");
+        let encoded = BASE64.encode(cert.as_ref());
+        for line in encoded.as_bytes().chunks(64) {
+            pem.push_str(std::str::from_utf8(line).expect("base64 output is ASCII"));
+            pem.push('\n');
+        }
+        pem.push_str("-----END CERTIFICATE-----\n");
+    }
+    Some(pem)
 }
 
 /// Builds a `ClientConfig` for a saved connection. `sasl_username` and
@@ -192,5 +226,75 @@ mod tests {
         assert_eq!(config.get("ssl.keystore.location"), None);
         assert_eq!(config.get("ssl.keystore.password"), None);
         assert_eq!(config.get("ssl.key.password"), None);
+    }
+
+    // Regression test for the root cause behind "Test"/"Connect" reporting
+    // unable-to-reach against a real managed-cloud cluster (Confluent Cloud,
+    // AWS MSK): vendored OpenSSL has no default CA trust store on the
+    // runtime machine, so without this, TLS certificate verification always
+    // fails for anyone who hasn't manually supplied a custom CA file — even
+    // though the broker's cert is signed by a public CA the OS already
+    // trusts. When no custom truststore is given, the native OS trust store
+    // must be loaded and passed via `ssl.ca.pem`.
+    #[test]
+    fn build_client_config_injects_the_native_ca_bundle_for_ssl_without_a_custom_truststore() {
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::Ssl,
+            None,
+            None,
+            None,
+            BrokerSslConfig::default(),
+        );
+
+        let ca_pem = config.get("ssl.ca.pem").expect("ssl.ca.pem should be set");
+        assert!(ca_pem.contains("BEGIN CERTIFICATE"), "expected PEM-encoded certificates, got: {ca_pem}");
+    }
+
+    #[test]
+    fn build_client_config_injects_the_native_ca_bundle_for_sasl_ssl_without_a_custom_truststore() {
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::SaslSsl,
+            Some(SaslMechanism::Plain),
+            Some("kafka-user"),
+            Some("hunter2"),
+            BrokerSslConfig::default(),
+        );
+
+        let ca_pem = config.get("ssl.ca.pem").expect("ssl.ca.pem should be set");
+        assert!(ca_pem.contains("BEGIN CERTIFICATE"), "expected PEM-encoded certificates, got: {ca_pem}");
+    }
+
+    #[test]
+    fn build_client_config_prefers_a_custom_truststore_over_the_native_ca_bundle() {
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::SaslSsl,
+            None,
+            None,
+            None,
+            BrokerSslConfig {
+                truststore_location: Some("/etc/broker-ts.pem"),
+                ..BrokerSslConfig::default()
+            },
+        );
+
+        assert_eq!(config.get("ssl.ca.location"), Some("/etc/broker-ts.pem"));
+        assert_eq!(config.get("ssl.ca.pem"), None);
+    }
+
+    #[test]
+    fn build_client_config_does_not_inject_a_ca_bundle_for_non_ssl_protocols() {
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::SaslPlaintext,
+            Some(SaslMechanism::Plain),
+            Some("kafka-user"),
+            Some("hunter2"),
+            BrokerSslConfig::default(),
+        );
+
+        assert_eq!(config.get("ssl.ca.pem"), None);
     }
 }
