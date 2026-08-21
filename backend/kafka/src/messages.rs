@@ -1,5 +1,27 @@
 use std::collections::BTreeMap;
 
+/// Per-partition message count used whenever the caller hasn't set an
+/// explicit "max messages per partition" — see
+/// `effective_max_messages_per_partition`'s doc comment for why this must
+/// apply regardless of which start-offset-resolution path (unfiltered,
+/// explicit offset, or timestamp) produced the fetch's start offsets.
+pub const DEFAULT_MESSAGE_CAP: u32 = 100;
+
+/// Resolves the per-partition cap to actually use: the caller's explicit
+/// value if given, `DEFAULT_MESSAGE_CAP` otherwise. `partition_limits`
+/// itself treats `max_per_partition: None` as "uncapped" (the right
+/// behavior for a generic, pure utility), but `fetch_messages` must never
+/// actually call it with `None` — a fetch scoped only by an explicit offset
+/// or timestamp filter, with no count set, would otherwise try to pull
+/// every message from that start point to the end of the partition. The
+/// unfiltered ("newest-first") fetch path sidesteps this by picking a start
+/// offset near the high watermark in the first place, but an offset/
+/// timestamp filter deliberately picks its own start point, so it still
+/// needs this same fallback cap applied downstream.
+pub fn effective_max_messages_per_partition(max_messages_per_partition: Option<u32>) -> u32 {
+    max_messages_per_partition.unwrap_or(DEFAULT_MESSAGE_CAP)
+}
+
 /// For each partition, how many messages to pull: `min(available, cap)`,
 /// where `available = end_offset - start_offset` (never negative — clamped
 /// to 0 for a partition with no messages in range). Pulled out as pure
@@ -147,5 +169,27 @@ mod tests {
     #[test]
     fn newest_first_start_offset_returns_high_when_cap_is_zero() {
         assert_eq!(newest_first_start_offset(0, 1000, 0), 1000);
+    }
+
+    #[test]
+    fn effective_max_messages_per_partition_falls_back_to_the_default_cap_when_none_is_given() {
+        // Regression test: an offset- or timestamp-filtered fetch with no
+        // explicit "max messages per partition" used to pass `None` straight
+        // through to `partition_limits`, which treats `None` as "uncapped" —
+        // meaning the fetch would try to pull every message from that start
+        // point to the end of the partition, however many that is. The
+        // unfiltered ("newest-first") fetch path already avoided this by
+        // picking a start offset near the high watermark, so it never
+        // noticeably hit the uncapped case — an offset filter deliberately
+        // picks its own start point instead, so it still needs this same
+        // fallback applied downstream, or the identical unbounded-fetch
+        // problem resurfaces for it (reported as "the offset filter doesn't
+        // seem to work" — in practice, it never finished/returned).
+        assert_eq!(effective_max_messages_per_partition(None), DEFAULT_MESSAGE_CAP);
+    }
+
+    #[test]
+    fn effective_max_messages_per_partition_passes_through_an_explicit_cap() {
+        assert_eq!(effective_max_messages_per_partition(Some(50)), 50);
     }
 }
