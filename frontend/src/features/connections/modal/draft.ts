@@ -159,3 +159,30 @@ export function connectionToDraft(connection: Connection): ConnectionDraft {
 export function draftsEqual(a: ConnectionDraft, b: ConnectionDraft): boolean {
   return (Object.keys(a) as (keyof ConnectionDraft)[]).every((key) => a[key] === b[key]);
 }
+
+/** Draft field -> the backend secret key it maps to (see `SECRET_KEYS` in `src-tauri/src/commands/connections.rs`). */
+const SECRET_FIELD_TO_KEY: Record<string, string> = {
+  saslPassword: "sasl_password",
+  schemaRegistryBasicAuthCredentials: "schema_registry_basic_auth_credentials",
+  schemaRegistryTrustStorePassword: "schema_registry_trust_store_password",
+  schemaRegistryKeystorePassword: "schema_registry_keystore_password",
+  schemaRegistryKeystoreKeyPassword: "schema_registry_keystore_key_password",
+  sslTruststorePassword: "ssl_truststore_password",
+  sslKeystorePassword: "ssl_keystore_password",
+  sslKeystoreKeyPassword: "ssl_keystore_key_password",
+};
+
+/**
+ * Which secrets the user actually typed into during this edit, by comparing
+ * against the last-loaded snapshot. Every secret field starts blank on load
+ * (`connectionToDraft`) regardless of whether a secret is already saved —
+ * without this, an untouched blank field would look identical to "clear
+ * this secret" and `connection_update` would wipe it. A field that differs
+ * from the loaded snapshot (including being cleared back to blank after
+ * having something typed) counts as touched.
+ */
+export function touchedSecretKeys(draft: ConnectionDraft, original: ConnectionDraft): string[] {
+  return Object.entries(SECRET_FIELD_TO_KEY)
+    .filter(([field]) => draft[field as keyof ConnectionDraft] !== original[field as keyof ConnectionDraft])
+    .map(([, key]) => key);
+}

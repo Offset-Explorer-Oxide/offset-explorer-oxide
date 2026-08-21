@@ -68,3 +68,23 @@ describe("useMessageViewerStore per-tab isolation", () => {
     expect(useMessageViewerStore.getState().message).toEqual(sample);
   });
 });
+
+describe("useMessageViewerStore clearForConnection", () => {
+  it("clears every tab's viewed message for the deleted connection, leaving others untouched", () => {
+    const store = useMessageViewerStore.getState();
+    store.setActiveTab("tab-1");
+    store.viewMessage(sample, "conn-1", "orders");
+    store.setActiveTab("tab-2");
+    store.viewMessage(sample, "conn-2", "payments");
+
+    store.clearForConnection("conn-1");
+
+    store.setActiveTab("tab-1");
+    expect(useMessageViewerStore.getState().message).toBeNull();
+    expect(useMessageViewerStore.getState().connectionId).toBeNull();
+
+    store.setActiveTab("tab-2");
+    expect(useMessageViewerStore.getState().message).toEqual(sample);
+    expect(useMessageViewerStore.getState().connectionId).toBe("conn-2");
+  });
+});

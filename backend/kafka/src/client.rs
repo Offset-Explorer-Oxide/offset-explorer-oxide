@@ -8,12 +8,13 @@ use kafkaoxide_core::{
     SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
 };
 use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
-use rdkafka::client::DefaultClientContext;
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::client::{ClientContext, DefaultClientContext};
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::message::{BorrowedMessage, Headers};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -157,16 +158,46 @@ fn extract_headers(message: &BorrowedMessage) -> Vec<MessageHeader> {
         .collect()
 }
 
+/// Captures librdkafka's own detailed failure reason (e.g. "SSL connection
+/// closed by peer", "SASL authentication failed") via the `error` callback.
+/// `fetch_metadata`'s return value alone can't distinguish these cases — a
+/// closed port, a TLS failure, and a bad SASL password all surface as the
+/// same generic `BrokerTransportFailure` code — so without this, every
+/// failure reason gets collapsed into an identical, unhelpful message.
+#[derive(Clone, Default)]
+struct ProbeContext {
+    last_error: Arc<Mutex<Option<String>>>,
+}
+
+impl ClientContext for ProbeContext {
+    fn error(&self, _error: rdkafka::error::KafkaError, reason: &str) {
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = Some(reason.to_string());
+        }
+    }
+}
+
+impl ConsumerContext for ProbeContext {}
+
 async fn run_probe(config: ClientConfig) -> Result<ConnectionStatus, AppError> {
     tokio::task::spawn_blocking(move || {
-        let consumer: BaseConsumer = config
-            .create()
+        let context = ProbeContext::default();
+        let consumer: BaseConsumer<ProbeContext> = config
+            .create_with_context(context.clone())
             .change_context(AppError::Kafka)
             .attach_printable("failed to create kafka consumer")?;
 
         match consumer.fetch_metadata(None, Duration::from_secs(3)) {
             Ok(_) => Ok(ConnectionStatus::Reachable),
-            Err(_) => Ok(ConnectionStatus::Unreachable),
+            Err(fetch_err) => {
+                let reason = context
+                    .last_error
+                    .lock()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+                    .unwrap_or_else(|| fetch_err.to_string());
+                Err(error_stack::Report::new(AppError::Kafka).attach_printable(reason))
+            }
         }
     })
     .await
@@ -748,10 +779,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reports_unreachable_for_a_closed_port() {
+    async fn reports_a_real_error_for_a_closed_port() {
         let client = RdKafkaClient;
-        let status = client.check_status(&sample_connection(), None).await.unwrap();
-        assert_eq!(status, ConnectionStatus::Unreachable);
+        let result = client.check_status(&sample_connection(), None).await;
+        assert!(result.is_err(), "expected a real error, got {result:?}");
     }
 
     #[tokio::test]
@@ -817,9 +848,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connection_reports_unreachable_for_a_closed_port() {
+    async fn test_connection_reports_a_real_error_for_a_closed_port() {
         let client = RdKafkaClient;
-        let status = client
+        let result = client
             .test_connection(
                 "127.0.0.1:1",
                 SecurityProtocol::Plaintext,
@@ -828,9 +859,8 @@ mod tests {
                 None,
                 BrokerSslConfig::default(),
             )
-            .await
-            .unwrap();
-        assert_eq!(status, ConnectionStatus::Unreachable);
+            .await;
+        assert!(result.is_err(), "expected a real error, got {result:?}");
     }
 
     #[tokio::test]
@@ -916,9 +946,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connection_probes_instead_of_erroring_once_a_username_is_given() {
+    async fn test_connection_reaches_the_probe_stage_once_a_username_is_given() {
+        // Distinguishes this from `..._missing_a_username` above: both now
+        // return `Err`, but this one must fail *during the connection
+        // attempt* (client creation succeeds), not during config
+        // validation — the error message should reflect a probe failure,
+        // not "failed to create kafka consumer".
         let client = RdKafkaClient;
-        let status = client
+        let result = client
             .test_connection(
                 "127.0.0.1:1",
                 SecurityProtocol::SaslPlaintext,
@@ -927,8 +962,12 @@ mod tests {
                 Some("hunter2"),
                 BrokerSslConfig::default(),
             )
-            .await
-            .unwrap();
-        assert_eq!(status, ConnectionStatus::Unreachable);
+            .await;
+        let err = result.expect_err("expected a real error, but the probe unexpectedly succeeded");
+        let message = format!("{err:?}");
+        assert!(
+            !message.contains("failed to create kafka consumer"),
+            "expected a probe-stage failure, but client creation itself failed: {message}"
+        );
     }
 }

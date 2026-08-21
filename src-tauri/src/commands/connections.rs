@@ -65,8 +65,28 @@ fn secret_values(new_connection: &NewConnection) -> [Option<&str>; 8] {
     ]
 }
 
-fn store_secrets(state: &AppState, connection_id: &str, new_connection: &NewConnection) -> Result<(), CommandError> {
+/// `touched_secrets`: `None` means every secret field is authoritative (used
+/// by `connection_create`, where there's no prior state to preserve).
+/// `Some(keys)` means only those keys should be written/cleared — anything
+/// else is left alone in the keychain. This matters for `connection_update`
+/// specifically: the modal always shows secret fields blank when reopening
+/// a saved connection (secrets are never sent to the frontend), so a blank
+/// field there means "the user didn't touch this," not "clear it" — without
+/// this distinction, editing any other field (e.g. the trust store path)
+/// and clicking Update would silently wipe every untouched secret,
+/// including the SASL password.
+fn store_secrets(
+    state: &AppState,
+    connection_id: &str,
+    new_connection: &NewConnection,
+    touched_secrets: Option<&HashSet<String>>,
+) -> Result<(), CommandError> {
     for (key, value) in SECRET_KEYS.iter().zip(secret_values(new_connection)) {
+        if let Some(touched) = touched_secrets {
+            if !touched.contains(*key) {
+                continue;
+            }
+        }
         match value {
             Some(value) => state.secrets.set_secret(connection_id, key, value)?,
             None => state.secrets.delete_secret(connection_id, key)?,
@@ -93,7 +113,7 @@ pub async fn connection_create(
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
     let connection = kafkaoxide_db::connections::create(&state.pool, &new_connection).await?;
-    store_secrets(&state, &connection.id, &new_connection)?;
+    store_secrets(&state, &connection.id, &new_connection, None)?;
     crate::logging::emit_log(&app, "info", format!("Created connection \"{}\"", connection.name));
     Ok(connection)
 }
@@ -104,9 +124,11 @@ pub async fn connection_update(
     state: State<'_, AppState>,
     id: String,
     new_connection: NewConnection,
+    touched_secrets: Vec<String>,
 ) -> Result<Connection, CommandError> {
     let connection = kafkaoxide_db::connections::update(&state.pool, &id, &new_connection).await?;
-    store_secrets(&state, &connection.id, &new_connection)?;
+    let touched: HashSet<String> = touched_secrets.into_iter().collect();
+    store_secrets(&state, &connection.id, &new_connection, Some(&touched))?;
     crate::logging::emit_log(&app, "info", format!("Updated connection \"{}\"", connection.name));
     Ok(connection)
 }

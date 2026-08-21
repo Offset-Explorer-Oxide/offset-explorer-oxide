@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Connection } from "../../../lib/tauri";
-import { connectionToDraft, draftsEqual, emptyDraft, toNewConnection, validateDraft } from "./draft";
+import { connectionToDraft, draftsEqual, emptyDraft, toNewConnection, touchedSecretKeys, validateDraft } from "./draft";
 
 describe("emptyDraft", () => {
   it("defaults to plaintext with zookeeper disabled and no sasl mechanism", () => {
@@ -285,5 +285,47 @@ describe("draftsEqual", () => {
     const draft = { ...original, name: "Changed" };
     const reverted = { ...draft, name: original.name };
     expect(draftsEqual(original, reverted)).toBe(true);
+  });
+});
+
+describe("touchedSecretKeys", () => {
+  it("returns nothing when no secret field was touched", () => {
+    const original = emptyDraft();
+    const draft = { ...original, name: "Changed", bootstrapServers: "broker:9092" };
+    expect(touchedSecretKeys(draft, original)).toEqual([]);
+  });
+
+  it("reports a secret field the user typed into", () => {
+    const original = emptyDraft();
+    const draft = { ...original, saslPassword: "hunter2" };
+    expect(touchedSecretKeys(draft, original)).toEqual(["sasl_password"]);
+  });
+
+  it("reports every secret field that was touched", () => {
+    const original = emptyDraft();
+    const draft = {
+      ...original,
+      saslPassword: "hunter2",
+      sslTruststorePassword: "ts-secret",
+    };
+    expect(touchedSecretKeys(draft, original).sort()).toEqual(["sasl_password", "ssl_truststore_password"].sort());
+  });
+
+  it("still counts a field as touched when explicitly cleared back to blank", () => {
+    // original snapshot already has something in it (e.g. re-editing after
+    // a previous Update in the same session) — clearing it is a real change
+    // the user wants applied, not "leave alone."
+    const original = { ...emptyDraft(), saslPassword: "old-value" };
+    const draft = { ...original, saslPassword: "" };
+    expect(touchedSecretKeys(draft, original)).toEqual(["sasl_password"]);
+  });
+
+  it("does not report an untouched blank secret field as touched", () => {
+    // The realistic case: reopening a saved connection always shows blank
+    // secret fields (connectionToDraft), matching the blank original — this
+    // must NOT be treated as "clear this secret."
+    const original = emptyDraft();
+    const draft = { ...original };
+    expect(touchedSecretKeys(draft, original)).toEqual([]);
   });
 });

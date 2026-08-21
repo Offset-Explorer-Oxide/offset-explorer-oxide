@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ConnectionStatus, ImportSummary, NewConnection } from "../../lib/tauri";
+import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 
 export function useConnectionsQuery() {
   return useQuery({ queryKey: ["connections"], queryFn: api.listConnections });
@@ -16,8 +18,8 @@ export function useCreateConnection() {
 export function useUpdateConnection() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, connection }: { id: string; connection: NewConnection }) =>
-      api.updateConnection(id, connection),
+    mutationFn: ({ id, connection, touchedSecrets }: { id: string; connection: NewConnection; touchedSecrets: string[] }) =>
+      api.updateConnection(id, connection, touchedSecrets),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
   });
 }
@@ -26,7 +28,15 @@ export function useDeleteConnection() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.deleteConnection(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connections"] }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ["connections"] });
+      // A deleted connection's id can still be sitting in the middle pane's
+      // selection or the right pane's viewed message (in this tab or any
+      // other) — without this, those panes would keep referencing a
+      // connection that no longer exists.
+      useWorkspaceSelectionStore.getState().clearForConnection(id);
+      useMessageViewerStore.getState().clearForConnection(id);
+    },
   });
 }
 

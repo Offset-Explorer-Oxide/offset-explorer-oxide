@@ -29,6 +29,13 @@ interface WorkspaceSelectionState {
   clearSelection: () => void;
   /** Resets a tab's cached selection back to blank — the Bottom panel's "Clear memory" button. Defaults to the active tab. */
   clearTabMemory: (tabId?: string) => void;
+  /** Clears this connection's selection from every tab, not just the active one — called after a connection is deleted, so a stale middle-pane selection can't reference an id that no longer exists. */
+  clearForConnection: (connectionId: string) => void;
+}
+
+function belongsToConnection(selection: WorkspaceSelection, connectionId: string): boolean {
+  if (!selection) return false;
+  return selection.type === "connection" ? selection.id === connectionId : selection.connectionId === connectionId;
 }
 
 export const useWorkspaceSelectionStore = create<WorkspaceSelectionState>((set, get) => {
@@ -60,6 +67,20 @@ export const useWorkspaceSelectionStore = create<WorkspaceSelectionState>((set, 
         byTab: { ...state.byTab, [target]: null },
         selection: state.activeTabId === target ? null : state.selection,
       }));
+    },
+    clearForConnection: (connectionId) => {
+      set((state) => {
+        const byTab = { ...state.byTab };
+        for (const tabId of Object.keys(byTab)) {
+          if (belongsToConnection(byTab[tabId], connectionId)) {
+            byTab[tabId] = null;
+          }
+        }
+        return {
+          byTab,
+          selection: belongsToConnection(state.selection, connectionId) ? null : state.selection,
+        };
+      });
     },
   };
 });

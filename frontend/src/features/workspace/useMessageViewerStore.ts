@@ -22,6 +22,8 @@ interface MessageViewerState {
   clear: () => void;
   /** Resets a tab's cached message back to blank — the Bottom panel's "Clear memory" button. Defaults to the active tab. */
   clearTabMemory: (tabId?: string) => void;
+  /** Clears this connection's viewed message from every tab — called after a connection is deleted, so the right pane can't keep showing a message from a connection that no longer exists. */
+  clearForConnection: (connectionId: string) => void;
 }
 
 /** Drives the right pane's payload viewer — set when a row is clicked in the topic Data tab's grid. */
@@ -62,6 +64,23 @@ export const useMessageViewerStore = create<MessageViewerState>((set, get) => {
         connectionId: state.activeTabId === target ? null : state.connectionId,
         topic: state.activeTabId === target ? null : state.topic,
       }));
+    },
+    clearForConnection: (connectionId) => {
+      set((state) => {
+        const byTab = { ...state.byTab };
+        for (const tabId of Object.keys(byTab)) {
+          if (byTab[tabId]?.connectionId === connectionId) {
+            byTab[tabId] = null;
+          }
+        }
+        const activeBelongs = state.connectionId === connectionId;
+        return {
+          byTab,
+          message: activeBelongs ? null : state.message,
+          connectionId: activeBelongs ? null : state.connectionId,
+          topic: activeBelongs ? null : state.topic,
+        };
+      });
     },
   };
 });
