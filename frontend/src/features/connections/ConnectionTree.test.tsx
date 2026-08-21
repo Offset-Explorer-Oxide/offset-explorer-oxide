@@ -6,6 +6,7 @@ import { setInvokeHandlers } from "../../lib/testInvoke";
 import { ConnectionTree } from "./ConnectionTree";
 import { connectMutationKey } from "./useConnections";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useTreeUiStore } from "./useTreeUiStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const save = vi.fn();
@@ -33,6 +34,7 @@ function sampleConnection(overrides: Partial<Record<string, unknown>> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceSelectionStore.setState({ selection: null });
+  useTreeUiStore.setState({ expanded: {}, searchText: {} });
 });
 
 describe("ConnectionTree", () => {

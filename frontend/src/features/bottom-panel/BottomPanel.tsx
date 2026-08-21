@@ -1,6 +1,7 @@
 import { LogsPanel } from "./LogsPanel";
 import { useLogsListener } from "./useLogsListener";
 import { useLogsStore } from "./useLogsStore";
+import { api } from "../../lib/tauri";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
@@ -39,6 +40,13 @@ export function BottomPanel() {
     clearSelectionMemory();
     clearMessageMemory();
     clearAllTabData(activeTabId);
+    // Dropping the cached rows/selection above frees that memory correctly,
+    // but neither the JS heap nor Rust's own allocator hands freed pages
+    // back to the OS on their own — this asks Windows to trim the process's
+    // visible working set right now instead of waiting for it to happen
+    // (if it ever does). No-op on macOS/Linux — see trimProcessMemory's doc
+    // comment. Fire-and-forget: nothing in the UI depends on its result.
+    void api.trimProcessMemory();
   }
 
   return (

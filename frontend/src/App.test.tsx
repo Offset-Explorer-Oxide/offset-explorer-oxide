@@ -6,6 +6,7 @@ import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "./features/tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
+import { useTreeUiStore } from "./features/connections/useTreeUiStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
@@ -27,6 +28,7 @@ beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useJsonViewerTabsStore.setState({ tabs: [] });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {} });
   capturedFocusHandler = null;
 });
 
@@ -343,6 +345,40 @@ describe("App", () => {
     await user.click(screen.getByLabelText("New tab"));
 
     await waitFor(() => expect(screen.getByLabelText("Expand Local Kafka")).toBeInTheDocument());
+  });
+
+  it("preserves an already-visited tab's tree expand state when switching back to it, unlike a brand new tab", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let nextTabId = 1;
+    vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "tab_create") {
+        const id = `tab-${nextTabId++}`;
+        const name = (args as { name?: string } | undefined)?.name ?? "New Tab";
+        return Promise.resolve({ id, name });
+      }
+      if (command === "connection_list") return Promise.resolve([{ id: "1", name: "Local Kafka" }]);
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      if (command === "connection_list_brokers") return Promise.resolve([]);
+      if (command === "connection_list_topics") return Promise.resolve([]);
+      if (command === "connection_list_consumer_groups") return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("Local Kafka");
+    const firstTabId = useTabsStore.getState().activeTabId as string;
+    await user.click(await screen.findByLabelText("Expand Local Kafka"));
+    expect(screen.getByLabelText("Collapse Local Kafka")).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("New tab"));
+    expect(screen.getByLabelText("Expand Local Kafka")).toBeInTheDocument();
+
+    useTabsStore.getState().selectTab(firstTabId);
+
+    await waitFor(() => expect(screen.getByLabelText("Collapse Local Kafka")).toBeInTheDocument());
   });
 
   it("restores a tab's previously-selected item when switching back to it", async () => {

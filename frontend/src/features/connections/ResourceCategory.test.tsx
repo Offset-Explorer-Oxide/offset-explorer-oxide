@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ResourceCategory } from "./ResourceCategory";
+import { useTreeUiStore } from "./useTreeUiStore";
+
+beforeEach(() => {
+  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+});
 
 interface Item {
   id: string;
@@ -27,6 +32,7 @@ function renderCategory(overrides: Partial<Parameters<typeof ResourceCategory<It
       isSelected={() => false}
       onSelect={onSelect}
       onExpand={onExpand}
+      treeKey="test-tab:conn-1:Topics"
       {...overrides}
     />,
   );
