@@ -1,4 +1,28 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+
+/**
+ * Tauri's `invoke` rejects with whatever the Rust command's `Err` payload
+ * deserializes to — for this app's `CommandError { message: String }`,
+ * that's a plain object `{ message: "..." }`, not a JS `Error` instance.
+ * Every catch block across this app that checks `err instanceof Error` (to
+ * show the real backend error message instead of a generic fallback) was
+ * silently failing that check and falling back to the generic text, no
+ * matter how informative the actual Rust-side error was. Normalizing once
+ * here means every `invoke<T>(...)` call below keeps its existing call
+ * signature, and every caller's `instanceof Error` check now actually works.
+ */
+async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await tauriInvoke<T>(cmd, args);
+  } catch (err) {
+    if (err instanceof Error) throw err;
+    const message =
+      typeof err === "object" && err !== null && "message" in err && typeof (err as { message: unknown }).message === "string"
+        ? (err as { message: string }).message
+        : String(err);
+    throw new Error(message);
+  }
+}
 
 export type SecurityProtocol = "PLAINTEXT" | "SSL" | "SASL_PLAINTEXT" | "SASL_SSL";
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
