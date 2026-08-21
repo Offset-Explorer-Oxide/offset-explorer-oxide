@@ -9,8 +9,8 @@ export type ConnectionTabId = "properties" | "security" | "advanced" | "authenti
 export const CONNECTION_TABS: { id: ConnectionTabId; label: string }[] = [
   { id: "properties", label: "Properties" },
   { id: "security", label: "Security" },
-  { id: "advanced", label: "Advanced" },
   { id: "authentication", label: "Authentication" },
+  { id: "advanced", label: "Advanced" },
 ];
 
 export interface ConnectionTabsViewProps {
