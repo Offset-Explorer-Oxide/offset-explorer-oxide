@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, ConsumerGroupLag, MessageFilter, SchemaFormat, TopicMessage } from "../../lib/tauri";
+import { api, ConsumerGroupLag, MessageFetchResult, MessageFilter, SchemaFormat } from "../../lib/tauri";
 
 /** Backs the tree's "Brokers" sub-list — fetched lazily, only once the category is expanded. */
 export function useBrokers(connectionId: string, enabled: boolean) {
@@ -38,7 +38,7 @@ export function useCountTopicMessages() {
 /** Backs the topic Data tab's Fetch button. `requestId` tags the backend's streamed `"messages-batch"` events so a listener can tell this fetch's rows apart from a superseded one. */
 export function useFetchMessages() {
   return useMutation<
-    TopicMessage[],
+    MessageFetchResult,
     Error,
     { connectionId: string; topic: string; filter: MessageFilter; requestId: string }
   >({

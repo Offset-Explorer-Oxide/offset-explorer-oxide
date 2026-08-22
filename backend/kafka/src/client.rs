@@ -4,7 +4,7 @@ use base64::Engine;
 use error_stack::{Result, ResultExt};
 use kafkaoxide_core::{
     AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
-    ConsumerGroupSummary, MessageFilter, MessageHeader, PartitionLag, PartitionSummary,
+    ConsumerGroupSummary, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag, PartitionSummary,
     SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
 };
 use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
@@ -23,7 +23,8 @@ use tokio::time::timeout;
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
 use crate::messages::{
-    apply_total_cap, clamp_offset, effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
+    apply_total_cap, clamp_offset, combined_start_offset, effective_max_messages_per_partition,
+    newest_first_start_offset, partition_limits,
 };
 
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
@@ -118,7 +119,7 @@ pub trait KafkaClient: Send + Sync {
     ///
     /// When `on_message` is given, each message is also sent on it as soon
     /// as it's polled, in addition to being collected into the returned
-    /// `Vec` — this lets a caller (the Tauri command layer) stream results
+    /// result — this lets a caller (the Tauri command layer) stream results
     /// to the UI incrementally instead of waiting for the whole fetch to
     /// finish. The channel is purely a progress feed: its receiver going
     /// away (e.g. the caller stopped listening) does not affect the fetch,
@@ -127,6 +128,12 @@ pub trait KafkaClient: Send + Sync {
     /// `max_message_size_bytes` is the user's configured General settings >
     /// Messages > Max Message Size value, applied as librdkafka's
     /// `max.partition.fetch.bytes`.
+    ///
+    /// The returned `MessageFetchResult::total_matching` is how many
+    /// messages satisfy `filter`'s partition/offset/timestamp constraints in
+    /// total, uncapped by `max_messages_per_partition`/`max_total_messages`
+    /// — lets the frontend tell the user whether more remain beyond what was
+    /// actually pulled.
     async fn fetch_messages(
         &self,
         connection: &Connection,
@@ -135,7 +142,7 @@ pub trait KafkaClient: Send + Sync {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
-    ) -> Result<Vec<TopicMessage>, AppError>;
+    ) -> Result<MessageFetchResult, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
     /// ISR, and low/high offsets for every partition.
@@ -413,7 +420,7 @@ impl KafkaClient for RdKafkaClient {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
-    ) -> Result<Vec<TopicMessage>, AppError> {
+    ) -> Result<MessageFetchResult, AppError> {
         let mut config = client_config(connection);
         config.set("group.id", "kafkaoxide-message-browser");
         config.set("enable.auto.commit", "false");
@@ -458,22 +465,49 @@ impl KafkaClient for RdKafkaClient {
                     .attach_printable_lazy(|| format!("failed to fetch watermarks for {topic}:{partition}"))
             };
 
-            let start_offsets: BTreeMap<i32, i64> = if let Some(offset) = filter.offset {
-                target_partitions
-                    .iter()
-                    .map(|&p| watermarks(p).map(|(low, high)| (p, clamp_offset(offset, low, high))))
-                    .collect::<Result<_, _>>()?
-            } else if let Some(from_ms) = filter.from_timestamp_ms {
-                resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, from_ms, read_timeout, |p| {
-                    watermarks(p).map(|(low, _)| low)
-                })?
-            } else {
-                let cap = i64::from(effective_max_messages_per_partition(filter.max_messages_per_partition));
-                target_partitions
-                    .iter()
-                    .map(|&p| watermarks(p).map(|(low, high)| (p, newest_first_start_offset(low, high, cap))))
-                    .collect::<Result<_, _>>()?
-            };
+            // An explicit `offset` and a `from_timestamp_ms` are independent
+            // constraints, not alternatives — both apply together (AND) when
+            // both are given, via `combined_start_offset`, rather than one
+            // silently overriding the other. See its doc comment for why the
+            // later (higher) of the two is the correct combination.
+            let explicit_start_offsets: Option<BTreeMap<i32, i64>> = filter
+                .offset
+                .map(|offset| {
+                    target_partitions
+                        .iter()
+                        .map(|&p| watermarks(p).map(|(low, high)| (p, clamp_offset(offset, low, high))))
+                        .collect::<Result<BTreeMap<i32, i64>, AppError>>()
+                })
+                .transpose()?;
+
+            let from_timestamp_start_offsets: Option<BTreeMap<i32, i64>> = filter
+                .from_timestamp_ms
+                .map(|from_ms| {
+                    resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, from_ms, read_timeout, |p| {
+                        watermarks(p).map(|(low, _)| low)
+                    })
+                })
+                .transpose()?;
+
+            let start_offsets: BTreeMap<i32, i64> =
+                if explicit_start_offsets.is_some() || from_timestamp_start_offsets.is_some() {
+                    target_partitions
+                        .iter()
+                        .map(|&p| {
+                            let explicit = explicit_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
+                            let from_ts = from_timestamp_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
+                            let start = combined_start_offset(explicit, from_ts)
+                                .expect("at least one start-offset source is set for every target partition");
+                            (p, start)
+                        })
+                        .collect()
+                } else {
+                    let cap = i64::from(effective_max_messages_per_partition(filter.max_messages_per_partition));
+                    target_partitions
+                        .iter()
+                        .map(|&p| watermarks(p).map(|(low, high)| (p, newest_first_start_offset(low, high, cap))))
+                        .collect::<Result<_, _>>()?
+                };
 
             let end_offsets: BTreeMap<i32, i64> = if let Some(to_ms) = filter.to_timestamp_ms {
                 resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, to_ms, read_timeout, |p| {
@@ -496,6 +530,17 @@ impl KafkaClient for RdKafkaClient {
             // fallback applied for every other branch too, or an explicit
             // offset/timestamp filter would try to pull every message from
             // its start point to the end of the partition).
+            // How many messages actually satisfy the partition/offset/
+            // timestamp constraints, uncapped by the count limits below —
+            // the fetch may pull fewer than this if `max_messages_per_
+            // partition`/`max_total_messages` are set, and the frontend
+            // uses the gap to tell the user more remain beyond what was
+            // loaded.
+            let total_matching: u64 = partition_limits(&start_offsets, &end_offsets, None)
+                .values()
+                .map(|&available| available.max(0) as u64)
+                .sum();
+
             let limits = partition_limits(
                 &start_offsets,
                 &end_offsets,
@@ -556,7 +601,7 @@ impl KafkaClient for RdKafkaClient {
                 }
             }
 
-            Ok(collected)
+            Ok(MessageFetchResult { messages: collected, total_matching })
         })
         .await
         .change_context(AppError::Kafka)

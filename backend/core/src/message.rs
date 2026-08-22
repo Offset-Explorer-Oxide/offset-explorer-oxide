@@ -12,9 +12,11 @@ pub struct MessageFilter {
     pub max_total_messages: Option<u32>,
     pub from_timestamp_ms: Option<i64>,
     pub to_timestamp_ms: Option<i64>,
-    /// An explicit starting offset, taking priority over `from_timestamp_ms`
-    /// when both are set. Clamped to each partition's watermark range
-    /// rather than erroring on a stale/out-of-range value.
+    /// An explicit starting offset. When `from_timestamp_ms` is also set,
+    /// both apply together (the later/higher of the two resolved start
+    /// offsets wins) rather than one overriding the other. Clamped to each
+    /// partition's watermark range rather than erroring on a stale/
+    /// out-of-range value.
     pub offset: Option<i64>,
     /// The Data tab's "Load message payload" checkbox — when false
     /// (the default), `TopicMessage::payload_base64` comes back `None` for
@@ -56,6 +58,19 @@ pub struct TopicMessage {
     pub key_base64: Option<String>,
     pub payload_base64: Option<String>,
     pub headers: Vec<MessageHeader>,
+}
+
+/// The result of a Data tab fetch: the rows actually pulled (bounded by the
+/// filter's max-messages caps), plus how many messages match the same
+/// partition/offset/timestamp filter in total, uncapped by those count
+/// limits — lets the frontend show "42 loaded of 150 matching" instead of a
+/// bare count, so the user can tell whether more remain beyond what was
+/// fetched rather than assuming a short result means there's nothing else.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageFetchResult {
+    pub messages: Vec<TopicMessage>,
+    pub total_matching: u64,
 }
 
 #[cfg(test)]
@@ -111,6 +126,24 @@ mod tests {
         };
         let json = serde_json::to_string(&header).unwrap();
         assert_eq!(json, r#"{"key":"content-type","valueBase64":"YXBwbGljYXRpb24vanNvbg=="}"#);
+    }
+
+    #[test]
+    fn message_fetch_result_serializes_fields_as_camel_case() {
+        let result = MessageFetchResult {
+            messages: vec![TopicMessage {
+                partition: 0,
+                offset: 1,
+                timestamp_ms: None,
+                key_base64: None,
+                payload_base64: None,
+                headers: vec![],
+            }],
+            total_matching: 150,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains(r#""totalMatching":150"#));
+        assert!(json.contains(r#""messages":[{"#));
     }
 
     #[test]

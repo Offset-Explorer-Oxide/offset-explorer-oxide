@@ -9,7 +9,7 @@ pub use cluster::{
     BrokerSummary, ConfigEntry, ConsumerGroupLag, ConsumerGroupSummary, PartitionLag,
     PartitionSummary, TopicSummary,
 };
-pub use message::{MessageFilter, MessageHeader, TopicMessage};
+pub use message::{MessageFetchResult, MessageFilter, MessageHeader, TopicMessage};
 pub use connection::{
     Connection, ConnectionStatus, NewConnection, SaslMechanism, SecurityProtocol,
 };

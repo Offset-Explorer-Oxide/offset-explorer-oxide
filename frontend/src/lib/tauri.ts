@@ -199,6 +199,12 @@ export interface MessagesBatchEvent {
   message: TopicMessage;
 }
 
+/** `totalMatching` is how many messages satisfy the fetch's partition/offset/timestamp filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller than this when those caps trimmed the result, telling the Data tab more remain beyond what was actually loaded. */
+export interface MessageFetchResult {
+  messages: TopicMessage[];
+  totalMatching: number;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -252,7 +258,7 @@ export const api = {
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
     }),
   fetchMessages: (id: string, topic: string, filter: MessageFilter, requestId: string) =>
-    invoke<TopicMessage[]>("connection_fetch_messages", {
+    invoke<MessageFetchResult>("connection_fetch_messages", {
       id,
       topic,
       filter,

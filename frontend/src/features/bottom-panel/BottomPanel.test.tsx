@@ -25,7 +25,7 @@ beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
   useMessageViewerStore.setState({ message: null, activeTabId: null, byTab: {} });
-  useTabDataStore.setState({ messagesByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
   capturedHandler = null;
 });
 

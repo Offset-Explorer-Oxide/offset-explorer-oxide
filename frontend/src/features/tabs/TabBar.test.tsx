@@ -84,7 +84,7 @@ describe("TabBar", () => {
   });
 
   it("closes a tab via its close button without selecting it first", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [
         { id: "1", name: "Alpha", position: 0 },
@@ -482,7 +482,7 @@ describe("TabBar", () => {
     });
 
     it("deletes the tab and closes the app window when confirmed", async () => {
-      setInvokeHandlers({ tab_delete: () => undefined });
+      setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
       useTabsStore.setState({
         tabs: [{ id: "1", name: "Alpha", position: 0 }],
         activeTabId: "1",
@@ -514,7 +514,7 @@ describe("TabBar", () => {
     });
 
     it("does not ask for confirmation when other tabs remain", async () => {
-      setInvokeHandlers({ tab_delete: () => undefined });
+      setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
       useTabsStore.setState({
         tabs: [
           { id: "1", name: "Alpha", position: 0 },

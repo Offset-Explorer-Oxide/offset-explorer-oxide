@@ -8,6 +8,7 @@ import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSel
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
 import { dataTabCacheKey, useTabDataStore } from "./features/workspace/useTabDataStore";
 import { useTreeUiStore } from "./features/connections/useTreeUiStore";
+import { sampleNewConnection } from "./features/connections/connectionTestFixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
@@ -30,7 +31,7 @@ beforeEach(() => {
   useJsonViewerTabsStore.setState({ tabs: [] });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, activeTabId: null, byTab: {} });
-  useTabDataStore.setState({ messagesByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
   useTreeUiStore.setState({ expanded: {}, searchText: {} });
   capturedFocusHandler = null;
 });
@@ -68,6 +69,80 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
 
     expect(screen.getByRole("dialog", { name: "New Connection" })).toBeInTheDocument();
+  });
+
+  it("saves, connects, and adds the new connection to the sidebar when Add is submitted with valid fields", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const created = {
+      ...sampleNewConnection({ name: "Local Kafka", bootstrapServers: "localhost:9092" }),
+      id: "conn-1",
+      createdAt: "2026-08-22T00:00:00Z",
+      updatedAt: "2026-08-22T00:00:00Z",
+    };
+    let listedConnections: unknown[] = [];
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "connection_list") return Promise.resolve(listedConnections);
+      if (command === "connection_create") {
+        listedConnections = [created];
+        return Promise.resolve(created);
+      }
+      if (command === "connection_connect") return Promise.resolve("REACHABLE");
+      if (command === "connection_check_status") return Promise.resolve("REACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(true);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("connection_create", expect.objectContaining({ newConnection: expect.anything() })),
+    );
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("connection_connect", { id: "conn-1" }));
+    expect(await screen.findByText("Local Kafka")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
+  });
+
+  it("still saves the connection, closes the modal, and shows it in the sidebar when the auto-connect attempt fails", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const created = {
+      ...sampleNewConnection({ name: "Local Kafka", bootstrapServers: "localhost:9092" }),
+      id: "conn-1",
+      createdAt: "2026-08-22T00:00:00Z",
+      updatedAt: "2026-08-22T00:00:00Z",
+    };
+    let listedConnections: unknown[] = [];
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "connection_list") return Promise.resolve(listedConnections);
+      if (command === "connection_create") {
+        listedConnections = [created];
+        return Promise.resolve(created);
+      }
+      if (command === "connection_connect") return Promise.reject(new Error("unreachable"));
+      if (command === "connection_check_status") return Promise.resolve("UNREACHABLE");
+      if (command === "connection_is_connected") return Promise.resolve(false);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(await screen.findByText("Local Kafka")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
   });
 
   it("exports every connection when Export All is clicked", async () => {

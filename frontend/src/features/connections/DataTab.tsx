@@ -110,6 +110,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     [messages, searchText],
   );
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
+  const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
+  /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
+  const totalMatching = useTabDataStore((s) => s.totalMatchingByTab[tabKey]);
   const appendTabMessage = useTabDataStore((s) => s.appendTabMessage);
   /** Tags the in-flight Fetch's `requestId` so the "messages-batch" listener below can tell its rows apart from a stale/superseded fetch's late-arriving events — see `MessagesBatchEvent`'s doc comment. */
   const activeRequestIdRef = useRef<string | null>(null);
@@ -174,7 +177,8 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         requestId,
       });
       if (!stoppedRef.current) {
-        setTabMessages(tabKey, result);
+        setTabMessages(tabKey, result.messages);
+        setTabTotalMatching(tabKey, result.totalMatching);
       }
     } catch (err) {
       if (!stoppedRef.current) {
@@ -210,7 +214,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       // patched into the cached rows directly below instead.
       requestId: crypto.randomUUID(),
     });
-    const updated = result.find((m) => m.partition === row.partition && m.offset === row.offset);
+    const updated = result.messages.find((m) => m.partition === row.partition && m.offset === row.offset);
     if (!updated) return;
     const current = useTabDataStore.getState().messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES;
     setTabMessages(
@@ -306,6 +310,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
 
       <p className="data-tab-message-count">
         {visibleMessageCount} / {messages.length} messages
+      </p>
+      <p className="data-tab-total-count">
+        {messages.length} / {totalMatching ?? messages.length} loaded
       </p>
 
       <div className="data-tab-grid" data-testid="message-grid">

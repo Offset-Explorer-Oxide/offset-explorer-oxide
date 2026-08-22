@@ -298,8 +298,11 @@ const PROGRESS_LOG_INTERVAL: usize = 25;
 /// Backs the topic Data tab's Fetch button. Streams each message to the
 /// frontend via the `"messages-batch"` event as soon as it's polled (see
 /// `MessagesBatchEvent`), in addition to returning the full, authoritative
-/// result once the fetch completes — the frontend uses the stream to paint
-/// rows incrementally and then reconciles with the final `Vec` on success.
+/// `MessageFetchResult` once the fetch completes — the frontend uses the
+/// stream to paint rows incrementally and then reconciles with the final
+/// result on success. `MessageFetchResult::total_matching` lets the Data tab
+/// show "42 loaded of 150 matching" so the user can tell whether more
+/// messages remain beyond what this fetch actually pulled.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn connection_fetch_messages(
@@ -311,7 +314,7 @@ pub async fn connection_fetch_messages(
     request_id: String,
     read_timeout_ms: u64,
     max_message_size_bytes: u32,
-) -> Result<Vec<kafkaoxide_core::TopicMessage>, CommandError> {
+) -> Result<kafkaoxide_core::MessageFetchResult, CommandError> {
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
 
@@ -356,13 +359,17 @@ pub async fn connection_fetch_messages(
     let _ = forward_task.await;
 
     match result {
-        Ok(messages) => {
+        Ok(fetch_result) => {
             crate::logging::emit_log(
                 &app,
                 "info",
-                format!("Fetched {} messages for topic \"{topic}\"", messages.len()),
+                format!(
+                    "Fetched {} of {} matching messages for topic \"{topic}\"",
+                    fetch_result.messages.len(),
+                    fetch_result.total_matching
+                ),
             );
-            Ok(messages)
+            Ok(fetch_result)
         }
         Err(err) => {
             let command_err: CommandError = err.into();

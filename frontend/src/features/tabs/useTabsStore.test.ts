@@ -2,11 +2,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import { useTabsStore } from "./useTabsStore";
+import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
+import { dataTabCacheKey, useTabDataStore } from "../workspace/useTabDataStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
+  useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
+  useMessageViewerStore.setState({
+    message: null,
+    connectionId: null,
+    topic: null,
+    partitionId: undefined,
+    activeTabId: null,
+    byTab: {},
+  });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
 });
 
 describe("useTabsStore loadTabs", () => {
@@ -55,7 +68,7 @@ describe("useTabsStore loadTabs", () => {
 
 describe("useTabsStore deleteTab", () => {
   it("removes the tab from state and calls tab_delete", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [
         { id: "1", name: "Alpha", position: 0 },
@@ -71,7 +84,7 @@ describe("useTabsStore deleteTab", () => {
   });
 
   it("falls back activeTabId to the previous tab when the active tab is closed", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [
         { id: "1", name: "Alpha", position: 0 },
@@ -87,7 +100,7 @@ describe("useTabsStore deleteTab", () => {
   });
 
   it("falls back activeTabId to the next tab when closing the first (active) tab", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [
         { id: "1", name: "Alpha", position: 0 },
@@ -102,7 +115,7 @@ describe("useTabsStore deleteTab", () => {
   });
 
   it("sets activeTabId to null when closing the last remaining tab", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [{ id: "1", name: "Alpha", position: 0 }],
       activeTabId: "1",
@@ -114,7 +127,7 @@ describe("useTabsStore deleteTab", () => {
   });
 
   it("leaves activeTabId unchanged when closing a non-active tab", async () => {
-    setInvokeHandlers({ tab_delete: () => undefined });
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
     useTabsStore.setState({
       tabs: [
         { id: "1", name: "Alpha", position: 0 },
@@ -143,6 +156,103 @@ describe("useTabsStore deleteTab", () => {
 
     expect(useTabsStore.getState().tabs).toHaveLength(1);
     expect(useTabsStore.getState().error).toBe("delete failed");
+  });
+
+  it("clears the closed tab's cached Data tab rows, same as the bottom panel's Clear memory", async () => {
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
+    useTabsStore.setState({
+      tabs: [
+        { id: "1", name: "Alpha", position: 0 },
+        { id: "2", name: "Beta", position: 1 },
+      ],
+      activeTabId: "1",
+    });
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("2", "1", "orders"), cached);
+    useTabDataStore.getState().setTabTotalMatching(dataTabCacheKey("2", "1", "orders"), 5);
+
+    await useTabsStore.getState().deleteTab("2");
+
+    expect(useTabDataStore.getState().messagesByTab[dataTabCacheKey("2", "1", "orders")]).toBeUndefined();
+    expect(useTabDataStore.getState().totalMatchingByTab[dataTabCacheKey("2", "1", "orders")]).toBeUndefined();
+  });
+
+  it("does not touch another (still-open) tab's cached Data tab rows when closing a tab", async () => {
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
+    useTabsStore.setState({
+      tabs: [
+        { id: "1", name: "Alpha", position: 0 },
+        { id: "2", name: "Beta", position: 1 },
+      ],
+      activeTabId: "1",
+    });
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("1", "1", "orders"), cached);
+
+    await useTabsStore.getState().deleteTab("2");
+
+    expect(useTabDataStore.getState().messagesByTab[dataTabCacheKey("1", "1", "orders")]).toEqual(cached);
+  });
+
+  it("clears the closed tab's workspace selection and viewed message", async () => {
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
+    useTabsStore.setState({
+      tabs: [
+        { id: "1", name: "Alpha", position: 0 },
+        { id: "2", name: "Beta", position: 1 },
+      ],
+      activeTabId: "1",
+    });
+    useWorkspaceSelectionStore.setState({
+      byTab: { "2": { type: "topic", connectionId: "1", topicName: "orders" } },
+    });
+    useMessageViewerStore.setState({
+      byTab: {
+        "2": {
+          message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+          connectionId: "1",
+          topic: "orders",
+        },
+      },
+    });
+
+    await useTabsStore.getState().deleteTab("2");
+
+    expect(useWorkspaceSelectionStore.getState().byTab["2"]).toBeNull();
+    expect(useMessageViewerStore.getState().byTab["2"]).toBeNull();
+  });
+
+  it("asks the backend to trim the OS-visible working set after closing a tab", async () => {
+    setInvokeHandlers({ tab_delete: () => undefined, trim_process_memory: () => undefined });
+    useTabsStore.setState({
+      tabs: [
+        { id: "1", name: "Alpha", position: 0 },
+        { id: "2", name: "Beta", position: 1 },
+      ],
+      activeTabId: "1",
+    });
+
+    await useTabsStore.getState().deleteTab("2");
+
+    expect(invoke).toHaveBeenCalledWith("trim_process_memory", undefined);
+  });
+
+  it("does not clear any tab's memory when the backend delete call fails", async () => {
+    setInvokeHandlers({
+      tab_delete: () => {
+        throw new Error("delete failed");
+      },
+    });
+    useTabsStore.setState({
+      tabs: [{ id: "1", name: "Alpha", position: 0 }],
+      activeTabId: "1",
+    });
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    useTabDataStore.getState().setTabMessages(dataTabCacheKey("1", "1", "orders"), cached);
+
+    await useTabsStore.getState().deleteTab("1");
+
+    expect(useTabDataStore.getState().messagesByTab[dataTabCacheKey("1", "1", "orders")]).toEqual(cached);
   });
 });
 

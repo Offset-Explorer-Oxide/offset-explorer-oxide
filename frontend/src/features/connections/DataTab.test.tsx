@@ -75,7 +75,7 @@ beforeEach(() => {
   resetLastGridProps();
   capturedMessagesBatchHandler = null;
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null });
-  useTabDataStore.setState({ messagesByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
   useDataTabFiltersStore.setState({ formByTab: {} });
 });
 
@@ -188,7 +188,7 @@ describe("DataTab", () => {
   });
 
   it("fetches with the prepopulated partition when partitionId is given and Fetch is clicked", async () => {
-    const fetchMessages = vi.fn(() => []);
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" partitionId={2} />);
@@ -213,7 +213,7 @@ describe("DataTab", () => {
   });
 
   it("fetches messages with an all-null, no-payload filter when Fetch is clicked with no filters set", async () => {
-    const fetchMessages = vi.fn(() => []);
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -241,7 +241,7 @@ describe("DataTab", () => {
   });
 
   it("sets includePayload true when the checkbox is checked before Fetch is clicked", async () => {
-    const fetchMessages = vi.fn(() => []);
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -257,7 +257,7 @@ describe("DataTab", () => {
   });
 
   it("applies entered filters when Fetch is clicked", async () => {
-    const fetchMessages = vi.fn(() => []);
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -276,7 +276,7 @@ describe("DataTab", () => {
   });
 
   it("applies the offset filter when Fetch is clicked", async () => {
-    const fetchMessages = vi.fn(() => []);
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -294,8 +294,8 @@ describe("DataTab", () => {
   });
 
   it("shows the grid's loading state while a fetch is in flight, and clears it once it resolves", async () => {
-    let resolveFetch: (messages: unknown[]) => void = () => {};
-    const pending = new Promise<unknown[]>((resolve) => {
+    let resolveFetch: (result: { messages: unknown[]; totalMatching: number }) => void = () => {};
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
       resolveFetch = resolve;
     });
     setInvokeHandlers({ connection_fetch_messages: () => pending });
@@ -307,13 +307,13 @@ describe("DataTab", () => {
     await user.click(screen.getByRole("button", { name: "Fetch" }));
     await waitFor(() => expect(lastGridProps?.loading).toBe(true));
 
-    resolveFetch([]);
+    resolveFetch({ messages: [], totalMatching: 0 });
     await waitFor(() => expect(lastGridProps?.loading).toBe(false));
   });
 
   it("streams a message onto the grid as soon as a matching messages-batch event arrives, ahead of the fetch resolving", async () => {
-    let resolveFetch: (messages: unknown[]) => void = () => {};
-    const pending = new Promise<unknown[]>((resolve) => {
+    let resolveFetch: (result: { messages: unknown[]; totalMatching: number }) => void = () => {};
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
       resolveFetch = resolve;
     });
     const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
@@ -330,12 +330,12 @@ describe("DataTab", () => {
 
     await waitFor(() => expect(lastGridProps?.rowData).toEqual([streamed]));
 
-    resolveFetch([streamed]);
+    resolveFetch({ messages: [streamed], totalMatching: 1 });
     await waitFor(() => expect(lastGridProps?.loading).toBe(false));
   });
 
   it("ignores a messages-batch event from a different (stale/superseded) request id", async () => {
-    setInvokeHandlers({ connection_fetch_messages: () => [] });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages: [], totalMatching: 0 }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -355,7 +355,7 @@ describe("DataTab", () => {
 
   it("passes the fetched messages to the grid as rowData", async () => {
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -381,7 +381,7 @@ describe("DataTab", () => {
 
   it("keeps the fetched messages cached for the tab across an unmount/remount (switching tabs away and back)", async () => {
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -397,7 +397,7 @@ describe("DataTab", () => {
 
   it("does not leak one topic's cached rows into a different topic's Data tab in the same top-level tab", async () => {
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -413,7 +413,7 @@ describe("DataTab", () => {
 
   it("does not leak a topic's cached rows into one of its partitions' Data tab", async () => {
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==" }];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -460,7 +460,7 @@ describe("DataTab", () => {
       { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
       { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
     ];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -476,7 +476,7 @@ describe("DataTab", () => {
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "b3JkZXItMQ==", payloadBase64: null, headers: [] },
       { partition: 0, offset: 2, timestampMs: null, keyBase64: "b3RoZXI=", payloadBase64: null, headers: [] },
     ];
-    setInvokeHandlers({ connection_fetch_messages: () => messages });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -486,6 +486,51 @@ describe("DataTab", () => {
     await user.type(screen.getByLabelText("Search messages"), "order-1");
 
     await waitFor(() => expect(screen.getByText("1 / 2 messages")).toBeInTheDocument());
+  });
+
+  it("shows 0 / 0 loaded before any fetch has run", () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    expect(screen.getByText("0 / 0 loaded")).toBeInTheDocument();
+  });
+
+  it("shows every loaded message as matching the total when the fetch wasn't capped", async () => {
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(screen.getByText("2 / 2 loaded")).toBeInTheDocument());
+  });
+
+  it("shows fewer loaded than total matching when a max-messages cap trimmed the fetch, so the user knows more remain", async () => {
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 150 }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument());
+  });
+
+  it("keeps showing the last fetch's loaded/total count for a tab across an unmount/remount", async () => {
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 150 }) });
+    const user = userEvent.setup();
+    const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument());
+
+    unmount();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument();
   });
 
   it("excludes partition, offset, and timestamp from the quick filter, leaving only key and value searchable", () => {
@@ -530,16 +575,17 @@ describe("DataTab", () => {
       { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null },
       { partition: 1, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null },
     ];
-    setInvokeHandlers({ connection_fetch_messages: () => initial });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages: initial, totalMatching: initial.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
     await waitFor(() => expect(lastGridProps?.rowData).toEqual(initial));
 
-    const fetchMessages = vi.fn(() => [
-      { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
-    ]);
+    const fetchMessages = vi.fn(() => ({
+      messages: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" }],
+      totalMatching: 1,
+    }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     await lastGridProps?.context.fetchPayload(initial[0]);
 
