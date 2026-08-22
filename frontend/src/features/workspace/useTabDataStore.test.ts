@@ -4,7 +4,7 @@ import { dataTabCacheKey, tabDataKey, tabDataPrefix, UNASSIGNED_TAB_KEY, useTabD
 const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
 
 beforeEach(() => {
-  useTabDataStore.setState({ messagesByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
 });
 
 describe("tabDataKey", () => {
@@ -96,6 +96,39 @@ describe("useTabDataStore", () => {
 
     expect(useTabDataStore.getState().messagesByTab).toEqual({
       [dataTabCacheKey("tab-2", "1", "orders")]: sample,
+    });
+  });
+
+  it("records a tab's total-matching count separately from its cached rows", () => {
+    useTabDataStore.getState().setTabTotalMatching("tab-1", 150);
+    expect(useTabDataStore.getState().totalMatchingByTab["tab-1"]).toBe(150);
+  });
+
+  it("keeps each tab's total-matching count independent", () => {
+    useTabDataStore.getState().setTabTotalMatching("tab-1", 150);
+    useTabDataStore.getState().setTabTotalMatching("tab-2", 3);
+
+    expect(useTabDataStore.getState().totalMatchingByTab["tab-1"]).toBe(150);
+    expect(useTabDataStore.getState().totalMatchingByTab["tab-2"]).toBe(3);
+  });
+
+  it("clears a tab's total-matching count along with its cached messages", () => {
+    useTabDataStore.getState().setTabMessages("tab-1", sample);
+    useTabDataStore.getState().setTabTotalMatching("tab-1", 150);
+
+    useTabDataStore.getState().clearTabMessages("tab-1");
+
+    expect(useTabDataStore.getState().totalMatchingByTab["tab-1"]).toBeUndefined();
+  });
+
+  it("clears every total-matching entry under a tab's prefix, leaving other tabs untouched", () => {
+    useTabDataStore.getState().setTabTotalMatching(dataTabCacheKey("tab-1", "1", "orders"), 150);
+    useTabDataStore.getState().setTabTotalMatching(dataTabCacheKey("tab-2", "1", "orders"), 3);
+
+    useTabDataStore.getState().clearAllMessagesForTab("tab-1");
+
+    expect(useTabDataStore.getState().totalMatchingByTab).toEqual({
+      [dataTabCacheKey("tab-2", "1", "orders")]: 3,
     });
   });
 });

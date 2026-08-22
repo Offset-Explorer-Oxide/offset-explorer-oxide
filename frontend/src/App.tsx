@@ -1,4 +1,4 @@
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { onWindowFocusChanged } from "./lib/appWindow";
@@ -10,7 +10,7 @@ import { JsonViewerTabPanel } from "./features/tabs/JsonViewerTabPanel";
 import { ConnectionTree } from "./features/connections/ConnectionTree";
 import { ConnectionModal } from "./features/connections/modal/ConnectionModal";
 import { ConnectionDraft, connectionToDraft } from "./features/connections/modal/draft";
-import { Connection } from "./lib/tauri";
+import { api, Connection } from "./lib/tauri";
 import { ClusterDetailPanel } from "./features/connections/ClusterDetailPanel";
 import { BrokerDetailPanel } from "./features/connections/BrokerDetailPanel";
 import { TopicDetailPanel } from "./features/connections/TopicDetailPanel";
@@ -35,6 +35,7 @@ function AppShell() {
   const [showModal, setShowModal] = useState(false);
   const [cloneDraft, setCloneDraft] = useState<ConnectionDraft | null>(null);
   const createConnection = useCreateConnection();
+  const queryClient = useQueryClient();
   const exportConnections = useExportConnections();
   const importConnections = useImportConnections();
 
@@ -165,7 +166,21 @@ function AppShell() {
                 <ConnectionModal
                   initialDraft={cloneDraft ?? undefined}
                   onAdd={async (connection) => {
-                    await createConnection.mutateAsync(connection);
+                    const created = await createConnection.mutateAsync(connection);
+                    // A saved connection sitting gray in the sidebar until the
+                    // user manually hits Reconnect is a pointless extra step —
+                    // connect it right away. A failed connect (unreachable
+                    // broker, bad credentials) shouldn't block the modal from
+                    // closing: the connection is already saved and listed, and
+                    // the user can retry via the tree's own Reconnect button.
+                    try {
+                      await api.connectConnection(created.id);
+                    } catch {
+                      // Swallowed deliberately — see comment above.
+                    } finally {
+                      queryClient.invalidateQueries({ queryKey: ["connection-connected", created.id] });
+                      queryClient.invalidateQueries({ queryKey: ["connection-status", created.id] });
+                    }
                     closeModal();
                   }}
                   onCancel={closeModal}

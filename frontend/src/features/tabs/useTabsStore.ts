@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { api, Tab } from "../../lib/tauri";
 import { useTabOrderStore } from "./useTabOrderStore";
+import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
+import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
+import { useTabDataStore } from "../workspace/useTabDataStore";
 
 interface TabsState {
   tabs: Tab[];
@@ -80,6 +83,15 @@ export const useTabsStore = create<TabsState>((set, get) => ({
         const fallback = state.tabs[closedIndex - 1] ?? state.tabs[closedIndex + 1] ?? null;
         return { tabs, activeTabId: fallback?.id ?? null, error: null };
       });
+      // A closed tab's cached Data tab rows, selection, and viewed message
+      // are gone for good — reclaim them exactly like the bottom panel's
+      // "Clear memory" button does, scoped to the tab that just closed
+      // (which may not be the active tab), instead of letting them leak for
+      // the rest of the session.
+      useWorkspaceSelectionStore.getState().clearTabMemory(id);
+      useMessageViewerStore.getState().clearTabMemory(id);
+      useTabDataStore.getState().clearAllMessagesForTab(id);
+      void api.trimProcessMemory();
     } catch (err) {
       set({ error: errorMessage(err, "Failed to delete tab") });
     }

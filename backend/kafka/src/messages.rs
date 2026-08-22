@@ -80,6 +80,22 @@ pub fn apply_total_cap(limits: &BTreeMap<i32, i64>, max_total: Option<u32>) -> B
     result
 }
 
+/// Combines an explicit start offset with a from-timestamp-resolved start
+/// offset into the single start offset that satisfies both simultaneously —
+/// the later (higher) of the two, since a valid start point must be at or
+/// after the explicit offset AND at or after the timestamp, and offsets are
+/// monotonically non-decreasing with timestamp within a partition. `None`
+/// means that source wasn't set at all; the result is `None` only when
+/// neither was.
+pub fn combined_start_offset(explicit_offset: Option<i64>, from_timestamp_offset: Option<i64>) -> Option<i64> {
+    match (explicit_offset, from_timestamp_offset) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +207,29 @@ mod tests {
     #[test]
     fn effective_max_messages_per_partition_passes_through_an_explicit_cap() {
         assert_eq!(effective_max_messages_per_partition(Some(50)), 50);
+    }
+
+    #[test]
+    fn combined_start_offset_uses_the_only_source_given() {
+        assert_eq!(combined_start_offset(Some(50), None), Some(50));
+        assert_eq!(combined_start_offset(None, Some(80)), Some(80));
+    }
+
+    #[test]
+    fn combined_start_offset_is_none_when_neither_source_is_given() {
+        assert_eq!(combined_start_offset(None, None), None);
+    }
+
+    #[test]
+    fn combined_start_offset_takes_the_later_of_both_when_both_are_given() {
+        // Regression test: an explicit Offset filter used to silently
+        // override an accompanying From-date filter (whichever came first in
+        // an if/else-if chain won outright, the other was ignored entirely)
+        // instead of both applying together. The correct AND semantics is
+        // the later (higher) of the two candidate start offsets: any offset
+        // at or after that point satisfies "offset >= explicit" AND
+        // "timestamp >= from" simultaneously.
+        assert_eq!(combined_start_offset(Some(50), Some(80)), Some(80));
+        assert_eq!(combined_start_offset(Some(80), Some(50)), Some(80));
     }
 }

@@ -53,7 +53,18 @@ interface TabDataState {
    * "Tab memory" size estimate meaningful.
    */
   messagesByTab: Record<string, TopicMessage[]>;
+  /**
+   * How many messages matched the last fetch's filter in total, uncapped by
+   * "max messages per partition"/"total max messages" — lets the Data tab
+   * show "42 loaded of 150 matching" instead of a bare loaded count, so
+   * returning to a tab you've already fetched still shows whether more
+   * remained beyond what was loaded. `undefined` means this tab has never
+   * been fetched.
+   */
+  totalMatchingByTab: Record<string, number>;
   setTabMessages: (tabId: string, messages: TopicMessage[]) => void;
+  /** Records the last Fetch's total-matching count separately from the row cache — a single-row payload patch (`fetchPayloadForRow`) replaces a tab's cached rows without knowing (or wanting to overwrite) the total the original Fetch found. */
+  setTabTotalMatching: (tabId: string, totalMatching: number) => void;
   /** Appends one streamed message onto a tab's rows — backs the Data tab's live-streaming Fetch, which paints rows in as they arrive instead of waiting for the whole fetch to finish. */
   appendTabMessage: (tabId: string, message: TopicMessage) => void;
   clearTabMessages: (tabId: string) => void;
@@ -63,8 +74,11 @@ interface TabDataState {
 
 export const useTabDataStore = create<TabDataState>((set) => ({
   messagesByTab: {},
+  totalMatchingByTab: {},
   setTabMessages: (tabId, messages) =>
     set((state) => ({ messagesByTab: { ...state.messagesByTab, [tabId]: messages } })),
+  setTabTotalMatching: (tabId, totalMatching) =>
+    set((state) => ({ totalMatchingByTab: { ...state.totalMatchingByTab, [tabId]: totalMatching } })),
   appendTabMessage: (tabId, message) =>
     set((state) => ({
       messagesByTab: { ...state.messagesByTab, [tabId]: [...(state.messagesByTab[tabId] ?? []), message] },
@@ -72,7 +86,8 @@ export const useTabDataStore = create<TabDataState>((set) => ({
   clearTabMessages: (tabId) =>
     set((state) => {
       const { [tabId]: _removed, ...rest } = state.messagesByTab;
-      return { messagesByTab: rest };
+      const { [tabId]: _removedTotal, ...restTotal } = state.totalMatchingByTab;
+      return { messagesByTab: rest, totalMatchingByTab: restTotal };
     }),
   clearAllMessagesForTab: (activeTabId) =>
     set((state) => {
@@ -80,6 +95,9 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const messagesByTab = Object.fromEntries(
         Object.entries(state.messagesByTab).filter(([key]) => !key.startsWith(prefix)),
       );
-      return { messagesByTab };
+      const totalMatchingByTab = Object.fromEntries(
+        Object.entries(state.totalMatchingByTab).filter(([key]) => !key.startsWith(prefix)),
+      );
+      return { messagesByTab, totalMatchingByTab };
     }),
 }));
