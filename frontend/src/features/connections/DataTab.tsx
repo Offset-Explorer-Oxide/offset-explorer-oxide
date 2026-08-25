@@ -7,7 +7,7 @@ import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, EMPTY_TAB_MESSAGES, useTabDataStore } from "../workspace/useTabDataStore";
 import { APP_GRID_THEME } from "./agGridTheme";
-import { emptyFilterForm, FilterFormState, toMessageFilter } from "./dataFilters";
+import { emptyFilterForm, FilterFormState, toMessageFilter, validateDateRange } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { base64ToBytes, base64ToDisplayText, bytesToText, detectConfluentAvro } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
@@ -164,6 +164,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
 
   async function handlePlay() {
     setError(null);
+    const dateRangeError = validateDateRange(form);
+    if (dateRangeError) {
+      setError(dateRangeError);
+      return;
+    }
     setIsPlaying(true);
     stoppedRef.current = false;
     const requestId = crypto.randomUUID();

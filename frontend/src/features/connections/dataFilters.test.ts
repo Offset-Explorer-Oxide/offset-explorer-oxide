@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyFilterForm, toMessageFilter } from "./dataFilters";
+import { emptyFilterForm, toMessageFilter, validateDateRange } from "./dataFilters";
 
 describe("emptyFilterForm", () => {
   it("starts with every field blank and includePayload unchecked", () => {
@@ -59,5 +59,36 @@ describe("toMessageFilter", () => {
   it("parses offset as a number", () => {
     const form = { ...emptyFilterForm(), offset: "100" };
     expect(toMessageFilter(form).offset).toBe(100);
+  });
+});
+
+describe("validateDateRange", () => {
+  it("passes when both dates are blank", () => {
+    expect(validateDateRange(emptyFilterForm())).toBeNull();
+  });
+
+  it("passes when only From is set", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T00:00" };
+    expect(validateDateRange(form)).toBeNull();
+  });
+
+  it("passes when only To is set", () => {
+    const form = { ...emptyFilterForm(), toDate: "2026-01-01T00:00" };
+    expect(validateDateRange(form)).toBeNull();
+  });
+
+  it("passes when To is after From", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T00:00", toDate: "2026-01-02T00:00" };
+    expect(validateDateRange(form)).toBeNull();
+  });
+
+  it("fails when To equals From", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T00:00", toDate: "2026-01-01T00:00" };
+    expect(validateDateRange(form)).toBe('"To" date must be after "From" date');
+  });
+
+  it("fails when To is before From", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-02T00:00", toDate: "2026-01-01T00:00" };
+    expect(validateDateRange(form)).toBe('"To" date must be after "From" date');
   });
 });

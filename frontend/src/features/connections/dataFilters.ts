@@ -50,6 +50,16 @@ function parseDate(value: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+/** Validates the From/To date filter inputs — returns an error message if both are set and To isn't strictly after From, otherwise null. */
+export function validateDateRange(form: FilterFormState): string | null {
+  const fromMs = parseDate(form.fromDate);
+  const toMs = parseDate(form.toDate);
+  if (fromMs !== null && toMs !== null && toMs <= fromMs) {
+    return "\"To\" date must be after \"From\" date";
+  }
+  return null;
+}
+
 /** Converts the filter form into the wire-format MessageFilter — an all-blank form becomes an all-null filter (pull everything). */
 export function toMessageFilter(form: FilterFormState): MessageFilter {
   return {
