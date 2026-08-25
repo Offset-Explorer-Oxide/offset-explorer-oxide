@@ -87,6 +87,27 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: cmake --version
 
+      # librdkafka's CMake build (used only on Windows) locates zstd via
+      # `find_package(ZSTD)`, which rdkafka-sys's build script wires up only
+      # through `register_dep` — unlike other optional deps in that same
+      # build script (e.g. sasl2/gssapi), it doesn't also push explicit
+      # include/lib paths, and in practice find_package doesn't locate the
+      # Cargo-built zstd-sys library on this runner. Result: the CMake build
+      # silently proceeds with zstd disabled instead of failing loudly
+      # (confirmed by extracting a built app-v0.27.0 release and finding
+      # `rd_kafka_zstd_decompress` present in the macOS build but absent from
+      # the Windows one). Installing zstd via vcpkg (already present on
+      # windows-latest runners) and pointing CMAKE_PREFIX_PATH at it gives
+      # find_package a real library to locate, sidestepping the rdkafka-sys
+      # wiring gap entirely. The static triplet keeps zstd statically linked
+      # into the final binary, so end users still need nothing extra.
+      - name: Install zstd via vcpkg (Windows / rdkafka cmake-build zstd support)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          vcpkg install zstd:x64-windows-static
+          echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
+
       - name: Install frontend dependencies
         run: npm install --prefix frontend
 

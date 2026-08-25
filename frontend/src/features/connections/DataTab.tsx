@@ -7,7 +7,13 @@ import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, EMPTY_TAB_MESSAGES, useTabDataStore } from "../workspace/useTabDataStore";
 import { APP_GRID_THEME } from "./agGridTheme";
-import { emptyFilterForm, FilterFormState, toMessageFilter, validateDateRange } from "./dataFilters";
+import {
+  emptyFilterForm,
+  FilterFormState,
+  toMessageFilter,
+  validateDateRange,
+  validateMaxMessagesPerPartition,
+} from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { base64ToBytes, base64ToDisplayText, bytesToText, detectConfluentAvro } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
@@ -164,6 +170,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
 
   async function handlePlay() {
     setError(null);
+    const maxMessagesError = validateMaxMessagesPerPartition(form);
+    if (maxMessagesError) {
+      setError(maxMessagesError);
+      return;
+    }
     const dateRangeError = validateDateRange(form);
     if (dateRangeError) {
       setError(dateRangeError);
@@ -313,11 +324,8 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         />
       </label>
 
-      <p className="data-tab-message-count">
-        {visibleMessageCount} / {messages.length} messages
-      </p>
       <p className="data-tab-total-count">
-        {messages.length} / {totalMatching ?? messages.length} loaded
+        {visibleMessageCount} / {totalMatching ?? messages.length} loaded
       </p>
 
       <div className="data-tab-grid" data-testid="message-grid">

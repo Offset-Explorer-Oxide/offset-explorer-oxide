@@ -34,7 +34,7 @@ function sampleConnection(overrides: Partial<Record<string, unknown>> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceSelectionStore.setState({ selection: null });
-  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
 });
 
 describe("ConnectionTree", () => {

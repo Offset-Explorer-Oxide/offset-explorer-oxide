@@ -60,4 +60,40 @@ describe("TopicPropertiesTab", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Failed to count messages");
   });
+
+  it("clears a previously loaded count when the topic changes without this component unmounting", async () => {
+    setInvokeHandlers({ connection_count_topic_messages: () => 42 });
+    const user = userEvent.setup();
+    const { rerender } = renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByLabelText("Total number of messages")).toHaveValue("42");
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TopicPropertiesTab connectionId="1" topicName="payments" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText("Total number of messages")).toHaveValue("");
+  });
+
+  it("clears a previously shown error when the topic changes without this component unmounting", async () => {
+    setInvokeHandlers({
+      connection_count_topic_messages: () => {
+        throw new Error("Failed to count messages");
+      },
+    });
+    const user = userEvent.setup();
+    const { rerender } = renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await screen.findByRole("alert");
+
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <TopicPropertiesTab connectionId="1" topicName="payments" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

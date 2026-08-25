@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emptyFilterForm, toMessageFilter, validateDateRange } from "./dataFilters";
+import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
 
 describe("emptyFilterForm", () => {
-  it("starts with every field blank and includePayload unchecked", () => {
+  it("pre-fills maxMessagesPerPartition with the backend's own default cap, and leaves every other field blank with includePayload unchecked", () => {
     const form = emptyFilterForm();
-    expect(form.maxMessagesPerPartition).toBe("");
+    expect(form.maxMessagesPerPartition).toBe("100");
     expect(form.maxTotalMessages).toBe("");
     expect(form.partitions).toBe("");
     expect(form.fromDate).toBe("");
@@ -15,16 +15,21 @@ describe("emptyFilterForm", () => {
 });
 
 describe("toMessageFilter", () => {
-  it("converts an all-blank form to an all-null, no-payload filter (pull everything, metadata only)", () => {
+  it("converts the default form to a filter that pulls everything except a 100-per-partition cap", () => {
     expect(toMessageFilter(emptyFilterForm())).toEqual({
       partitions: null,
-      maxMessagesPerPartition: null,
+      maxMessagesPerPartition: 100,
       maxTotalMessages: null,
       fromTimestampMs: null,
       toTimestampMs: null,
       offset: null,
       includePayload: false,
     });
+  });
+
+  it("falls back to the backend's own default cap (null) when maxMessagesPerPartition is cleared back to blank", () => {
+    const form = { ...emptyFilterForm(), maxMessagesPerPartition: "" };
+    expect(toMessageFilter(form).maxMessagesPerPartition).toBeNull();
   });
 
   it("carries includePayload through when checked", () => {
@@ -60,6 +65,16 @@ describe("toMessageFilter", () => {
     const form = { ...emptyFilterForm(), offset: "100" };
     expect(toMessageFilter(form).offset).toBe(100);
   });
+
+  it("applies the same default maxMessagesPerPartition cap regardless of whether offset is set", () => {
+    const form = { ...emptyFilterForm(), offset: "100" };
+    expect(toMessageFilter(form).maxMessagesPerPartition).toBe(100);
+  });
+
+  it("keeps an explicit maxMessagesPerPartition value when offset is also set", () => {
+    const form = { ...emptyFilterForm(), offset: "100", maxMessagesPerPartition: "20" };
+    expect(toMessageFilter(form).maxMessagesPerPartition).toBe(20);
+  });
 });
 
 describe("validateDateRange", () => {
@@ -90,5 +105,26 @@ describe("validateDateRange", () => {
   it("fails when To is before From", () => {
     const form = { ...emptyFilterForm(), fromDate: "2026-01-02T00:00", toDate: "2026-01-01T00:00" };
     expect(validateDateRange(form)).toBe('"To" date must be after "From" date');
+  });
+});
+
+describe("validateMaxMessagesPerPartition", () => {
+  it("passes with the default pre-filled value", () => {
+    expect(validateMaxMessagesPerPartition(emptyFilterForm())).toBeNull();
+  });
+
+  it("passes with an explicit value", () => {
+    const form = { ...emptyFilterForm(), maxMessagesPerPartition: "500" };
+    expect(validateMaxMessagesPerPartition(form)).toBeNull();
+  });
+
+  it("fails when cleared to blank", () => {
+    const form = { ...emptyFilterForm(), maxMessagesPerPartition: "" };
+    expect(validateMaxMessagesPerPartition(form)).toBe('"Max messages per partition" is required');
+  });
+
+  it("fails when only whitespace", () => {
+    const form = { ...emptyFilterForm(), maxMessagesPerPartition: "   " };
+    expect(validateMaxMessagesPerPartition(form)).toBe('"Max messages per partition" is required');
   });
 });

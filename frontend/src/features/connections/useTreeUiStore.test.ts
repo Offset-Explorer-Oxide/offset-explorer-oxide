@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { treeKey, useTreeUiStore } from "./useTreeUiStore";
 
 beforeEach(() => {
-  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
 });
 
 describe("treeKey", () => {
@@ -45,5 +45,15 @@ describe("useTreeUiStore", () => {
 
     expect(useTreeUiStore.getState().searchText["tab-1:1:Topics"]).toBe("orders");
     expect(useTreeUiStore.getState().searchText["tab-2:1:Topics"]).toBeUndefined();
+  });
+
+  it("toggles a key's hideEmptyConsumerGroups state on and off, independent of other keys", () => {
+    useTreeUiStore.getState().toggleHideEmptyConsumerGroups("tab-1:1:Consumers");
+
+    expect(useTreeUiStore.getState().hideEmptyConsumerGroups["tab-1:1:Consumers"]).toBe(true);
+    expect(useTreeUiStore.getState().hideEmptyConsumerGroups["tab-2:1:Consumers"]).toBeUndefined();
+
+    useTreeUiStore.getState().toggleHideEmptyConsumerGroups("tab-1:1:Consumers");
+    expect(useTreeUiStore.getState().hideEmptyConsumerGroups["tab-1:1:Consumers"]).toBe(false);
   });
 });

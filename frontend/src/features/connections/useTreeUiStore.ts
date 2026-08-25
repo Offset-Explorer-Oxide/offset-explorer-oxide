@@ -15,15 +15,23 @@ import { create } from "zustand";
 interface TreeUiState {
   expanded: Record<string, boolean>;
   searchText: Record<string, string>;
+  /** Whether the "hide empty consumer groups" toggle is on for a given Consumers category (see `ClusterResourceTree`'s context menu). */
+  hideEmptyConsumerGroups: Record<string, boolean>;
   toggleExpanded: (key: string) => void;
   setSearchText: (key: string, value: string) => void;
+  toggleHideEmptyConsumerGroups: (key: string) => void;
 }
 
 export const useTreeUiStore = create<TreeUiState>((set) => ({
   expanded: {},
   searchText: {},
+  hideEmptyConsumerGroups: {},
   toggleExpanded: (key) => set((state) => ({ expanded: { ...state.expanded, [key]: !state.expanded[key] } })),
   setSearchText: (key, value) => set((state) => ({ searchText: { ...state.searchText, [key]: value } })),
+  toggleHideEmptyConsumerGroups: (key) =>
+    set((state) => ({
+      hideEmptyConsumerGroups: { ...state.hideEmptyConsumerGroups, [key]: !state.hideEmptyConsumerGroups[key] },
+    })),
 }));
 
 /** Builds a tab-scoped key for `useTreeUiStore` — every tree UI element's key starts with the top-level tab id, so a new tab never collides with (or inherits) another tab's expand/search state. */

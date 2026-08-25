@@ -316,8 +316,19 @@ body {
 .settings-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  max-width: 360px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 12px 24px 40px;
+  gap: 24px;
+}
+.settings-panel > h2 {
+  margin: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 18px;
 }
 .settings-panel__tabs {
   display: flex;
@@ -330,25 +341,32 @@ body {
   border-bottom: 2px solid transparent;
   color: var(--color-fg-muted);
   font-size: 13px;
-  padding: 6px 4px;
+  padding: 8px 16px;
   cursor: pointer;
+  border-radius: 6px 6px 0 0;
 }
 .settings-panel__tab:hover {
   color: var(--color-fg);
+  background: var(--color-bg);
 }
 .settings-panel__tab[aria-selected="true"] {
   color: var(--color-fg);
+  font-weight: 600;
   border-bottom-color: var(--color-accent);
 }
 .settings-panel__tabpanel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
 }
 .settings-panel__section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
+  padding: 18px 22px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
 }
 .settings-panel__section h3 {
   font-size: 12px;
@@ -361,7 +379,7 @@ body {
 .dropdown-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   font-size: 12px;
   color: var(--color-fg-muted);
 }
@@ -371,8 +389,8 @@ body {
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: 4px;
-  padding: 5px 8px;
-  max-width: 160px;
+  padding: 7px 10px;
+  max-width: 260px;
 }
 .dropdown {
   position: relative;
@@ -717,11 +735,6 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 5px 8px;
-}
-.data-tab-message-count {
-  font-size: 12px;
-  color: var(--color-fg-muted);
-  margin: 0 0 2px;
 }
 .data-tab-total-count {
   font-size: 12px;
