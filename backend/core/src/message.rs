@@ -71,6 +71,15 @@ pub struct TopicMessage {
 pub struct MessageFetchResult {
     pub messages: Vec<TopicMessage>,
     pub total_matching: u64,
+    /// The most recent error `consumer.poll()` returned during this fetch,
+    /// if any — e.g. a broker-side rejection or a message too large for the
+    /// configured `max.partition.fetch.bytes`. Previously these errors were
+    /// discarded and treated identically to "no message yet," which made a
+    /// stalled fetch on some topics look like a plain empty result with no
+    /// way to tell why. `Some` here means the fetch may have returned fewer
+    /// messages than `total_matching` promises for a real, diagnosable
+    /// reason rather than just running out of time.
+    pub poll_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -140,6 +149,7 @@ mod tests {
                 headers: vec![],
             }],
             total_matching: 150,
+            poll_error: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""totalMatching":150"#));

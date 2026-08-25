@@ -569,6 +569,7 @@ impl KafkaClient for RdKafkaClient {
             const POLL_TIMEOUT: Duration = Duration::from_millis(500);
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
             let mut idle_elapsed = Duration::ZERO;
+            let mut last_poll_error: Option<String> = None;
 
             while (collected.len() as i64) < total_target && idle_elapsed < IDLE_TIMEOUT {
                 match consumer.poll(POLL_TIMEOUT) {
@@ -595,13 +596,17 @@ impl KafkaClient for RdKafkaClient {
                         collected.push(message);
                         remaining.insert(partition, budget - 1);
                     }
-                    Some(Err(_)) | None => {
+                    Some(Err(err)) => {
+                        idle_elapsed += POLL_TIMEOUT;
+                        last_poll_error = Some(err.to_string());
+                    }
+                    None => {
                         idle_elapsed += POLL_TIMEOUT;
                     }
                 }
             }
 
-            Ok(MessageFetchResult { messages: collected, total_matching })
+            Ok(MessageFetchResult { messages: collected, total_matching, poll_error: last_poll_error })
         })
         .await
         .change_context(AppError::Kafka)

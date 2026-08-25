@@ -203,6 +203,7 @@ export interface MessagesBatchEvent {
 export interface MessageFetchResult {
   messages: TopicMessage[];
   totalMatching: number;
+  pollError?: string | null;
 }
 
 export interface ImportSummary {

@@ -369,6 +369,15 @@ pub async fn connection_fetch_messages(
                     fetch_result.total_matching
                 ),
             );
+            if let Some(poll_error) = &fetch_result.poll_error {
+                crate::logging::emit_log(
+                    &app,
+                    "error",
+                    format!(
+                        "Fetch for topic \"{topic}\" hit a poll error before finishing: {poll_error}"
+                    ),
+                );
+            }
             Ok(fetch_result)
         }
         Err(err) => {
