@@ -32,7 +32,7 @@ beforeEach(() => {
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, activeTabId: null, byTab: {} });
   useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
-  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
   capturedFocusHandler = null;
 });
 

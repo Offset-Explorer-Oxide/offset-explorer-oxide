@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCountTopicMessages } from "./useClusterResources";
 
 export interface TopicPropertiesTabProps {
@@ -10,6 +10,14 @@ export function TopicPropertiesTab({ connectionId, topicName }: TopicPropertiesT
   const [messageCount, setMessageCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const countMessages = useCountTopicMessages();
+
+  // This component isn't remounted when the topic changes (the parent panel
+  // just passes new props to the same instance) — without this, a count
+  // loaded for one topic would keep showing after switching to another.
+  useEffect(() => {
+    setMessageCount(null);
+    setError(null);
+  }, [connectionId, topicName]);
 
   async function handleRefresh() {
     setError(null);

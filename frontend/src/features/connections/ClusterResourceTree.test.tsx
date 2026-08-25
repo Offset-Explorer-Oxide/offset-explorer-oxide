@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
@@ -17,7 +17,7 @@ function renderWithClient(ui: React.ReactElement) {
 beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceSelectionStore.setState({ selection: null });
-  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
 });
 
 describe("ClusterResourceTree", () => {
@@ -221,5 +221,30 @@ describe("ClusterResourceTree", () => {
       connectionId: "1",
       groupId: "billing",
     });
+  });
+
+  it("hides empty consumer groups after selecting that context menu item, and shows them again after toggling back", async () => {
+    setInvokeHandlers({
+      connection_list_consumer_groups: () => [
+        { groupId: "billing", state: "Stable" },
+        { groupId: "stale-job", state: "Empty" },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+    await user.click(screen.getByTestId("category-Consumers"));
+    await screen.findByText("billing");
+    expect(screen.getByText("stale-job")).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId("category-Consumers"));
+    await user.click(screen.getByText("Hide empty consumer groups"));
+
+    expect(screen.getByText("billing")).toBeInTheDocument();
+    expect(screen.queryByText("stale-job")).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByTestId("category-Consumers"));
+    await user.click(screen.getByText("Show all consumer groups"));
+
+    expect(screen.getByText("stale-job")).toBeInTheDocument();
   });
 });

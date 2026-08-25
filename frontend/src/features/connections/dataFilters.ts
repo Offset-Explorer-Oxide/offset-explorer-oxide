@@ -15,9 +15,12 @@ export interface FilterFormState {
   includePayload: boolean;
 }
 
+/** Matches the backend's own fallback (`DEFAULT_MESSAGE_CAP` in `messages.rs`) — shown as the field's actual starting value rather than left blank, so the cap that's about to be applied is visible up front instead of only discoverable after a fetch returns fewer rows than expected. */
+const DEFAULT_MAX_MESSAGES_PER_PARTITION = "100";
+
 export function emptyFilterForm(): FilterFormState {
   return {
-    maxMessagesPerPartition: "",
+    maxMessagesPerPartition: DEFAULT_MAX_MESSAGES_PER_PARTITION,
     maxTotalMessages: "",
     partitions: "",
     fromDate: "",
@@ -60,7 +63,15 @@ export function validateDateRange(form: FilterFormState): string | null {
   return null;
 }
 
-/** Converts the filter form into the wire-format MessageFilter — an all-blank form becomes an all-null filter (pull everything). */
+/** Max messages per partition is pre-filled by `emptyFilterForm` specifically so the cap about to be applied is always visible — clearing it back to blank would silently defer to the backend's own default cap instead, undoing that visibility, so it's rejected here rather than allowed through. */
+export function validateMaxMessagesPerPartition(form: FilterFormState): string | null {
+  if (form.maxMessagesPerPartition.trim().length === 0) {
+    return "\"Max messages per partition\" is required";
+  }
+  return null;
+}
+
+/** Converts the filter form into the wire-format MessageFilter — a blank field becomes `null` (no filter) for every field except `maxMessagesPerPartition`, which `validateMaxMessagesPerPartition` requires to always be set before this is called from the Fetch flow. */
 export function toMessageFilter(form: FilterFormState): MessageFilter {
   return {
     partitions: parsePartitions(form.partitions),

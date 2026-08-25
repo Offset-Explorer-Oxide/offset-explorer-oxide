@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ResourceCategory } from "./ResourceCategory";
 import { useTreeUiStore } from "./useTreeUiStore";
 
 beforeEach(() => {
-  useTreeUiStore.setState({ expanded: {}, searchText: {} });
+  useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
 });
 
 interface Item {
@@ -95,5 +95,72 @@ describe("ResourceCategory", () => {
     await user.click(screen.getByTestId("category-Topics"));
 
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
+  });
+
+  it("excludes items rejected by additionalFilter, even ones that match the search text", async () => {
+    const user = userEvent.setup();
+    renderCategory({ additionalFilter: (item) => item.id !== "1" });
+    await user.click(screen.getByTestId("category-Topics"));
+
+    expect(screen.queryByText("orders")).not.toBeInTheDocument();
+    expect(screen.getByText("payments")).toBeInTheDocument();
+  });
+
+  it("does not render a context menu trigger when contextMenuItems is omitted", async () => {
+    const user = userEvent.setup();
+    renderCategory();
+
+    fireEvent.contextMenu(screen.getByTestId("category-Topics"));
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    // onSelect is unaffected by this — sanity check the row is still usable.
+    await user.click(screen.getByTestId("category-Topics"));
+    expect(screen.getByText("orders")).toBeInTheDocument();
+  });
+
+  it("opens a context menu on right-click when contextMenuItems is given, and runs the selected item's action", () => {
+    const onMenuSelect = vi.fn();
+    renderCategory({ contextMenuItems: [{ label: "Do the thing", onSelect: onMenuSelect }] });
+
+    fireEvent.contextMenu(screen.getByTestId("category-Topics"), { clientX: 10, clientY: 20 });
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByText("Do the thing")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Do the thing"));
+
+    expect(onMenuSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("renders every item in a plain list when the count is at or below the virtualization threshold", async () => {
+    const user = userEvent.setup();
+    const manyItems = Array.from({ length: 50 }, (_, i) => ({ id: String(i), name: `item-${i}` }));
+    renderCategory({ items: manyItems });
+    await user.click(screen.getByTestId("category-Topics"));
+
+    expect(screen.getByText("item-0")).toBeInTheDocument();
+    expect(screen.getByText("item-49")).toBeInTheDocument();
+  });
+
+  it("switches to a virtualized list once the item count exceeds the threshold, rendering only the visible rows", async () => {
+    const user = userEvent.setup();
+    const manyItems = Array.from({ length: 60 }, (_, i) => ({ id: String(i), name: `item-${i}` }));
+    renderCategory({ items: manyItems });
+    await user.click(screen.getByTestId("category-Topics"));
+
+    expect(screen.getByText("item-0")).toBeInTheDocument();
+    // Far past the visible window (react-window only renders rows near the viewport) — should not be in the DOM at all.
+    expect(screen.queryByText("item-59")).not.toBeInTheDocument();
+  });
+
+  it("still respects onSelect for a virtualized row", async () => {
+    const user = userEvent.setup();
+    const manyItems = Array.from({ length: 60 }, (_, i) => ({ id: String(i), name: `item-${i}` }));
+    const { onSelect } = renderCategory({ items: manyItems });
+    await user.click(screen.getByTestId("category-Topics"));
+
+    await user.click(screen.getByText("item-0"));
+
+    expect(onSelect).toHaveBeenCalledWith(manyItems[0]);
   });
 });

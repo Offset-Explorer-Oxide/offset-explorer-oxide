@@ -117,33 +117,38 @@ function AppearanceSettingsTab() {
 
   return (
     <div className="settings-panel__tabpanel" role="tabpanel" aria-label="Appearance">
-      <Dropdown
-        label="Theme"
-        ariaLabel="Theme"
-        options={THEME_OPTIONS}
-        displayedId={appliedThemeId}
-        appliedId={appliedThemeId}
-        onCommit={setAppliedTheme}
-      />
+      <section className="settings-panel__section">
+        <h3>Theme</h3>
+        <Dropdown
+          label="Theme"
+          ariaLabel="Theme"
+          options={THEME_OPTIONS}
+          displayedId={appliedThemeId}
+          appliedId={appliedThemeId}
+          onCommit={setAppliedTheme}
+        />
+      </section>
 
-      <Dropdown
-        label="Font style"
-        ariaLabel="Font style"
-        options={FONT_FAMILY_OPTIONS}
-        displayedId={displayedFontFamilyId}
-        appliedId={appliedFontFamilyId}
-        onCommit={setAppliedFontFamily}
-        onPreview={setPreviewFontFamily}
-      />
-
-      <Dropdown
-        label="Font size"
-        ariaLabel="Font size"
-        options={FONT_SIZE_OPTIONS}
-        displayedId={String(fontSizePx)}
-        appliedId={String(fontSizePx)}
-        onCommit={(id) => setFontSizePx(Number(id))}
-      />
+      <section className="settings-panel__section">
+        <h3>Font</h3>
+        <Dropdown
+          label="Font style"
+          ariaLabel="Font style"
+          options={FONT_FAMILY_OPTIONS}
+          displayedId={displayedFontFamilyId}
+          appliedId={appliedFontFamilyId}
+          onCommit={setAppliedFontFamily}
+          onPreview={setPreviewFontFamily}
+        />
+        <Dropdown
+          label="Font size"
+          ariaLabel="Font size"
+          options={FONT_SIZE_OPTIONS}
+          displayedId={String(fontSizePx)}
+          appliedId={String(fontSizePx)}
+          onCommit={(id) => setFontSizePx(Number(id))}
+        />
+      </section>
     </div>
   );
 }

@@ -127,6 +127,7 @@ describe("DataTab", () => {
       </QueryClientProvider>,
     );
     await user.type(screen.getByLabelText("Search messages"), "some-old-order-id");
+    await user.clear(screen.getByLabelText("Max messages per partition"));
     await user.type(screen.getByLabelText("Max messages per partition"), "5");
 
     rerender(
@@ -136,7 +137,8 @@ describe("DataTab", () => {
     );
 
     expect(screen.getByLabelText("Search messages")).toHaveValue("");
-    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
+    // A brand new topic's form starts at the default cap, not blank.
+    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("100");
   });
 
   it("keeps a topic's filter form intact when switching away to a different topic and back, even though the search text does not persist", async () => {
@@ -147,6 +149,7 @@ describe("DataTab", () => {
         <DataTab connectionId="1" topicName="orders" />
       </QueryClientProvider>,
     );
+    await user.clear(screen.getByLabelText("Max messages per partition"));
     await user.type(screen.getByLabelText("Max messages per partition"), "5");
     await user.type(screen.getByLabelText("Offset"), "100");
     await user.type(screen.getByLabelText("Search messages"), "some-old-order-id");
@@ -156,7 +159,8 @@ describe("DataTab", () => {
         <DataTab connectionId="1" topicName="order-created" />
       </QueryClientProvider>,
     );
-    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("");
+    // A brand new topic's form starts at the default cap, not blank.
+    expect(screen.getByLabelText("Max messages per partition")).toHaveValue("100");
 
     rerender(
       <QueryClientProvider client={client}>
@@ -212,7 +216,7 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Load message payload")).not.toBeChecked();
   });
 
-  it("fetches messages with an all-null, no-payload filter when Fetch is clicked with no filters set", async () => {
+  it("fetches messages with a default-capped, no-payload filter when Fetch is clicked with no filters touched", async () => {
     const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
@@ -226,7 +230,7 @@ describe("DataTab", () => {
         topic: "orders",
         filter: {
           partitions: null,
-          maxMessagesPerPartition: null,
+          maxMessagesPerPartition: 100,
           maxTotalMessages: null,
           fromTimestampMs: null,
           toTimestampMs: null,
@@ -238,6 +242,19 @@ describe("DataTab", () => {
         maxMessageSizeBytes: 1_048_576,
       }),
     );
+  });
+
+  it("rejects Fetch with a validation error when Max messages per partition is cleared to blank, without calling the backend", async () => {
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.clear(screen.getByLabelText("Max messages per partition"));
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent('"Max messages per partition" is required');
+    expect(fetchMessages).not.toHaveBeenCalled();
   });
 
   it("sets includePayload true when the checkbox is checked before Fetch is clicked", async () => {
@@ -262,6 +279,7 @@ describe("DataTab", () => {
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
+    await user.clear(screen.getByLabelText("Max messages per partition"));
     await user.type(screen.getByLabelText("Max messages per partition"), "10");
     await user.type(screen.getByLabelText("Partition filter"), "0,1");
     await user.click(screen.getByRole("button", { name: "Fetch" }));
@@ -275,7 +293,7 @@ describe("DataTab", () => {
     );
   });
 
-  it("applies the offset filter when Fetch is clicked", async () => {
+  it("applies the offset filter when Fetch is clicked, using the same default per-partition cap as any other fetch", async () => {
     const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
     const user = userEvent.setup();
@@ -287,7 +305,27 @@ describe("DataTab", () => {
     await waitFor(() =>
       expect(fetchMessages).toHaveBeenCalledWith(
         expect.objectContaining({
-          filter: expect.objectContaining({ offset: 100 }),
+          filter: expect.objectContaining({ offset: 100, maxMessagesPerPartition: 100 }),
+        }),
+      ),
+    );
+  });
+
+  it("respects an explicit Max messages per partition value when offset is also set", async () => {
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.type(screen.getByLabelText("Offset"), "100");
+    await user.clear(screen.getByLabelText("Max messages per partition"));
+    await user.type(screen.getByLabelText("Max messages per partition"), "20");
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() =>
+      expect(fetchMessages).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filter: expect.objectContaining({ offset: 100, maxMessagesPerPartition: 20 }),
         }),
       ),
     );
@@ -483,23 +521,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(lastGridProps?.quickFilterText).toBe("order-1"));
   });
 
-  it("shows the fetched message count as 'visible / total' below the search bar", async () => {
-    const messages = [
-      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
-      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
-    ];
-    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    expect(screen.getByText("0 / 0 messages")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Fetch" }));
-
-    await waitFor(() => expect(screen.getByText("2 / 2 messages")).toBeInTheDocument());
-  });
-
-  it("narrows the visible count to only messages matching the search text, without changing the total", async () => {
+  it("narrows the single loaded/total count to only messages matching the search text", async () => {
     const messages = [
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "b3JkZXItMQ==", payloadBase64: null, headers: [] },
       { partition: 0, offset: 2, timestampMs: null, keyBase64: "b3RoZXI=", payloadBase64: null, headers: [] },
@@ -509,11 +531,11 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("2 / 2 messages")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 / 2 loaded")).toBeInTheDocument());
 
     await user.type(screen.getByLabelText("Search messages"), "order-1");
 
-    await waitFor(() => expect(screen.getByText("1 / 2 messages")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 / 2 loaded")).toBeInTheDocument());
   });
 
   it("shows 0 / 0 loaded before any fetch has run", () => {

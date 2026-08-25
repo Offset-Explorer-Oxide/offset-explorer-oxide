@@ -4,7 +4,10 @@ import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionSt
 import { ResourceCategory } from "./ResourceCategory";
 import { TopicCategory } from "./TopicCategory";
 import { useBrokers, useConsumerGroups, useTopics } from "./useClusterResources";
-import { treeKey } from "./useTreeUiStore";
+import { treeKey, useTreeUiStore } from "./useTreeUiStore";
+
+/** A group in this state currently has no members, and so no active partition assignment — see the "hide empty consumer groups" context menu item below. */
+const EMPTY_GROUP_STATE = "Empty";
 
 export interface ClusterResourceTreeProps {
   connectionId: string;
@@ -24,6 +27,9 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
   const topics = useTopics(connectionId, true);
   const groups = useConsumerGroups(connectionId, true);
   const activeTabId = useTabsStore((s) => s.activeTabId);
+  const consumersTreeKey = treeKey(activeTabId, connectionId, "Consumers");
+  const hideEmptyGroups = useTreeUiStore((s) => s.hideEmptyConsumerGroups[consumersTreeKey] ?? false);
+  const toggleHideEmptyConsumerGroups = useTreeUiStore((s) => s.toggleHideEmptyConsumerGroups);
 
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectBroker = useWorkspaceSelectionStore((s) => s.selectBroker);
@@ -67,7 +73,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         items={groups.data}
         isLoading={groups.isLoading}
         onExpand={noop}
-        treeKey={treeKey(activeTabId, connectionId, "Consumers")}
+        treeKey={consumersTreeKey}
         getKey={(group) => group.groupId}
         getLabel={(group) => group.groupId}
         matchesSearch={(group, query) => group.groupId.toLowerCase().includes(query.toLowerCase())}
@@ -77,6 +83,13 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
           selection.groupId === group.groupId
         }
         onSelect={(group) => selectConsumerGroup(connectionId, group.groupId)}
+        additionalFilter={hideEmptyGroups ? (group) => group.state !== EMPTY_GROUP_STATE : undefined}
+        contextMenuItems={[
+          {
+            label: hideEmptyGroups ? "Show all consumer groups" : "Hide empty consumer groups",
+            onSelect: () => toggleHideEmptyConsumerGroups(consumersTreeKey),
+          },
+        ]}
       />
     </ul>
   );
