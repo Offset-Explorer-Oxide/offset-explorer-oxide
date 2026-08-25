@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
@@ -291,6 +291,34 @@ describe("DataTab", () => {
         }),
       ),
     );
+  });
+
+  it("rejects Fetch with a validation error when To is before From, without calling the backend", async () => {
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-01-02T00:00" } });
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-01-01T00:00" } });
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent('"To" date must be after "From" date');
+    expect(fetchMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects Fetch with a validation error when To equals From, without calling the backend", async () => {
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-01-01T00:00" } });
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent('"To" date must be after "From" date');
+    expect(fetchMessages).not.toHaveBeenCalled();
   });
 
   it("shows the grid's loading state while a fetch is in flight, and clears it once it resolves", async () => {
