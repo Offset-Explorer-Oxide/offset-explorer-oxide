@@ -31,8 +31,18 @@ rustls-native-certs = "0.8"
 # binary rather than dynamically linked against a system OpenSSL install —
 # this is a distributed desktop app, and most end-user Windows/macOS
 # machines have no system OpenSSL for a dynamic link to find at runtime.
+#
+# `zstd` is required because librdkafka disables zstd decompression entirely
+# unless this feature turns it on — without it, polling a topic whose
+# messages were produced with zstd compression (a common choice for
+# high-volume/large-payload topics) fails with a client-side "Local: Not
+# implemented" error instead of a normal Kafka error, since the consumer
+# simply has no code path to decompress the batch. Plain `zstd` (not
+# `zstd-pkg-config`) builds libzstd from its bundled C source and statically
+# links it in, matching `ssl-vendored`'s rationale above — no system libzstd
+# needed on the end user's machine.
 [target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored"] }
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored", "zstd"] }
 
 [target.'cfg(not(windows))'.dependencies]
-rdkafka = { version = "0.36", features = ["ssl-vendored"] }
+rdkafka = { version = "0.36", features = ["ssl-vendored", "zstd"] }
