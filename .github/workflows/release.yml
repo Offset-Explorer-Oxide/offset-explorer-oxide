@@ -101,12 +101,41 @@ jobs:
       # find_package a real library to locate, sidestepping the rdkafka-sys
       # wiring gap entirely. The static triplet keeps zstd statically linked
       # into the final binary, so end users still need nothing extra.
+      # `>> $env:GITHUB_ENV` in PowerShell writes UTF-16LE (Out-File's
+      # default encoding), but the runner parses that file as UTF-8 — the
+      # write "succeeds" with no error, but the variable silently never
+      # reaches later steps. This is why v0.34.0 still shipped without zstd
+      # despite this step showing green. Add-Content defaults to UTF-8
+      # (no BOM) in PowerShell 7+ (pwsh, what `shell: pwsh` runs), which is
+      # what actually works here.
       - name: Install zstd via vcpkg (Windows / rdkafka cmake-build zstd support)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           vcpkg install zstd:x64-windows-static
-          echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+
+      # This exact zstd-on-Windows fix has silently failed twice before
+      # (v0.27.0's Cargo feature alone, v0.34.0's vcpkg step whose
+      # $env:GITHUB_ENV write turned out not to propagate) — both times the
+      # build reported success and only a binary-level check after release
+      # revealed zstd was still missing. Fail loudly here instead of finding
+      # out the same way a third time.
+      - name: Verify zstd is actually installed and visible to later steps (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $zstdHeader = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include\zstd.h"
+          if (-not (Test-Path $zstdHeader)) {
+            Write-Error "zstd.h not found at $zstdHeader after vcpkg install"
+            exit 1
+          }
+          if (-not $env:CMAKE_PREFIX_PATH) {
+            Write-Error "CMAKE_PREFIX_PATH did not propagate from the previous step"
+            exit 1
+          }
+          Write-Host "zstd header found at $zstdHeader"
+          Write-Host "CMAKE_PREFIX_PATH=$env:CMAKE_PREFIX_PATH"
 
       - name: Install frontend dependencies
         run: npm install --prefix frontend
