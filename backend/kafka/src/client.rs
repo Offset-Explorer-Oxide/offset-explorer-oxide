@@ -10,6 +10,7 @@ use kafkaoxide_core::{
 use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
 use rdkafka::client::{ClientContext, DefaultClientContext};
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::{BorrowedMessage, Headers};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
@@ -598,7 +599,7 @@ impl KafkaClient for RdKafkaClient {
                     }
                     Some(Err(err)) => {
                         idle_elapsed += POLL_TIMEOUT;
-                        last_poll_error = Some(err.to_string());
+                        last_poll_error = Some(describe_poll_error(&err));
                     }
                     None => {
                         idle_elapsed += POLL_TIMEOUT;
@@ -823,6 +824,47 @@ impl KafkaClient for RdKafkaClient {
     }
 }
 
+/// Turns a poll failure into a line that explains itself.
+///
+/// `NotImplemented` is what librdkafka reports for a batch it has no code path
+/// to decompress, and rdkafka-rust throws away the detail: the error op
+/// librdkafka enqueues carries a string naming the offending codec
+/// (`rd_kafka_event_error_string`), but `handle_error_event` keeps only the
+/// error *code*, so all that reaches us is "Message consumption error:
+/// NotImplemented (Local: Not implemented)". Every bug report about this
+/// arrived as exactly that sentence, which cannot distinguish "this build was
+/// compiled without the codec" — the cause every previous time — from anything
+/// else sharing the code.
+///
+/// So attach what this binary can actually decode, read out of librdkafka
+/// itself (see [`crate::build_info`]). The next report then says which case it
+/// is without a round trip.
+fn describe_poll_error(err: &KafkaError) -> String {
+    let message = err.to_string();
+
+    let code = match err {
+        KafkaError::MessageConsumption(code) | KafkaError::MessageConsumptionFatal(code) => *code,
+        _ => return message,
+    };
+    if code != RDKafkaErrorCode::NotImplemented {
+        return message;
+    }
+
+    let features = crate::build_info::builtin_features();
+    match crate::build_info::missing_required_features().as_slice() {
+        [] => format!(
+            "{message} - this build decodes {features}, so the batch is not \
+             simply using a codec that was left out of the build"
+        ),
+        missing => format!(
+            "{message} - this build of librdkafka is missing {}, and a topic \
+             compressed with one of those cannot be read at all. Compiled \
+             with: {features}",
+            missing.join(", "),
+        ),
+    }
+}
+
 /// Resolves each target partition's offset at `timestamp_ms` via
 /// `offsets_for_times`, falling back to `fallback` (a watermark lookup) for
 /// any partition librdkafka couldn't resolve to a concrete offset (e.g. the
@@ -869,6 +911,45 @@ fn resolve_offsets_by_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The report that started this: a bare `NotImplemented` says nothing
+    /// about *why*, and the answer is a compile-time property of the binary,
+    /// so the binary should be the one to state it.
+    #[test]
+    fn a_not_implemented_poll_error_reports_what_this_build_can_decode() {
+        let described = describe_poll_error(&KafkaError::MessageConsumption(
+            RDKafkaErrorCode::NotImplemented,
+        ));
+
+        assert!(
+            described.starts_with("Message consumption error"),
+            "the original error must survive, got {described:?}"
+        );
+        assert!(
+            described.contains(&crate::build_info::builtin_features()),
+            "the codec list librdkafka reports must be in the message, got {described:?}"
+        );
+    }
+
+    /// Fatal and non-fatal arrive as different variants of the same code, and
+    /// a user hitting the fatal one needs the same explanation.
+    #[test]
+    fn the_fatal_variant_is_explained_the_same_way() {
+        let described = describe_poll_error(&KafkaError::MessageConsumptionFatal(
+            RDKafkaErrorCode::NotImplemented,
+        ));
+
+        assert!(described.contains(&crate::build_info::builtin_features()));
+    }
+
+    /// Only `NotImplemented` is about codecs. Annotating every poll failure
+    /// with a codec list would bury the actual reason for the common ones.
+    #[test]
+    fn other_poll_errors_are_left_exactly_as_rdkafka_worded_them() {
+        let err = KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition);
+
+        assert_eq!(describe_poll_error(&err), err.to_string());
+    }
 
     fn sample_connection() -> Connection {
         Connection {
