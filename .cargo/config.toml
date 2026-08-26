@@ -1,0 +1,16 @@
+# librdkafka's CMake build (used on Windows only — see backend/kafka/Cargo.toml)
+# silently disables Snappy unless `WITH_SNAPPY` is forced on. The toolchain file
+# below does that, and documents why.
+#
+# It is wired here rather than in `.github/workflows/release.yml` so that local
+# Windows builds get the same treatment as CI, and so that a new job cannot
+# forget it.
+#
+# `relative = true` resolves the path against the directory containing `.cargo`
+# (the repo root), so it holds whatever directory cargo is invoked from —
+# tauri-action runs it from `src-tauri/`.
+#
+# No effect off Windows: rdkafka-sys uses configure+make there and no CMake
+# build ever reads it.
+[env]
+CMAKE_TOOLCHAIN_FILE = { value = "build-support/librdkafka-cmake-toolchain.cmake", relative = true }

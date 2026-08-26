@@ -87,27 +87,20 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: cmake --version
 
-      # librdkafka's CMake build (used only on Windows) locates zstd via
-      # `find_package(ZSTD)`, which rdkafka-sys's build script wires up only
-      # through `register_dep` — unlike other optional deps in that same
-      # build script (e.g. sasl2/gssapi), it doesn't also push explicit
-      # include/lib paths, and in practice find_package doesn't locate the
-      # Cargo-built zstd-sys library on this runner. Result: the CMake build
-      # silently proceeds with zstd disabled instead of failing loudly
-      # (confirmed by extracting a built app-v0.27.0 release and finding
-      # `rd_kafka_zstd_decompress` present in the macOS build but absent from
-      # the Windows one). Installing zstd via vcpkg (already present on
-      # windows-latest runners) and pointing CMAKE_PREFIX_PATH at it gives
-      # find_package a real library to locate, sidestepping the rdkafka-sys
-      # wiring gap entirely. The static triplet keeps zstd statically linked
-      # into the final binary, so end users still need nothing extra.
-      # `>> $env:GITHUB_ENV` in PowerShell writes UTF-16LE (Out-File's
-      # default encoding), but the runner parses that file as UTF-8 — the
-      # write "succeeds" with no error, but the variable silently never
-      # reaches later steps. This is why v0.34.0 still shipped without zstd
-      # despite this step showing green. Add-Content defaults to UTF-8
-      # (no BOM) in PowerShell 7+ (pwsh, what `shell: pwsh` runs), which is
-      # what actually works here.
+      # librdkafka's CMake build (Windows only) locates zstd through
+      # `find_package(ZSTD)`, and rdkafka-sys wires that up only via
+      # `register_dep("zstd")` — unlike the sasl2/curl/zlib cases in the same
+      # build script, it pushes no explicit include/lib path, and find_package
+      # does not locate the Cargo-built zstd-sys library on this runner.
+      # Installing zstd via vcpkg (already present on windows-latest) and
+      # pointing CMAKE_PREFIX_PATH at it gives find_package a real library,
+      # sidestepping that gap. The static triplet keeps zstd statically linked,
+      # so end users still need nothing extra.
+      #
+      # Use `Add-Content`, not `>>`: PowerShell's `>>` writes UTF-16LE, which
+      # the runner parses as UTF-8 — the write reports success while the
+      # variable silently never reaches later steps. That cost us the v0.34.0
+      # release.
       - name: Install zstd via vcpkg (Windows / rdkafka cmake-build zstd support)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -115,45 +108,24 @@ jobs:
           vcpkg install zstd:x64-windows-static
           Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
 
-      # This exact zstd-on-Windows fix has silently failed multiple times
-      # before (v0.27.0's Cargo feature alone; v0.34.0's vcpkg step whose
-      # $env:GITHUB_ENV write turned out not to propagate; v0.35.0's fix of
-      # that, which STILL shipped without zstd for a reason not yet
-      # identified) — every time the build reported success and only a
-      # binary-level check after release revealed zstd (and, it turns out,
-      # Snappy too — never wired up for this CMake path at all, unrelated to
-      # zstd's issues) was still missing. A local CMake build with the same
-      # defines (on Linux, using GCC) correctly enables both, so the
-      # generation logic itself is sound — something specific to the actual
-      # Windows/MSVC execution of it isn't behaving the same way, and static
-      # reading of the CMake scripts can't reveal what. So: build the crate
-      # for real right here, find librdkafka's own generated config.h under
-      # target/, and fail loudly printing its content if either codec isn't
-      # really enabled — direct evidence from the real environment instead
-      # of another guess.
-      - name: Verify librdkafka's generated config.h actually enables zstd and Snappy (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          cargo build --release -p kafkaoxide-kafka
-          $configHeader = Get-ChildItem -Path target -Recurse -Filter "config.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $configHeader) {
-            Write-Error "Could not find librdkafka's generated config.h anywhere under target/"
-            exit 1
-          }
-          Write-Host "Found config.h at $($configHeader.FullName)"
-          $content = Get-Content $configHeader.FullName -Raw
-          Write-Host "--- relevant defines ---"
-          ($content -split "`r?`n") | Where-Object { $_ -match "WITH_SNAPPY|WITH_ZSTD|WITH_LZ4" } | ForEach-Object { Write-Host $_ }
-          if ($content -notmatch "#define WITH_SNAPPY 1") {
-            Write-Error "WITH_SNAPPY is not 1 in the generated config.h — Snappy-compressed topics will fail with 'Local: Not Implemented'"
-            exit 1
-          }
-          if ($content -notmatch "#define WITH_ZSTD 1") {
-            Write-Error "WITH_ZSTD is not 1 in the generated config.h — zstd-compressed topics will fail with 'Local: Not Implemented'"
-            exit 1
-          }
-          Write-Host "Confirmed: both WITH_SNAPPY and WITH_ZSTD are 1 in the real generated config.h."
+      # Every earlier attempt to verify this checked a *proxy* for codec
+      # support — a Cargo feature resolving, a vcpkg install succeeding, an env
+      # var being non-empty, a define sitting in a generated config.h — and
+      # each proxy reported green while the shipped Windows binary still could
+      # not decompress. The config.h check (v0.36.0) was the clearest failure
+      # of the genre: on Windows librdkafka's sources include `win32_config.h`
+      # and never read that generated file at all (librdkafka/src/rd.h), so it
+      # described a build that does not exist; and its Snappy assertion could
+      # not fail under any circumstances, because `config.h.in` holds a literal
+      # `#define WITH_SNAPPY 1`.
+      #
+      # This step asks the built library itself, on every platform, through
+      # librdkafka's own `builtin.features` — the same `WITH_*` macros that
+      # gate the decompression switch, read out of the artifact about to ship.
+      # `--release` so it is the very same librdkafka the installers link.
+      # See backend/kafka/src/build_info.rs.
+      - name: Verify librdkafka compiled in every required codec
+        run: cargo test --release -p kafkaoxide-kafka build_info -- --nocapture
 
       - name: Install frontend dependencies
         run: npm install --prefix frontend

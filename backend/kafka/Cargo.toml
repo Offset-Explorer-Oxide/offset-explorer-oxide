@@ -41,6 +41,11 @@ rustls-native-certs = "0.8"
 # `zstd-pkg-config`) builds libzstd from its bundled C source and statically
 # links it in, matching `ssl-vendored`'s rationale above — no system libzstd
 # needed on the end user's machine.
+# Snappy needs no feature here — it is bundled in librdkafka's own sources —
+# but librdkafka's Windows CMake build disables it anyway unless `WITH_SNAPPY`
+# is forced on; see build-support/librdkafka-cmake-toolchain.cmake. Whether any
+# of this actually took effect is verified by `build_info`'s tests, which ask
+# the built library rather than trusting this file.
 [target.'cfg(windows)'.dependencies]
 rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored", "zstd"] }
 
