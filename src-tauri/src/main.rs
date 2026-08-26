@@ -41,6 +41,30 @@ fn main() {
                 });
 
                 logging::emit_log(&handle, "info", "Application started");
+
+                // Which compression codecs work is fixed at compile time
+                // inside librdkafka, and a missing one stays invisible until a
+                // user happens to open a topic that uses it — at which point
+                // every poll fails with a bare "Local: Not Implemented". Six
+                // releases went out before that could be diagnosed. Recording
+                // it at startup means the Logs panel answers the question
+                // directly, from the build the user is actually running.
+                let features = kafkaoxide_kafka::build_info::builtin_features();
+                let missing = kafkaoxide_kafka::build_info::missing_required_features();
+                if missing.is_empty() {
+                    logging::emit_log(&handle, "info", format!("librdkafka features: {features}"));
+                } else {
+                    logging::emit_log(
+                        &handle,
+                        "error",
+                        format!(
+                            "This build of librdkafka is missing {}. Topics compressed with \
+                             those codecs will fail to fetch with \"Local: Not Implemented\". \
+                             Compiled with: {features}",
+                            missing.join(", "),
+                        ),
+                    );
+                }
             });
             Ok(())
         })
