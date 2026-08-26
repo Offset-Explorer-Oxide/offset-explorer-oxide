@@ -139,8 +139,18 @@ jobs:
       #
       # Rebuilding librdkafka from scratch costs a few minutes per release and
       # removes the whole class of problem.
+      #
+      # `--release` is not optional here, and its absence is its own silent
+      # failure: `cargo clean -p` is scoped to one profile and defaults to dev,
+      # so a bare `cargo clean -p rdkafka-sys` empties `target/debug` and leaves
+      # the cached `target/release` librdkafka — the only one that ships —
+      # exactly where it was. Both profiles are cleaned because both are built
+      # below.
       - name: Rebuild librdkafka from scratch (its codec config is never cache-invalidated)
-        run: cargo clean -p rdkafka-sys
+        shell: bash
+        run: |
+          cargo clean -p rdkafka-sys --release
+          cargo clean -p rdkafka-sys
 
       - name: Build the app binary
         run: cargo build --release --manifest-path src-tauri/Cargo.toml
