@@ -110,25 +110,60 @@ jobs:
 
       # Every earlier attempt to verify this checked a *proxy* for codec
       # support — a Cargo feature resolving, a vcpkg install succeeding, an env
-      # var being non-empty, a define sitting in a generated config.h — and
-      # each proxy reported green while the shipped Windows binary still could
-      # not decompress. The config.h check (v0.36.0) was the clearest failure
-      # of the genre: on Windows librdkafka's sources include `win32_config.h`
-      # and never read that generated file at all (librdkafka/src/rd.h), so it
-      # described a build that does not exist; and its Snappy assertion could
-      # not fail under any circumstances, because `config.h.in` holds a literal
-      # `#define WITH_SNAPPY 1`.
+      # var being non-empty, a define sitting in a generated config.h, and most
+      # recently a `cargo test` binary built from this same workspace. Each
+      # reported green while the shipped Windows binary still could not
+      # decompress: v0.37.0 passed the `build_info` gate and its installed
+      # `kafkaoxide-app.exe` still carries librdkafka's "snappy not enabled at
+      # build time" marker, which is only compiled in when Snappy is absent.
       #
-      # This step asks the built library itself, on every platform, through
-      # librdkafka's own `builtin.features` — the same `WITH_*` macros that
-      # gate the decompression switch, read out of the artifact about to ship.
-      # `--release` so it is the very same librdkafka the installers link.
-      # See backend/kafka/src/build_info.rs.
-      - name: Verify librdkafka compiled in every required codec
-        run: cargo test --release -p kafkaoxide-kafka build_info -- --nocapture
-
+      # So the checks below run in the order that matters: build the exact
+      # binary tauri is about to bundle, make *it* answer, and only then upload
+      # anything. A test binary is not the artifact; the artifact is.
       - name: Install frontend dependencies
         run: npm install --prefix frontend
+
+      - name: Build the frontend (tauri embeds it into the binary)
+        run: npm run build --prefix frontend
+
+      # cmake-rs reads CMAKE_TOOLCHAIN_FILE — and every other variable it
+      # consults — through a helper that prints the value and never emits
+      # `cargo:rerun-if-env-changed` (grep the crate: it has none). So changing
+      # which codecs librdkafka is compiled with invalidates nothing cargo
+      # tracks, and the `target/` restored by the cache step above gets relinked
+      # as-is. A stale CMake build tree compounds it, since CMake only honours a
+      # toolchain file when it configures a tree for the first time. Both
+      # failures are silent: the build succeeds and ships whatever codecs the
+      # *cached* library happened to have, which is how a fix for this can land
+      # in the repo and never reach the installer.
+      #
+      # Rebuilding librdkafka from scratch costs a few minutes per release and
+      # removes the whole class of problem.
+      - name: Rebuild librdkafka from scratch (its codec config is never cache-invalidated)
+        run: cargo clean -p rdkafka-sys
+
+      - name: Build the app binary
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      # Windows release builds have no console (`windows_subsystem = "windows"`),
+      # so the report is read back from a file; the exit code is what fails the
+      # job. See `report_librdkafka_features` in src-tauri/src/main.rs.
+      - name: Verify the app binary itself decodes every codec
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/release/kafkaoxide-app
+          if [ -f "$binary.exe" ]; then binary="$binary.exe"; fi
+          status=0
+          "$binary" --librdkafka-features "$RUNNER_TEMP/librdkafka-features.txt" || status=$?
+          cat "$RUNNER_TEMP/librdkafka-features.txt"
+          exit $status
+
+      # Keeps the unit-level view too: it names *which* codec is missing in
+      # terms of librdkafka's own feature list, and covers the non-bundled
+      # crates' tests in the same run.
+      - name: Verify librdkafka's own feature report
+        run: cargo test --release -p kafkaoxide-kafka build_info -- --nocapture
 
       - name: Build and upload to draft release
         uses: tauri-apps/tauri-action@v0

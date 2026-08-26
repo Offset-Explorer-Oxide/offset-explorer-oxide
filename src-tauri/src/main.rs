@@ -8,7 +8,49 @@ use state::AppState;
 use std::sync::Arc;
 use tauri::Manager;
 
+/// `--librdkafka-features [path]`: report which compression codecs *this
+/// executable* can decode, then exit — 0 when every required one is compiled
+/// in, 1 when any is missing.
+///
+/// Every earlier check of this was made against something other than the
+/// artifact users install: a Cargo feature resolving, a vcpkg install
+/// succeeding, a generated `config.h`, a `cargo test` binary built from the
+/// same workspace. v0.37.0 shipped a Windows build with Snappy compiled out
+/// while all of those were green. This one cannot be that kind of proxy — it
+/// is the shipped executable answering about itself.
+///
+/// Release builds on Windows have no console (`windows_subsystem = "windows"`
+/// above), so the answer also goes to `path` when one is given, and the exit
+/// code carries the verdict regardless of where output can be seen.
+fn report_librdkafka_features(path: Option<&str>) -> ! {
+    let features = kafkaoxide_kafka::build_info::builtin_features();
+    let missing = kafkaoxide_kafka::build_info::missing_required_features();
+
+    let report = if missing.is_empty() {
+        format!("ok\nbuiltin.features = {features}\n")
+    } else {
+        format!(
+            "MISSING {}\nbuiltin.features = {features}\nTopics compressed with a missing \
+             codec fail every poll with \"Local: Not Implemented\".\n",
+            missing.join(", "),
+        )
+    };
+
+    print!("{report}");
+    if let Some(path) = path {
+        let _ = std::fs::write(path, &report);
+    }
+    std::process::exit(if missing.is_empty() { 0 } else { 1 });
+}
+
 fn main() {
+    let mut args = std::env::args().skip(1);
+    if let Some(flag) = args.next() {
+        if flag == "--librdkafka-features" {
+            report_librdkafka_features(args.next().as_deref());
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
