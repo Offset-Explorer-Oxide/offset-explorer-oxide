@@ -115,27 +115,45 @@ jobs:
           vcpkg install zstd:x64-windows-static
           Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
 
-      # This exact zstd-on-Windows fix has silently failed twice before
-      # (v0.27.0's Cargo feature alone, v0.34.0's vcpkg step whose
-      # $env:GITHUB_ENV write turned out not to propagate) — both times the
-      # build reported success and only a binary-level check after release
-      # revealed zstd was still missing. Fail loudly here instead of finding
-      # out the same way a third time.
-      - name: Verify zstd is actually installed and visible to later steps (Windows)
+      # This exact zstd-on-Windows fix has silently failed multiple times
+      # before (v0.27.0's Cargo feature alone; v0.34.0's vcpkg step whose
+      # $env:GITHUB_ENV write turned out not to propagate; v0.35.0's fix of
+      # that, which STILL shipped without zstd for a reason not yet
+      # identified) — every time the build reported success and only a
+      # binary-level check after release revealed zstd (and, it turns out,
+      # Snappy too — never wired up for this CMake path at all, unrelated to
+      # zstd's issues) was still missing. A local CMake build with the same
+      # defines (on Linux, using GCC) correctly enables both, so the
+      # generation logic itself is sound — something specific to the actual
+      # Windows/MSVC execution of it isn't behaving the same way, and static
+      # reading of the CMake scripts can't reveal what. So: build the crate
+      # for real right here, find librdkafka's own generated config.h under
+      # target/, and fail loudly printing its content if either codec isn't
+      # really enabled — direct evidence from the real environment instead
+      # of another guess.
+      - name: Verify librdkafka's generated config.h actually enables zstd and Snappy (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $zstdHeader = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include\zstd.h"
-          if (-not (Test-Path $zstdHeader)) {
-            Write-Error "zstd.h not found at $zstdHeader after vcpkg install"
+          cargo build --release -p kafkaoxide-kafka
+          $configHeader = Get-ChildItem -Path target -Recurse -Filter "config.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $configHeader) {
+            Write-Error "Could not find librdkafka's generated config.h anywhere under target/"
             exit 1
           }
-          if (-not $env:CMAKE_PREFIX_PATH) {
-            Write-Error "CMAKE_PREFIX_PATH did not propagate from the previous step"
+          Write-Host "Found config.h at $($configHeader.FullName)"
+          $content = Get-Content $configHeader.FullName -Raw
+          Write-Host "--- relevant defines ---"
+          ($content -split "`r?`n") | Where-Object { $_ -match "WITH_SNAPPY|WITH_ZSTD|WITH_LZ4" } | ForEach-Object { Write-Host $_ }
+          if ($content -notmatch "#define WITH_SNAPPY 1") {
+            Write-Error "WITH_SNAPPY is not 1 in the generated config.h — Snappy-compressed topics will fail with 'Local: Not Implemented'"
             exit 1
           }
-          Write-Host "zstd header found at $zstdHeader"
-          Write-Host "CMAKE_PREFIX_PATH=$env:CMAKE_PREFIX_PATH"
+          if ($content -notmatch "#define WITH_ZSTD 1") {
+            Write-Error "WITH_ZSTD is not 1 in the generated config.h — zstd-compressed topics will fail with 'Local: Not Implemented'"
+            exit 1
+          }
+          Write-Host "Confirmed: both WITH_SNAPPY and WITH_ZSTD are 1 in the real generated config.h."
 
       - name: Install frontend dependencies
         run: npm install --prefix frontend
