@@ -10,7 +10,17 @@
 # (the repo root), so it holds whatever directory cargo is invoked from —
 # tauri-action runs it from `src-tauri/`.
 #
+# `force = true` is load-bearing, not tidiness. Without it cargo yields to a
+# `CMAKE_TOOLCHAIN_FILE` that is already in the environment — which is exactly
+# what a vcpkg integration, a CI image, or a developer's own shell profile sets
+# — and the workspace's file is then never read at all. That failure is
+# completely silent: the build succeeds, every check that asks Cargo or CMake
+# what it *intended* still reports green, and the app ships without Snappy.
+# v0.37.0 went out that way (its `kafkaoxide-app.exe` contains librdkafka's
+# "snappy not enabled at build time" marker, which librdkafka only compiles in
+# when the codec is absent).
+#
 # No effect off Windows: rdkafka-sys uses configure+make there and no CMake
 # build ever reads it.
 [env]
-CMAKE_TOOLCHAIN_FILE = { value = "build-support/librdkafka-cmake-toolchain.cmake", relative = true }
+CMAKE_TOOLCHAIN_FILE = { value = "build-support/librdkafka-cmake-toolchain.cmake", relative = true, force = true }

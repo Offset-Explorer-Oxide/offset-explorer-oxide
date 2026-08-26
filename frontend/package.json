@@ -1,7 +1,7 @@
 {
   "name": "kafkaoxide",
   "private": true,
-  "version": "0.38.0",
+  "version": "0.39.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,6 +17,7 @@
     "@types/react-window": "^1.8.8",
     "ag-grid-community": "^36.1.0",
     "ag-grid-react": "^36.1.0",
+    "kafkaoxide": "file:..",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-window": "^1.8.11",
