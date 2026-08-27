@@ -88,6 +88,23 @@ pub trait KafkaClient: Send + Sync {
         ssl: BrokerSslConfig<'_>,
     ) -> Result<ConnectionStatus, AppError>;
 
+    /// Authenticates a saved connection and keeps the resulting client for
+    /// every request that follows. Backs the cluster panel's Connect /
+    /// Reconnect.
+    ///
+    /// Unlike `test_connection` (which probes values the user has typed but
+    /// not saved, and throws the client away), this leaves a live,
+    /// authenticated connection behind — so listing topics immediately
+    /// afterwards is one request on an open socket rather than another full
+    /// handshake.
+    async fn connect(&self, connection: &Connection) -> Result<ConnectionStatus, AppError>;
+
+    /// Closes and forgets this connection's pooled client. Called when the
+    /// user disconnects, edits or deletes a connection, and when the broker
+    /// rejects its credentials — anything that makes the pooled connection
+    /// wrong or unwanted.
+    fn release(&self, connection_id: &str);
+
     /// Backs the tree's "Brokers" sub-list once a cluster is connected.
     /// `read_timeout` is the user's configured General settings > Brokers >
     /// Read Timeout value.
@@ -200,12 +217,34 @@ fn extract_headers(message: &BorrowedMessage) -> Vec<MessageHeader> {
 /// closed port, a TLS failure, and a bad SASL password all surface as the
 /// same generic `BrokerTransportFailure` code — so without this, every
 /// failure reason gets collapsed into an identical, unhelpful message.
+///
+/// Attached to *every* client this module creates, not just the connection
+/// probe: the reason string is also what tells an authentication rejection
+/// apart from a transport blip (see [`crate::auth::is_auth_failure`]), and
+/// that verdict decides whether the connection's circuit breaker trips. A
+/// client created without this context can only ever report the generic
+/// code, so a password rotated mid-session would look like a network
+/// problem and be retried like one.
 #[derive(Clone, Default)]
-struct ProbeContext {
+struct ClientErrorContext {
     last_error: Arc<Mutex<Option<String>>>,
 }
 
-impl ClientContext for ProbeContext {
+impl ClientErrorContext {
+    /// librdkafka's reason for the most recent failure on this client, if it
+    /// reported one through the `error` callback.
+    fn last_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    fn clear(&self) {
+        if let Ok(mut last_error) = self.last_error.lock() {
+            *last_error = None;
+        }
+    }
+}
+
+impl ClientContext for ClientErrorContext {
     fn error(&self, _error: rdkafka::error::KafkaError, reason: &str) {
         if let Ok(mut last_error) = self.last_error.lock() {
             *last_error = Some(reason.to_string());
@@ -213,48 +252,234 @@ impl ClientContext for ProbeContext {
     }
 }
 
-impl ConsumerContext for ProbeContext {}
+impl ConsumerContext for ClientErrorContext {}
+
+/// Every consumer in this module: a `BaseConsumer` that reports librdkafka's
+/// failure reasons through [`ClientErrorContext`].
+type ObservedConsumer = BaseConsumer<ClientErrorContext>;
+
+/// How long a failed request will spend serving the client's event queue to
+/// find out *why* it failed. Only ever spent on the error path.
+const ERROR_DRAIN_BUDGET: Duration = Duration::from_millis(250);
+
+/// A consumer together with the context watching it fail.
+///
+/// Cloneable and cheap (two `Arc`s), so one client can be shared by every
+/// request against a connection — see [`RdKafkaClient::metadata_client`].
+#[derive(Clone)]
+struct ObservedClient {
+    consumer: Arc<ObservedConsumer>,
+    context: ClientErrorContext,
+}
+
+impl ObservedClient {
+    fn create(config: &ClientConfig) -> Result<Self, AppError> {
+        let context = ClientErrorContext::default();
+        match config.create_with_context::<_, ObservedConsumer>(context.clone()) {
+            Ok(consumer) => Ok(ObservedClient {
+                consumer: Arc::new(consumer),
+                context,
+            }),
+            Err(err) => {
+                // No client exists to drain, so the only reason available is
+                // the creation error itself — which does carry librdkafka's
+                // text (e.g. "Invalid sasl.username: not set").
+                let reason = err.to_string();
+                Err(failure_report(&err, &reason, "failed to create kafka consumer"))
+            }
+        }
+    }
+
+    /// Forgets any reason left over from an earlier request on this client.
+    ///
+    /// A pooled client outlives the request that created it, so without this
+    /// a stale reason from a previous failure could be reported — and
+    /// classified — as the current one's cause.
+    fn begin(&self) {
+        self.context.clear();
+    }
+
+    /// Serves the client's event queue until it yields librdkafka's reason
+    /// for a failure, or the budget runs out.
+    ///
+    /// librdkafka reports failures as *events*, and rdkafka only turns an
+    /// event into a `ClientContext::error` call while the client's queue is
+    /// being served — which nothing but `poll` does (rdkafka 0.36 sets no
+    /// classic `error_cb` at all; see `Client::poll_event`). A client that
+    /// only calls `fetch_metadata` therefore never learns why anything
+    /// failed: its context stays empty and every failure collapses into the
+    /// same generic "Broker transport failure". Polling here is what makes
+    /// the reason — and with it the difference between a rejected password
+    /// and an unreachable broker — observable at all.
+    ///
+    /// Safe on a consumer with no `group.id` and no assignment: rdkafka
+    /// leaves such a client's main queue in place precisely so it can be
+    /// used for metadata and watermarks.
+    fn drain_error_events(&self) {
+        let deadline = std::time::Instant::now() + ERROR_DRAIN_BUDGET;
+        while self.context.last_error().is_none() && std::time::Instant::now() < deadline {
+            let _ = self.consumer.poll(Duration::from_millis(10));
+        }
+    }
+
+    /// Turns a librdkafka failure into a report carrying its real reason,
+    /// typed as [`AppError::Authentication`] when the credentials were
+    /// rejected and [`AppError::Kafka`] otherwise.
+    ///
+    /// The distinction is the whole point: `AppError::Authentication` is
+    /// what the command layer trips the connection's circuit breaker on, so
+    /// a rejected connection stops dialling the broker instead of being
+    /// retried like a transient failure.
+    fn failure(&self, error: &KafkaError, what: &str) -> error_stack::Report<AppError> {
+        self.drain_error_events();
+        let reason = self.context.last_error().unwrap_or_else(|| error.to_string());
+        failure_report(error, &reason, what)
+    }
+}
+
+/// Builds the report for a librdkafka failure whose reason is already known.
+fn failure_report(error: &KafkaError, reason: &str, what: &str) -> error_stack::Report<AppError> {
+    // `.change_context(AppError::Kafka)` alone would demote the `KafkaError`
+    // to a non-`Printable` context frame that `format_report`
+    // (src-tauri/src/commands/connections.rs) never surfaces to the user —
+    // rendering the reason into the attachment is the only way it reaches
+    // them instead of just the generic wrapper text.
+    let kind = if crate::auth::is_auth_failure(Some(error), Some(reason)) {
+        AppError::Authentication
+    } else {
+        AppError::Kafka
+    };
+    error_stack::Report::new(kind).attach_printable(format!("{what}: {reason}"))
+}
 
 async fn run_probe(config: ClientConfig) -> Result<ConnectionStatus, AppError> {
     tokio::task::spawn_blocking(move || {
-        let context = ProbeContext::default();
-        let consumer: BaseConsumer<ProbeContext> = match config.create_with_context(context.clone()) {
-            Ok(consumer) => consumer,
-            Err(create_err) => {
-                // `create_err.to_string()` carries librdkafka's actual reason
-                // (e.g. "Invalid sasl.username: not set") — attaching only
-                // the generic "failed to create kafka consumer" string here
-                // (the previous behavior) meant that specific reason never
-                // reached the user, no matter how informative it was.
-                let message = create_err.to_string();
-                return Err(error_stack::Report::new(AppError::Kafka).attach_printable(message));
-            }
-        };
-
-        match consumer.fetch_metadata(None, Duration::from_secs(3)) {
-            Ok(_) => Ok(ConnectionStatus::Reachable),
-            Err(fetch_err) => {
-                let reason = context
-                    .last_error
-                    .lock()
-                    .ok()
-                    .and_then(|guard| guard.clone())
-                    .unwrap_or_else(|| fetch_err.to_string());
-                Err(error_stack::Report::new(AppError::Kafka).attach_printable(reason))
-            }
-        }
+        let client = ObservedClient::create(&config)?;
+        probe_with(&client, PROBE_TIMEOUT)
     })
     .await
     .change_context(AppError::Kafka)
     .attach_printable("status check task panicked")?
 }
 
-pub struct RdKafkaClient;
+/// How long a connection probe waits for the broker to answer. Covers the
+/// TCP connection, the TLS and SASL handshakes, and the metadata response.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Asks the broker for metadata, which is the cheapest request that can only
+/// succeed once the connection is fully established and authenticated.
+fn probe_with(client: &ObservedClient, timeout: Duration) -> Result<ConnectionStatus, AppError> {
+    client.begin();
+    match client.consumer.fetch_metadata(None, timeout) {
+        Ok(_) => Ok(ConnectionStatus::Reachable),
+        Err(err) => Err(client.failure(&err, "failed to reach the cluster")),
+    }
+}
+
+/// A client kept alive for reuse, with the version of the connection it was
+/// built from.
+struct PooledClient {
+    /// The connection's `updated_at` at the time this client was built. A
+    /// client built from credentials the user has since edited must never be
+    /// reused, and this is what notices — even if nothing thought to
+    /// release it.
+    updated_at: String,
+    client: ObservedClient,
+}
+
+/// The real Kafka client, holding one authenticated connection per saved
+/// cluster.
+///
+/// Every request used to build its own client, which meant a TCP connection
+/// plus — on a secured cluster — a TLS and SASL handshake before any request
+/// could be sent. Connecting alone cost four of them: the probe, then the
+/// tree's brokers, topics and consumer groups. The handshake dominated;
+/// the request itself was never the slow part.
+///
+/// Now the probe at Connect leaves its authenticated client behind, and
+/// every metadata request after it reuses that connection. librdkafka keeps
+/// the socket alive and reconnects on its own if the broker goes away, so
+/// the pooled client survives a broker restart without the app doing
+/// anything.
+///
+/// Message fetching deliberately does *not* use this pool: a fetch assigns
+/// partitions and polls, which is per-request state, and reusing one
+/// consumer across fetches measured 3x slower (see `fetch_messages`).
+#[derive(Default)]
+pub struct RdKafkaClient {
+    metadata_clients: Mutex<HashMap<String, PooledClient>>,
+}
+
+impl RdKafkaClient {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// This connection's pooled client, building and pooling one if there
+    /// isn't a current one.
+    ///
+    /// Holds the pool lock across creation deliberately: the three requests
+    /// the tree fires the moment a cluster connects would otherwise each
+    /// build their own client for the same connection, which is the
+    /// stampede this pool exists to prevent.
+    fn metadata_client(&self, connection: &Connection) -> Result<ObservedClient, AppError> {
+        let mut pool = self.metadata_clients.lock().unwrap_or_else(|err| err.into_inner());
+
+        if let Some(pooled) = pool.get(&connection.id) {
+            if pooled.updated_at == connection.updated_at {
+                return Ok(pooled.client.clone());
+            }
+        }
+
+        let client = ObservedClient::create(&client_config(connection))?;
+        pool.insert(
+            connection.id.clone(),
+            PooledClient {
+                updated_at: connection.updated_at.clone(),
+                client: client.clone(),
+            },
+        );
+        Ok(client)
+    }
+
+    fn drop_pooled_client(&self, connection_id: &str) {
+        self.metadata_clients
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(connection_id);
+    }
+}
 
 #[async_trait]
 impl KafkaClient for RdKafkaClient {
     async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError> {
         self.ping_bootstrap(&connection.bootstrap_servers).await
+    }
+
+    async fn connect(&self, connection: &Connection) -> Result<ConnectionStatus, AppError> {
+        // A connection that fails to authenticate must not stay pooled: the
+        // next request would reuse a client the broker has already rejected.
+        let client = match self.metadata_client(connection) {
+            Ok(client) => client,
+            Err(err) => {
+                self.drop_pooled_client(&connection.id);
+                return Err(err);
+            }
+        };
+
+        let result = tokio::task::spawn_blocking(move || probe_with(&client, PROBE_TIMEOUT))
+            .await
+            .change_context(AppError::Kafka)
+            .attach_printable("connect task panicked")?;
+
+        if result.is_err() {
+            self.drop_pooled_client(&connection.id);
+        }
+        result
+    }
+
+    fn release(&self, connection_id: &str) {
+        self.drop_pooled_client(connection_id);
     }
 
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError> {
@@ -287,16 +512,13 @@ impl KafkaClient for RdKafkaClient {
     }
 
     async fn list_brokers(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<BrokerSummary>, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer
+            client.begin();
+            let metadata = client
+                .consumer
                 .fetch_metadata(None, read_timeout)
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to fetch broker metadata")?;
+                .map_err(|err| client.failure(&err, "failed to fetch broker metadata"))?;
 
             Ok(metadata
                 .brokers()
@@ -314,16 +536,13 @@ impl KafkaClient for RdKafkaClient {
     }
 
     async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
-            let metadata = consumer
+            client.begin();
+            let metadata = client
+                .consumer
                 .fetch_metadata(None, read_timeout)
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to fetch topic metadata")?;
+                .map_err(|err| client.failure(&err, "failed to fetch topic metadata"))?;
 
             Ok(metadata
                 .topics()
@@ -344,16 +563,13 @@ impl KafkaClient for RdKafkaClient {
         connection: &Connection,
         read_timeout: Duration,
     ) -> Result<Vec<ConsumerGroupSummary>, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
-            let groups = consumer
+            client.begin();
+            let groups = client
+                .consumer
                 .fetch_group_list(None, read_timeout)
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to fetch consumer group list")?;
+                .map_err(|err| client.failure(&err, "failed to fetch consumer group list"))?;
 
             Ok(groups
                 .groups()
@@ -370,24 +586,13 @@ impl KafkaClient for RdKafkaClient {
     }
 
     async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
+            client.begin();
+            let consumer = Arc::clone(&client.consumer);
             let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                // `.change_context(AppError::Kafka)` alone would demote this
-                // `KafkaError` to a non-`Printable` context frame that
-                // `format_report` (src-tauri/src/commands/connections.rs)
-                // never surfaces to the user — capturing `.to_string()`
-                // explicitly is the only way the real reason (e.g. "Local:
-                // Broker transport failure", "Local: Timed out") reaches
-                // them instead of just the generic wrapper text below.
-                let reason = err.to_string();
-                error_stack::Report::new(AppError::Kafka)
-                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
             })?;
             let topic_metadata = metadata
                 .topics()
@@ -464,22 +669,11 @@ impl KafkaClient for RdKafkaClient {
             // a consumer between fetches means unassigning and reassigning it,
             // and whatever that costs inside librdkafka dwarfs what building
             // a new one costs. Measure before reaching for this again.
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
+            let client = ObservedClient::create(&config)?;
+            let consumer = Arc::clone(&client.consumer);
 
             let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                // `.change_context(AppError::Kafka)` alone would demote this
-                // `KafkaError` to a non-`Printable` context frame that
-                // `format_report` (src-tauri/src/commands/connections.rs)
-                // never surfaces to the user — capturing `.to_string()`
-                // explicitly is the only way the real reason (e.g. "Local:
-                // Broker transport failure", "Local: Timed out") reaches
-                // them instead of just the generic wrapper text below.
-                let reason = err.to_string();
-                error_stack::Report::new(AppError::Kafka)
-                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
             })?;
             let topic_metadata = metadata
                 .topics()
@@ -706,24 +900,13 @@ impl KafkaClient for RdKafkaClient {
         topic: &str,
         read_timeout: Duration,
     ) -> Result<Vec<PartitionSummary>, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
+            client.begin();
+            let consumer = Arc::clone(&client.consumer);
             let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                // `.change_context(AppError::Kafka)` alone would demote this
-                // `KafkaError` to a non-`Printable` context frame that
-                // `format_report` (src-tauri/src/commands/connections.rs)
-                // never surfaces to the user — capturing `.to_string()`
-                // explicitly is the only way the real reason (e.g. "Local:
-                // Broker transport failure", "Local: Timed out") reaches
-                // them instead of just the generic wrapper text below.
-                let reason = err.to_string();
-                error_stack::Report::new(AppError::Kafka)
-                    .attach_printable(format!("failed to fetch metadata for topic {topic}: {reason}"))
+                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
             })?;
             let topic_metadata = metadata
                 .topics()
@@ -765,18 +948,18 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<Vec<ConfigEntry>, AppError> {
         let config = client_config(connection);
+        // The admin client is its own type, so it can't come from the
+        // consumer pool, and there is no queue for `drain_error_events` to
+        // serve — an admin failure is classified from its error code alone.
         let admin: AdminClient<DefaultClientContext> = config
             .create()
-            .change_context(AppError::Kafka)
-            .attach_printable("failed to create kafka admin client")?;
+            .map_err(|err| failure_report(&err, &err.to_string(), "failed to create kafka admin client"))?;
 
         let specifier = ResourceSpecifier::Topic(topic);
         let options = AdminOptions::new().request_timeout(Some(read_timeout));
-        let results = admin
-            .describe_configs([&specifier], &options)
-            .await
-            .change_context(AppError::Kafka)
-            .attach_printable_lazy(|| format!("failed to describe config for topic {topic}"))?;
+        let results = admin.describe_configs([&specifier], &options).await.map_err(|err| {
+            failure_report(&err, &err.to_string(), &format!("failed to describe config for topic {topic}"))
+        })?;
 
         let resource_result = results
             .into_iter()
@@ -800,18 +983,15 @@ impl KafkaClient for RdKafkaClient {
         group_id: &str,
         read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError> {
-        let config = client_config(connection);
+        let client = self.metadata_client(connection)?;
         let mut group_config = client_config(connection);
         let group_id = group_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let consumer: BaseConsumer = config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create kafka consumer")?;
-            let groups = consumer
-                .fetch_group_list(Some(&group_id), read_timeout)
-                .change_context(AppError::Kafka)
-                .attach_printable_lazy(|| format!("failed to fetch group list for {group_id}"))?;
+            client.begin();
+            let consumer = Arc::clone(&client.consumer);
+            let groups = consumer.fetch_group_list(Some(&group_id), read_timeout).map_err(|err| {
+                client.failure(&err, &format!("failed to fetch group list for {group_id}"))
+            })?;
             let group = groups
                 .groups()
                 .iter()
@@ -862,14 +1042,15 @@ impl KafkaClient for RdKafkaClient {
             }
 
             group_config.set("group.id", &group_id);
-            let group_consumer: BaseConsumer = group_config
-                .create()
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to create group-scoped kafka consumer")?;
-            let committed = group_consumer
+            // Not pooled: this one carries a `group.id`, which changes what
+            // the client is, and it exists only for this request.
+            let group_client = ObservedClient::create(&group_config)?;
+            let committed = group_client
+                .consumer
                 .committed_offsets(tpl, read_timeout)
-                .change_context(AppError::Kafka)
-                .attach_printable_lazy(|| format!("failed to fetch committed offsets for {group_id}"))?;
+                .map_err(|err| {
+                    group_client.failure(&err, &format!("failed to fetch committed offsets for {group_id}"))
+                })?;
 
             let mut partitions = Vec::new();
             for element in committed.elements() {
@@ -956,7 +1137,7 @@ fn describe_poll_error(err: &KafkaError) -> String {
 /// any partition librdkafka couldn't resolve to a concrete offset (e.g. the
 /// timestamp is after every message in the partition).
 fn resolve_offsets_by_timestamp(
-    consumer: &BaseConsumer,
+    consumer: &ObservedConsumer,
     topic: &str,
     partitions: &[i32],
     timestamp_ms: i64,
@@ -997,6 +1178,111 @@ fn resolve_offsets_by_timestamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pooled_test_connection() -> Connection {
+        Connection {
+            id: "conn-1".into(),
+            name: "test".into(),
+            // Creating a librdkafka client does not connect, so these tests
+            // need no broker.
+            bootstrap_servers: "localhost:9092".into(),
+            kafka_version: "3.7".into(),
+            zookeeper_enabled: false,
+            zookeeper_host: None,
+            zookeeper_port: None,
+            zookeeper_chroot_path: None,
+            security_protocol: SecurityProtocol::Plaintext,
+            sasl_mechanism: None,
+            sasl_username: None,
+            sasl_password: None,
+            sasl_oauth_url: None,
+            schema_registry_endpoint: None,
+            schema_registry_basic_auth_credentials: None,
+            schema_registry_trust_store_location: None,
+            schema_registry_trust_store_password: None,
+            schema_registry_keystore_location: None,
+            schema_registry_keystore_password: None,
+            schema_registry_keystore_key_password: None,
+            ssl_truststore_location: None,
+            ssl_truststore_password: None,
+            ssl_keystore_location: None,
+            ssl_keystore_password: None,
+            ssl_keystore_key_password: None,
+            created_at: "now".into(),
+            updated_at: "2026-08-27T00:00:00Z".into(),
+        }
+    }
+
+    /// The point of the pool: a second request against the same connection
+    /// reuses the first one's client — and therefore its already-established,
+    /// already-authenticated connection — instead of paying for another
+    /// handshake.
+    #[test]
+    fn a_second_request_for_the_same_connection_reuses_one_client() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+
+        let first = kafka.metadata_client(&connection).expect("first client");
+        let second = kafka.metadata_client(&connection).expect("second client");
+
+        assert!(Arc::ptr_eq(&first.consumer, &second.consumer), "expected one pooled client, got two");
+    }
+
+    #[test]
+    fn different_connections_get_their_own_clients() {
+        let kafka = RdKafkaClient::new();
+        let one = pooled_test_connection();
+        let mut two = pooled_test_connection();
+        two.id = "conn-2".into();
+
+        let first = kafka.metadata_client(&one).expect("first client");
+        let second = kafka.metadata_client(&two).expect("second client");
+
+        assert!(!Arc::ptr_eq(&first.consumer, &second.consumer));
+    }
+
+    /// An edited connection must never keep talking to the broker with the
+    /// settings the user just replaced — even if nothing thought to release
+    /// the old client.
+    #[test]
+    fn editing_a_connection_retires_the_client_built_from_the_old_settings() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+        let before = kafka.metadata_client(&connection).expect("first client");
+
+        let mut edited = connection.clone();
+        edited.bootstrap_servers = "otherhost:9092".into();
+        edited.updated_at = "2026-08-27T01:00:00Z".into();
+        let after = kafka.metadata_client(&edited).expect("client after the edit");
+
+        assert!(!Arc::ptr_eq(&before.consumer, &after.consumer));
+    }
+
+    #[test]
+    fn releasing_a_connection_drops_its_pooled_client() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+        let before = kafka.metadata_client(&connection).expect("first client");
+
+        kafka.release(&connection.id);
+        let after = kafka.metadata_client(&connection).expect("client after release");
+
+        assert!(!Arc::ptr_eq(&before.consumer, &after.consumer));
+    }
+
+    #[test]
+    fn a_pooled_client_forgets_an_earlier_requests_failure_reason() {
+        // The context outlives the request, so a reason left behind by an
+        // earlier failure must not be read as this request's cause.
+        let kafka = RdKafkaClient::new();
+        let client = kafka.metadata_client(&pooled_test_connection()).expect("client");
+        client.context.error(KafkaError::Canceled, "Authentication failed");
+        assert!(client.context.last_error().is_some());
+
+        client.begin();
+
+        assert_eq!(client.context.last_error(), None);
+    }
 
     /// The report that started this: a bare `NotImplemented` says nothing
     /// about *why*, and the answer is a compile-time property of the binary,
@@ -1080,14 +1366,14 @@ mod tests {
         // slow memory growth reported on long-running Windows sessions.
         // check_status must now be a plain TCP check (like ping_bootstrap)
         // and therefore never produce a hard Err for a merely-closed port.
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let status = client.check_status(&sample_connection()).await.unwrap();
         assert_eq!(status, ConnectionStatus::Unreachable);
     }
 
     #[tokio::test]
     async fn ping_bootstrap_reports_unreachable_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let status = client.ping_bootstrap("127.0.0.1:1").await.unwrap();
         assert_eq!(status, ConnectionStatus::Unreachable);
     }
@@ -1110,7 +1396,7 @@ mod tests {
             let _ = listener.accept().await;
         });
 
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let status = client
             .ping_bootstrap(&format!("127.0.0.1:{port}"))
             .await
@@ -1128,7 +1414,7 @@ mod tests {
             let _ = listener.accept().await;
         });
 
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         // First entry (port 1) is closed; second is the live listener above.
         let status = client
             .ping_bootstrap(&format!("127.0.0.1:1,127.0.0.1:{port}"))
@@ -1139,7 +1425,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_bootstrap_reports_unreachable_for_an_unresolvable_host() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let status = client
             .ping_bootstrap("this-host-does-not-resolve.invalid:9092")
             .await
@@ -1147,9 +1433,34 @@ mod tests {
         assert_eq!(status, ConnectionStatus::Unreachable);
     }
 
+    /// A closed port must never be mistaken for rejected credentials: the
+    /// command layer trips a connection's circuit breaker on
+    /// `AppError::Authentication`, so a false positive here would lock a
+    /// user out of a cluster that is merely down.
+    #[tokio::test]
+    async fn test_connection_reports_an_unreachable_port_as_a_kafka_error_not_an_auth_failure() {
+        let client = RdKafkaClient::new();
+        let result = client
+            .test_connection(
+                "127.0.0.1:1",
+                SecurityProtocol::Plaintext,
+                None,
+                None,
+                None,
+                BrokerSslConfig::default(),
+            )
+            .await;
+
+        let report = result.expect_err("a closed port should fail");
+        assert!(
+            !matches!(report.current_context(), AppError::Authentication),
+            "expected a transport-level error, got {report:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_connection_reports_a_real_error_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .test_connection(
                 "127.0.0.1:1",
@@ -1165,28 +1476,28 @@ mod tests {
 
     #[tokio::test]
     async fn list_brokers_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client.list_brokers(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_topics_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client.list_topics(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn list_consumer_groups_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client.list_consumer_groups(&sample_connection(), TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn count_topic_messages_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .count_topic_messages(&sample_connection(), "orders", TEST_READ_TIMEOUT)
             .await;
@@ -1195,7 +1506,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_messages_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
             .await;
@@ -1210,7 +1521,7 @@ mod tests {
         // metadata-fetch failure used to reach the user as just "failed to
         // fetch metadata for topic orders" with no indication of *why* —
         // useless for diagnosing an intermittent broker/network issue.
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let report = client
             .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
             .await
@@ -1230,7 +1541,7 @@ mod tests {
         // messages behavior needs a live broker and isn't covered by this
         // unit test suite (see the `_errors_for_a_closed_port` tests' doc
         // comments for why: no broker fixture in this crate).
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let result = client
             .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), Some(tx), TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
@@ -1241,21 +1552,21 @@ mod tests {
 
     #[tokio::test]
     async fn list_partitions_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client.list_partitions(&sample_connection(), "orders", TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn describe_topic_config_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client.describe_topic_config(&sample_connection(), "orders", TEST_READ_TIMEOUT).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn fetch_consumer_group_lag_errors_for_a_closed_port() {
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .fetch_consumer_group_lag(&sample_connection(), "billing-service", TEST_READ_TIMEOUT)
             .await;
@@ -1288,7 +1599,7 @@ mod tests {
         // contain librdkafka's actual reason, not just the generic "failed
         // to create kafka consumer" wrapper text — that alone isn't
         // actionable for someone staring at an error dialog.
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .test_connection(
                 "127.0.0.1:1",
@@ -1314,7 +1625,7 @@ mod tests {
         // attempt* (client creation succeeds), not during config
         // validation — the error message should reflect a probe failure,
         // not "failed to create kafka consumer".
-        let client = RdKafkaClient;
+        let client = RdKafkaClient::new();
         let result = client
             .test_connection(
                 "127.0.0.1:1",

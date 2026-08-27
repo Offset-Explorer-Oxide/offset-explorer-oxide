@@ -1,12 +1,29 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ConsumerGroupLag, MessageFetchResult, MessageFilter, SchemaFormat } from "../../lib/tauri";
 
+/**
+ * How long a cluster listing stays fresh.
+ *
+ * Every one of these queries is a full metadata request on the broker —
+ * `fetch_metadata` for topics and brokers, a group listing for consumers —
+ * and React Query, left at its defaults, refetches on every remount and
+ * every time the window regains focus. The tree remounts on each top-level
+ * tab switch, so ordinary use had the app re-asking a production cluster for
+ * its entire topic list several times a minute, per open app.
+ *
+ * A minute is long enough to absorb tab-switching and alt-tabbing, and short
+ * enough that a newly created topic shows up without the user thinking about
+ * it.
+ */
+export const CLUSTER_LISTING_STALE_MS = 60_000;
+
 /** Backs the tree's "Brokers" sub-list — fetched lazily, only once the category is expanded. */
 export function useBrokers(connectionId: string, enabled: boolean) {
   return useQuery({
     queryKey: ["brokers", connectionId],
     queryFn: () => api.listBrokers(connectionId),
     enabled,
+    staleTime: CLUSTER_LISTING_STALE_MS,
   });
 }
 
@@ -16,6 +33,7 @@ export function useTopics(connectionId: string, enabled: boolean) {
     queryKey: ["topics", connectionId],
     queryFn: () => api.listTopics(connectionId),
     enabled,
+    staleTime: CLUSTER_LISTING_STALE_MS,
   });
 }
 
@@ -25,6 +43,7 @@ export function useConsumerGroups(connectionId: string, enabled: boolean) {
     queryKey: ["consumer-groups", connectionId],
     queryFn: () => api.listConsumerGroups(connectionId),
     enabled,
+    staleTime: CLUSTER_LISTING_STALE_MS,
   });
 }
 
@@ -53,6 +72,7 @@ export function usePartitions(connectionId: string, topic: string, enabled: bool
     queryKey: ["partitions", connectionId, topic],
     queryFn: () => api.listPartitions(connectionId, topic),
     enabled,
+    staleTime: CLUSTER_LISTING_STALE_MS,
   });
 }
 

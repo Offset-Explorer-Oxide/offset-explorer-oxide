@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { App } from "./App";
+import { App, queryClient } from "./App";
 import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "./features/tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "./features/workspace/useWorkspaceSelectionStore";
@@ -27,6 +27,9 @@ vi.mock("./lib/appWindow", () => ({
 }));
 
 beforeEach(() => {
+  // The app's QueryClient is module-level, so cluster listings cached by one
+  // case would otherwise be served to the next within their stale window.
+  queryClient.clear();
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useJsonViewerTabsStore.setState({ tabs: [] });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
