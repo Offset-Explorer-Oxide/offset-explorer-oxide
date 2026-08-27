@@ -30,6 +30,75 @@ use crate::messages::{
 
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How many partitions' watermarks to ask for at once.
+///
+/// `fetch_watermarks` blocks its calling thread for a full broker round trip,
+/// so querying partitions one at a time costs one round trip *each*, end to
+/// end. That is invisible against a broker on localhost and brutal against a
+/// real one: measured through a 50ms link, reading the watermarks of a
+/// 100-partition topic took 6.9 seconds before a single message was fetched —
+/// and the Data tab, the Partitions tab, the topic message count and consumer
+/// group lag all pay it.
+///
+/// librdkafka's client is thread-safe and does its I/O on its own threads, so
+/// these calls overlap happily; the bound keeps a wide topic from opening a
+/// hundred threads to wait on a hundred replies.
+const WATERMARK_LOOKUP_CONCURRENCY: usize = 16;
+
+/// Low and high watermarks for every given partition, queried concurrently.
+///
+/// Fails as a whole if any partition's lookup fails: every caller needs all of
+/// them, and a partial answer would silently under-report a topic's contents.
+fn watermarks_for_partitions(
+    consumer: &BaseConsumer,
+    topic: &str,
+    partitions: &[i32],
+    read_timeout: Duration,
+) -> Result<BTreeMap<i32, (i64, i64)>, AppError> {
+    if partitions.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let per_thread = partitions.len().div_ceil(WATERMARK_LOOKUP_CONCURRENCY).max(1);
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = partitions
+            .chunks(per_thread)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|&partition| {
+                            consumer
+                                .fetch_watermarks(topic, partition, read_timeout)
+                                .map(|watermarks| (partition, watermarks))
+                                // The reason is captured as a string here
+                                // rather than wrapped: a `KafkaError` cannot
+                                // cross the scope boundary as an
+                                // `error_stack` context without losing the
+                                // partition it belongs to.
+                                .map_err(|err| (partition, err.to_string()))
+                        })
+                        .collect::<std::result::Result<Vec<_>, (i32, String)>>()
+                })
+            })
+            .collect();
+
+        let mut watermarks = BTreeMap::new();
+        for handle in handles {
+            match handle.join().expect("watermark lookup thread panicked") {
+                Ok(found) => watermarks.extend(found),
+                Err((partition, reason)) => {
+                    return Err(error_stack::Report::new(AppError::Kafka).attach_printable(format!(
+                        "failed to fetch watermarks for {topic}:{partition}: {reason}"
+                    )))
+                }
+            }
+        }
+        Ok(watermarks)
+    })
+}
+
 /// Fallback broker read timeout used only by this crate's own unit tests
 /// (which call `KafkaClient` methods directly, bypassing the Tauri command
 /// layer). Real callers always pass the user's configured General settings >
@@ -396,17 +465,10 @@ impl KafkaClient for RdKafkaClient {
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
-            let mut total: u64 = 0;
-            for partition in topic_metadata.partitions() {
-                let (low, high) = consumer
-                    .fetch_watermarks(&topic, partition.id(), read_timeout)
-                    .change_context(AppError::Kafka)
-                    .attach_printable_lazy(|| {
-                        format!("failed to fetch watermarks for {topic}:{}", partition.id())
-                    })?;
-                total += (high - low).max(0) as u64;
-            }
-            Ok(total)
+            let partitions: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
+            let watermarks = watermarks_for_partitions(&consumer, &topic, &partitions, read_timeout)?;
+
+            Ok(watermarks.values().map(|&(low, high)| (high - low).max(0) as u64).sum())
         })
         .await
         .change_context(AppError::Kafka)
@@ -493,21 +555,12 @@ impl KafkaClient for RdKafkaClient {
                 None => topic_metadata.partitions().iter().map(|p| p.id()).collect(),
             };
 
-            // Queried once per partition and reused. `fetch_watermarks` is a
-            // blocking round trip to the partition's leader, and the offset
+            // Queried once per partition, concurrently, and reused. The offset
             // maths below reads each partition's watermarks several times
-            // over — as a closure that re-queried, a 48-partition topic paid
-            // well over a hundred round trips before a single message moved.
-            let watermarks_by_partition: BTreeMap<i32, (i64, i64)> = target_partitions
-                .iter()
-                .map(|&partition| {
-                    consumer
-                        .fetch_watermarks(&topic, partition, read_timeout)
-                        .map(|watermarks| (partition, watermarks))
-                        .change_context(AppError::Kafka)
-                        .attach_printable_lazy(|| format!("failed to fetch watermarks for {topic}:{partition}"))
-                })
-                .collect::<Result<_, _>>()?;
+            // over — as a closure that re-queried, a wide topic paid hundreds
+            // of round trips before a single message moved.
+            let watermarks_by_partition =
+                watermarks_for_partitions(&consumer, &topic, &target_partitions, read_timeout)?;
 
             let watermarks = |partition: i32| -> Result<(i64, i64), AppError> {
                 watermarks_by_partition
@@ -732,26 +785,24 @@ impl KafkaClient for RdKafkaClient {
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
-            topic_metadata
+            let partition_ids: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
+            let watermarks = watermarks_for_partitions(&consumer, &topic, &partition_ids, read_timeout)?;
+
+            Ok(topic_metadata
                 .partitions()
                 .iter()
                 .map(|partition| {
-                    let (low, high) = consumer
-                        .fetch_watermarks(&topic, partition.id(), read_timeout)
-                        .change_context(AppError::Kafka)
-                        .attach_printable_lazy(|| {
-                            format!("failed to fetch watermarks for {topic}:{}", partition.id())
-                        })?;
-                    Ok(PartitionSummary {
+                    let (low, high) = watermarks.get(&partition.id()).copied().unwrap_or((0, 0));
+                    PartitionSummary {
                         id: partition.id(),
                         leader: partition.leader(),
                         replicas: partition.replicas().to_vec(),
                         isr: partition.isr().to_vec(),
                         low_offset: low,
                         high_offset: high,
-                    })
+                    }
                 })
-                .collect()
+                .collect())
         })
         .await
         .change_context(AppError::Kafka)
@@ -871,18 +922,30 @@ impl KafkaClient for RdKafkaClient {
                 .change_context(AppError::Kafka)
                 .attach_printable_lazy(|| format!("failed to fetch committed offsets for {group_id}"))?;
 
+            // Grouped by topic and queried concurrently within each, rather
+            // than one blocking round trip per committed partition as the
+            // loop below walks them — a group consuming a 100-partition topic
+            // spent seconds here for a lag table.
+            let mut partitions_by_topic: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+            for element in committed.elements() {
+                partitions_by_topic.entry(element.topic().to_string()).or_default().push(element.partition());
+            }
+            let mut watermarks: HashMap<(String, i32), (i64, i64)> = HashMap::new();
+            for (topic, topic_partitions) in &partitions_by_topic {
+                for (partition, marks) in
+                    watermarks_for_partitions(&consumer, topic, topic_partitions, read_timeout)?
+                {
+                    watermarks.insert((topic.clone(), partition), marks);
+                }
+            }
+
             let mut partitions = Vec::new();
             for element in committed.elements() {
                 let topic = element.topic().to_string();
                 let partition = element.partition();
                 let current_offset = element.offset().to_raw().filter(|&o| o >= 0);
 
-                let (_low, high) = consumer
-                    .fetch_watermarks(&topic, partition, read_timeout)
-                    .change_context(AppError::Kafka)
-                    .attach_printable_lazy(|| {
-                        format!("failed to fetch watermarks for {topic}:{partition}")
-                    })?;
+                let (_low, high) = watermarks.get(&(topic.clone(), partition)).copied().unwrap_or((0, 0));
 
                 let lag = current_offset.map(|current| (high - current).max(0));
                 let (client_id, client_host) = owners

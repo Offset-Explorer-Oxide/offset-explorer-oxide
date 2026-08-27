@@ -396,8 +396,50 @@ describe("DataTab", () => {
 
     await waitFor(() => expect(lastGridProps?.rowData).toEqual([streamed]));
 
+    // Streaming the row into the grid is only half of it: AG Grid's loading
+    // overlay covers the rows underneath it, so leaving it up for the whole
+    // fetch hid every message that had already arrived and made the user
+    // wait for the last one regardless.
+    expect(lastGridProps?.loading).toBe(false);
+
     resolveFetch({ messages: [streamed], totalMatching: 1 });
     await waitFor(() => expect(lastGridProps?.loading).toBe(false));
+  });
+
+  /**
+   * Streamed rows are buffered briefly before being written to the grid, so
+   * Stop has to drop whatever is still sitting in that buffer — otherwise a
+   * message that arrived just before the click lands in the grid just after
+   * it, which is precisely the row the user said they no longer wanted.
+   */
+  it("drops a streamed message that was still buffered when Stop was clicked", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(lastGridProps?.rowData).toEqual([]);
+  });
+
+  it("keeps the loading overlay up while a fetch is running but has produced no rows yet", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    setInvokeHandlers({ connection_fetch_messages: () => pending });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(lastGridProps?.loading).toBe(true));
   });
 
   it("ignores a messages-batch event from a different (stale/superseded) request id", async () => {
@@ -531,13 +573,14 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("2 / 2 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
 
     await user.type(screen.getByLabelText("Search messages"), "order-1");
 
-    await waitFor(() => expect(screen.getByText("1 / 2 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 loaded of 2 matching")).toBeInTheDocument());
   });
 
+<<<<<<< Updated upstream
   it("warns that search is bounded when a loaded message is larger than the searched prefix", async () => {
     const big = btoa("a".repeat(5000));
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: big, headers: [] }];
@@ -563,8 +606,11 @@ describe("DataTab", () => {
   });
 
   it("shows 0 / 0 loaded before any fetch has run", () => {
+=======
+  it("shows nothing loaded before any fetch has run", () => {
+>>>>>>> Stashed changes
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    expect(screen.getByText("0 / 0 loaded")).toBeInTheDocument();
+    expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument();
   });
 
   it("shows every loaded message as matching the total when the fetch wasn't capped", async () => {
@@ -578,7 +624,7 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    await waitFor(() => expect(screen.getByText("2 / 2 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
   });
 
   it("shows fewer loaded than total matching when a max-messages cap trimmed the fetch, so the user knows more remain", async () => {
@@ -589,7 +635,7 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    await waitFor(() => expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument());
   });
 
   it("keeps showing the last fetch's loaded/total count for a tab across an unmount/remount", async () => {
@@ -599,12 +645,12 @@ describe("DataTab", () => {
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument());
 
     unmount();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    expect(screen.getByText("1 / 150 loaded")).toBeInTheDocument();
+    expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument();
   });
 
   it("excludes partition, offset, and timestamp from the quick filter, leaving only key and value searchable", () => {
