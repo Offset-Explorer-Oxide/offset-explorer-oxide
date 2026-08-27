@@ -15,7 +15,7 @@ import {
   validateMaxMessagesPerPartition,
 } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
-import { base64ToDisplayText, decodeValuePreview } from "./payloadDecoding";
+import { base64ToDisplayText, decodeValuePreview, exceedsValuePreview, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
@@ -135,6 +135,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     () => (searchText ? messages.filter((m) => matchesSearch(m, searchText)).length : messages.length),
     [messages, searchText],
   );
+  // Only worth telling the user the search is bounded when the loaded rows
+  // actually reach that bound.
+  const hasOversizedValues = useMemo(() => messages.some((m) => exceedsValuePreview(m.payloadBase64)), [messages]);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
@@ -343,6 +346,13 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           placeholder="Search by key or value"
         />
       </label>
+
+      {hasOversizedValues && (
+        <p className="data-tab-search-notice">
+          Some messages exceed {VALUE_PREVIEW_BYTES / 1024} KB. Search examines only the first{" "}
+          {VALUE_PREVIEW_BYTES / 1024} KB of each message value; open a message to view its full payload.
+        </p>
+      )}
 
       <p className="data-tab-total-count">
         {visibleMessageCount} / {totalMatching ?? messages.length} loaded

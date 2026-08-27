@@ -129,3 +129,18 @@ export function decodeValuePreview(payloadBase64: string | null): string {
   if (avro) return `Avro (schema id: ${avro.schemaId})`;
   return bytesToText(bytes);
 }
+
+/**
+ * Whether a payload is longer than the preview [`decodeValuePreview`] builds
+ * — i.e. whether the grid's Value column, and the search over it, sees only
+ * part of this message.
+ *
+ * Measured from the base64 length rather than by decoding: every 4 characters
+ * carry 3 bytes, less one byte per '=' of padding.
+ */
+export function exceedsValuePreview(payloadBase64: string | null): boolean {
+  if (!payloadBase64) return false;
+
+  const padding = payloadBase64.endsWith("==") ? 2 : payloadBase64.endsWith("=") ? 1 : 0;
+  return (payloadBase64.length / 4) * 3 - padding > VALUE_PREVIEW_BYTES;
+}
