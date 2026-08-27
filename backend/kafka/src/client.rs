@@ -286,13 +286,17 @@ fn extract_headers(message: &BorrowedMessage) -> Vec<MessageHeader> {
     let Some(headers) = message.headers() else {
         return Vec::new();
     };
-    headers
-        .iter()
-        .map(|header| MessageHeader {
-            key: header.key.to_string(),
-            value_base64: header.value.map(|v| BASE64.encode(v)),
-        })
-        .collect()
+    // `HeadersIter` is a plain `Iterator`, not an `ExactSizeIterator`, so
+    // `collect` cannot size the vector up front and grows it by reallocating
+    // and copying. `Headers::count` is the exact length, and this runs once
+    // per message in the fetch loop, so the reservation is worth making
+    // explicitly.
+    let mut extracted = Vec::with_capacity(headers.count());
+    extracted.extend(headers.iter().map(|header| MessageHeader {
+        key: header.key.to_string(),
+        value_base64: header.value.map(|v| BASE64.encode(v)),
+    }));
+    extracted
 }
 
 /// Captures librdkafka's own detailed failure reason (e.g. "SSL connection
@@ -944,7 +948,15 @@ impl KafkaClient for RdKafkaClient {
 
             let total_target: i64 = limits.values().sum();
             let mut remaining = limits;
-            let mut collected = Vec::new();
+            // Reserving up front keeps the repeated grow-and-copy off every
+            // ordinary fetch. Bounded rather than reserving `total_target`
+            // outright: that figure comes from the user's own filter (per
+            // partition cap x partitions, or an explicit total budget), so
+            // an extreme value would otherwise reserve that many message
+            // slots before a single message had been read. Beyond the bound
+            // the vector still grows normally.
+            const PREALLOCATED_MESSAGES: i64 = 8192;
+            let mut collected = Vec::with_capacity(total_target.clamp(0, PREALLOCATED_MESSAGES) as usize);
             const POLL_TIMEOUT: Duration = Duration::from_millis(500);
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
             let mut idle_elapsed = Duration::ZERO;
@@ -958,8 +970,16 @@ impl KafkaClient for RdKafkaClient {
                     Some(Ok(borrowed)) => {
                         idle_elapsed = Duration::ZERO;
                         let partition = borrowed.partition();
-                        let budget = remaining.get(&partition).copied().unwrap_or(0);
-                        if budget <= 0 {
+                        // One map lookup per message rather than two (a
+                        // `get` to read the budget, then an `insert` to
+                        // write it back): the same borrow that reads it
+                        // decrements it in place below. A partition with no
+                        // entry is one this fetch never assigned, and is
+                        // skipped exactly as an exhausted budget is.
+                        let Some(budget) = remaining.get_mut(&partition) else {
+                            continue;
+                        };
+                        if *budget <= 0 {
                             continue;
                         }
                         let message = TopicMessage {
@@ -976,7 +996,7 @@ impl KafkaClient for RdKafkaClient {
                             let _ = sender.send(message.clone());
                         }
                         collected.push(message);
-                        remaining.insert(partition, budget - 1);
+                        *budget -= 1;
                     }
                     Some(Err(err)) => {
                         idle_elapsed += POLL_TIMEOUT;
