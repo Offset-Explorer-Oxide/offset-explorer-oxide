@@ -77,6 +77,26 @@ describe("useTabDataStore", () => {
     expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual([sample[0], second]);
   });
 
+  it("appends a whole batch of streamed messages in one update", () => {
+    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    const third = { partition: 2, offset: 3, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    useTabDataStore.getState().setTabMessages("tab-1", sample);
+
+    useTabDataStore.getState().appendTabMessages("tab-1", [second, third]);
+
+    expect(useTabDataStore.getState().messagesByTab["tab-1"]).toEqual([sample[0], second, third]);
+  });
+
+  /** A flush with nothing buffered must not re-render every subscriber of the store. */
+  it("leaves state untouched when an empty batch is appended", () => {
+    useTabDataStore.getState().setTabMessages("tab-1", sample);
+    const before = useTabDataStore.getState().messagesByTab;
+
+    useTabDataStore.getState().appendTabMessages("tab-1", []);
+
+    expect(useTabDataStore.getState().messagesByTab).toBe(before);
+  });
+
   it("keeps appended messages scoped to their own tab", () => {
     const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
     useTabDataStore.getState().appendTabMessage("tab-1", sample[0]);

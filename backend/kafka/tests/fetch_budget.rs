@@ -24,7 +24,11 @@ use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
 
 /// Matches `scripts/e2e-large-message-fixtures.ps1`.
 const DEFAULT_TOPIC: &str = "big-2mb";
-const BUDGET: u32 = 20;
+/// Overridable so the same measurement can be pointed at a real topic
+/// shape, e.g. a 100-message browse of a 600k-message topic.
+fn budget() -> u32 {
+    std::env::var("KAFKAOXIDE_E2E_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(20)
+}
 
 fn bootstrap_servers() -> Option<String> {
     std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
@@ -85,12 +89,12 @@ async fn an_overall_budget_reads_only_what_it_returns() {
         return;
     };
 
-    let client = RdKafkaClient;
+    let client = RdKafkaClient::new();
     let connection = connection(bootstrap);
     let topic = topic();
 
     let mut timings = Vec::new();
-    for (label, max_total) in [("budget of 20", Some(BUDGET)), ("no budget (the old default)", None)] {
+    for (label, max_total) in [("with an overall budget", Some(budget())), ("no budget (the old default)", None)] {
         let started = Instant::now();
         let fetched = client
             .fetch_messages(
@@ -126,8 +130,8 @@ async fn an_overall_budget_reads_only_what_it_returns() {
     let (_unbudgeted_count, unbudgeted_bytes, _, _) = timings[1].clone();
 
     assert_eq!(
-        budgeted_count, BUDGET as usize,
-        "a budget of {BUDGET} should read exactly {BUDGET} messages, got {budgeted_count}"
+        budgeted_count, budget() as usize,
+        "a budget of {} should read exactly that many messages, got {budgeted_count}", budget()
     );
 
     // The regression that made this tab unusable: the budget used to be

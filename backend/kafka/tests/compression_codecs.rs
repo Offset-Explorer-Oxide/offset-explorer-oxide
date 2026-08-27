@@ -109,7 +109,7 @@ async fn every_compression_codec_can_be_fetched() {
 
     println!("librdkafka builtin.features = {}", kafkaoxide_kafka::build_info::builtin_features());
 
-    let client = RdKafkaClient;
+    let client = RdKafkaClient::new();
     let connection = connection(bootstrap);
     let mut failures = Vec::new();
 
