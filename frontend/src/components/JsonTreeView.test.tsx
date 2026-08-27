@@ -84,4 +84,27 @@ describe("JsonTreeView", () => {
 
     expect(screen.queryByRole("button", { name: "Open in new tab" })).not.toBeInTheDocument();
   });
+
+  /**
+   * Expanding everything on sight is fine for an ordinary message and ruinous
+   * for a multi-megabyte one: it renders every node of the document into the
+   * DOM at once and the app stops responding until layout finishes.
+   */
+  it("starts a large array collapsed instead of rendering all of its children", async () => {
+    const user = userEvent.setup();
+    const items = Array.from({ length: 500 }, (_, i) => `item-${i}`);
+
+    render(<JsonTreeView value={{ events: items }} />);
+
+    expect(screen.queryByText('"item-0"')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand events" }));
+    expect(screen.getByText('"item-0"')).toBeInTheDocument();
+  });
+
+  it("still expands an ordinary-sized container on sight", () => {
+    render(<JsonTreeView value={{ order: { id: "a-1" } }} />);
+
+    expect(screen.getByText('"a-1"')).toBeInTheDocument();
+  });
 });

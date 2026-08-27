@@ -18,10 +18,25 @@ export interface FilterFormState {
 /** Matches the backend's own fallback (`DEFAULT_MESSAGE_CAP` in `messages.rs`) — shown as the field's actual starting value rather than left blank, so the cap that's about to be applied is visible up front instead of only discoverable after a fetch returns fewer rows than expected. */
 const DEFAULT_MAX_MESSAGES_PER_PARTITION = "100";
 
+/**
+ * The overall budget a fetch spends, prefilled for the same reason the
+ * per-partition cap is: so the limit about to be applied is visible before
+ * the fetch rather than inferred from the result.
+ *
+ * Prefilled rather than left blank because blank means "no overall budget",
+ * and without one a fetch costs "max messages per partition" x however many
+ * partitions the topic has — 100 on a 12-partition topic reads 1,200
+ * messages to show you 100 of them, and on a topic of multi-megabyte records
+ * that is the difference between a fetch that returns and one that appears
+ * to hang. Clear the field deliberately to read the full per-partition
+ * window from every partition.
+ */
+const DEFAULT_MAX_TOTAL_MESSAGES = "100";
+
 export function emptyFilterForm(): FilterFormState {
   return {
     maxMessagesPerPartition: DEFAULT_MAX_MESSAGES_PER_PARTITION,
-    maxTotalMessages: "",
+    maxTotalMessages: DEFAULT_MAX_TOTAL_MESSAGES,
     partitions: "",
     fromDate: "",
     toDate: "",

@@ -1,18 +1,10 @@
 import { MouseEvent as ReactMouseEvent, useState } from "react";
 import { ICellRendererParams } from "ag-grid-community";
 import { TopicMessage } from "../../lib/tauri";
-import { base64ToBytes, bytesToText, detectConfluentAvro } from "./payloadDecoding";
 
 export interface ValueCellContext {
   /** Fetches just this one row's payload and writes it back into the cached tab data. */
   fetchPayload: (row: TopicMessage) => Promise<void>;
-}
-
-export function decodePayload(payloadBase64: string): string {
-  const bytes = base64ToBytes(payloadBase64);
-  const avro = detectConfluentAvro(bytes);
-  if (avro) return `Avro (schema id: ${avro.schemaId})`;
-  return bytesToText(bytes);
 }
 
 /**
@@ -28,7 +20,13 @@ export function ValueCell(params: ICellRendererParams<TopicMessage> & { context:
   if (!row) return null;
 
   if (row.payloadBase64 !== null) {
-    return <>{decodePayload(row.payloadBase64)}</>;
+    // `params.value` is the Value column's `valueGetter` output — a bounded,
+    // cached preview of the payload (see `decodeValuePreview`). Decoding the
+    // payload again here would undo that: AG Grid renders a cell renderer per
+    // visible row and again on every scroll, so a screenful of 2 MB messages
+    // would decode tens of megabytes each time the grid repaints, to fill a
+    // one-line cell.
+    return <>{params.value}</>;
   }
 
   async function handleClick(e: ReactMouseEvent) {

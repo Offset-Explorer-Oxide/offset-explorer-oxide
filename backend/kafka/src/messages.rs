@@ -60,24 +60,78 @@ pub fn newest_first_start_offset(low: i64, high: i64, cap: i64) -> i64 {
     (high - cap).max(low)
 }
 
-/// Applies an overall `max_total_messages` cap across the already
-/// per-partition-capped limits, preserving relative partition order and
-/// truncating whichever partitions come last once the total is exhausted.
-pub fn apply_total_cap(limits: &BTreeMap<i32, i64>, max_total: Option<u32>) -> BTreeMap<i32, i64> {
+/// Splits an overall `max_total_messages` budget across partitions, giving
+/// every partition an even share of it rather than draining them in id
+/// order. `windows` is how many messages each partition could contribute at
+/// most (its "max messages per partition" window, already clamped to what
+/// the partition actually holds); the result is how many to actually read
+/// from each, and never exceeds the window.
+///
+/// Why even rather than in order: the budget is meant to buy the newest
+/// messages *in the topic*, and a topic's newest messages are spread over
+/// all of its partitions. Filling partition 0 to the brim first — which is
+/// what this used to do — spends the whole budget on one partition's
+/// history and returns nothing at all from the others, so a 12-partition
+/// topic showed a single partition's last 100 messages and called it the
+/// topic's latest 100.
+///
+/// Strictly "the newest N by timestamp" is not obtainable here: which
+/// partition holds the newest records is only knowable after reading them,
+/// and reading them to find out is the over-fetch this exists to prevent.
+/// An even split is the closest approximation that reads only what it
+/// returns, and partitions holding fewer messages than their share release
+/// the rest to the others (so a small budget is never wasted on an empty
+/// partition).
+///
+/// `None` means no overall budget: every partition contributes its full
+/// window.
+pub fn distribute_total_budget(
+    windows: &BTreeMap<i32, i64>,
+    max_total: Option<u32>,
+) -> BTreeMap<i32, i64> {
     let Some(max_total) = max_total else {
-        return limits.clone();
+        return windows.clone();
     };
+
+    let mut allocated: BTreeMap<i32, i64> = windows.keys().map(|&partition| (partition, 0)).collect();
     let mut remaining = i64::from(max_total);
-    let mut result = BTreeMap::new();
-    for (&partition, &limit) in limits {
+
+    // Smallest window first, so a partition that cannot use its full share
+    // hands the surplus to partitions that can, instead of the share being
+    // rounded away.
+    let mut by_window: Vec<(i32, i64)> =
+        windows.iter().map(|(&partition, &window)| (partition, window.max(0))).collect();
+    by_window.sort_by_key(|&(partition, window)| (window, partition));
+
+    let mut sharers = by_window.len() as i64;
+    for (partition, window) in &by_window {
         if remaining <= 0 {
             break;
         }
-        let take = limit.min(remaining);
-        result.insert(partition, take);
+        let share = remaining / sharers;
+        let take = (*window).min(share);
+        allocated.insert(*partition, take);
         remaining -= take;
+        sharers -= 1;
     }
-    result
+
+    // Integer division leaves up to `partitions - 1` messages unspent. Hand
+    // them out one per partition so the fetch delivers the exact budget
+    // asked for rather than a few short of it.
+    if remaining > 0 {
+        for (partition, window) in &by_window {
+            if remaining <= 0 {
+                break;
+            }
+            let taken = allocated.get_mut(partition).expect("every partition was seeded above");
+            if *taken < *window {
+                *taken += 1;
+                remaining -= 1;
+            }
+        }
+    }
+
+    allocated
 }
 
 /// Combines an explicit start offset with a from-timestamp-resolved start
@@ -140,21 +194,52 @@ mod tests {
     }
 
     #[test]
-    fn apply_total_cap_is_a_no_op_when_no_max_total_is_given() {
-        let limits = map(&[(0, 10), (1, 20)]);
-        assert_eq!(apply_total_cap(&limits, None), limits);
+    fn no_total_budget_leaves_every_partition_at_its_full_window() {
+        let windows = map(&[(0, 10), (1, 20)]);
+        assert_eq!(distribute_total_budget(&windows, None), windows);
+    }
+
+    /// The regression this function exists for: the old behaviour filled
+    /// partition 0 to its window and left partition 1 with nothing, so a
+    /// "newest 100 in this topic" fetch returned one partition's history.
+    #[test]
+    fn a_total_budget_is_spread_across_partitions_rather_than_drained_in_order() {
+        let windows = map(&[(0, 100), (1, 100)]);
+        assert_eq!(distribute_total_budget(&windows, Some(100)), map(&[(0, 50), (1, 50)]));
     }
 
     #[test]
-    fn apply_total_cap_splits_the_budget_across_partitions_in_order() {
-        let limits = map(&[(0, 10), (1, 20)]);
-        assert_eq!(apply_total_cap(&limits, Some(15)), map(&[(0, 10), (1, 5)]));
+    fn a_partition_with_less_history_than_its_share_releases_the_rest() {
+        // p0 can only give 2, so p1 gets the other 8 rather than the budget
+        // being rounded down to 5 each and 3 messages going unread.
+        let windows = map(&[(0, 2), (1, 100)]);
+        assert_eq!(distribute_total_budget(&windows, Some(10)), map(&[(0, 2), (1, 8)]));
     }
 
     #[test]
-    fn apply_total_cap_drops_later_partitions_once_exhausted() {
-        let limits = map(&[(0, 10), (1, 20)]);
-        assert_eq!(apply_total_cap(&limits, Some(10)), map(&[(0, 10)]));
+    fn an_uneven_budget_is_handed_out_whole_rather_than_left_short() {
+        let windows = map(&[(0, 100), (1, 100), (2, 100)]);
+        let allocated = distribute_total_budget(&windows, Some(100));
+        assert_eq!(allocated.values().sum::<i64>(), 100);
+    }
+
+    #[test]
+    fn no_partition_is_ever_asked_for_more_than_its_window() {
+        let windows = map(&[(0, 3), (1, 4)]);
+        assert_eq!(distribute_total_budget(&windows, Some(1000)), map(&[(0, 3), (1, 4)]));
+    }
+
+    #[test]
+    fn a_budget_smaller_than_the_partition_count_still_reads_something() {
+        let windows = map(&[(0, 10), (1, 10), (2, 10)]);
+        let allocated = distribute_total_budget(&windows, Some(2));
+        assert_eq!(allocated.values().sum::<i64>(), 2);
+    }
+
+    #[test]
+    fn an_empty_partition_is_allocated_nothing() {
+        let windows = map(&[(0, 0), (1, 10)]);
+        assert_eq!(distribute_total_budget(&windows, Some(6)), map(&[(0, 0), (1, 6)]));
     }
 
     #[test]

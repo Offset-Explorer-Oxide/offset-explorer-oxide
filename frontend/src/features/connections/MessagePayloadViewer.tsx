@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { useDecodeAvro } from "./useClusterResources";
@@ -9,6 +9,15 @@ import { base64ToBytes, base64ToDisplayText, bytesToText, tryParseJson, tryParse
 
 type PanelTabId = "headers" | "value";
 type ValueMode = "text" | "json" | "avro" | "xml";
+
+/**
+ * How much of a payload the raw Text view renders before offering the rest
+ * behind a click. A `<pre>` is one text node the browser lays out in a
+ * single pass, so a 10 MB message costs a visible freeze to display text
+ * that runs thousands of screens deep. 256 KB is far more than anyone reads
+ * at a glance and renders instantly.
+ */
+export const TEXT_PREVIEW_CHARS = 256 * 1024;
 
 const PANEL_TABS: { id: PanelTabId; label: string }[] = [
   { id: "headers", label: "Headers" },
@@ -32,6 +41,18 @@ export function MessagePayloadViewer() {
   const selectTab = useTabsStore((s) => s.selectTab);
   const [activeTab, setActiveTab] = useState<PanelTabId>("value");
   const [mode, setMode] = useState<ValueMode>("text");
+  /**
+   * Which payload the user asked to see in full, rather than a boolean.
+   *
+   * A boolean reset by an effect looks equivalent and isn't: effects run
+   * after React commits and the browser paints, so the first render after
+   * switching messages would still see the previous message's `true`, put the
+   * whole new payload into the `<pre>`, and paint it — the exact freeze
+   * `TEXT_PREVIEW_CHARS` exists to prevent, one render before the reset lands.
+   * Comparing against the current payload is decided during render, so a
+   * different message is always truncated from its first frame.
+   */
+  const [expandedPayload, setExpandedPayload] = useState<string | null>(null);
   const decodeAvro = useDecodeAvro();
   const { mutate: runDecodeAvro } = decodeAvro;
   const payloadBase64 = message?.payloadBase64 ?? null;
@@ -45,14 +66,36 @@ export function MessagePayloadViewer() {
     }
   }, [mode, payloadBase64, connectionId, topic, runDecodeAvro]);
 
+
+  // Decoding is memoised on the payload itself, not left to run inline.
+  // Every one of these is O(payload): the base64 decode walks byte by byte,
+  // the UTF-8 decode copies the lot, and `JSON.parse` builds an object graph
+  // the size of the document. Inline, they re-ran on *every* render of this
+  // component — switching panel tabs, toggling a mode, a parent re-rendering
+  // — so on a 2-10 MB message the app froze each time rather than only on
+  // the first look at it.
+  const text = useMemo(
+    () => (payloadBase64 === null ? null : bytesToText(base64ToBytes(payloadBase64))),
+    [payloadBase64],
+  );
+
+  const json = useMemo(
+    () => (mode === "json" && text !== null ? tryParseJson(text) : undefined),
+    [mode, text],
+  );
+  const xml = useMemo(() => (mode === "xml" && text !== null ? tryParseXml(text) : undefined), [mode, text]);
+
+  // A `<pre>` holding megabytes of text is a single enormous DOM text node
+  // that the browser lays out in one go, so the raw view is capped until the
+  // user asks for the rest — and asking is per payload, so clicking through
+  // to a different message starts collapsed again.
+  const showFullText = expandedPayload !== null && expandedPayload === payloadBase64;
+  const isTextTruncated = text !== null && !showFullText && text.length > TEXT_PREVIEW_CHARS;
+  const displayText = isTextTruncated ? text.slice(0, TEXT_PREVIEW_CHARS) : text;
+
   if (!message) {
     return <p className="resizable-pane-placeholder">Select a message to view its payload.</p>;
   }
-
-  const bytes = message.payloadBase64 !== null ? base64ToBytes(message.payloadBase64) : null;
-  const text = bytes !== null ? bytesToText(bytes) : null;
-  const json = mode === "json" && text !== null ? tryParseJson(text) : undefined;
-  const xml = mode === "xml" && text !== null ? tryParseXml(text) : undefined;
 
   return (
     <div className="message-payload-viewer">
@@ -150,10 +193,32 @@ export function MessagePayloadViewer() {
                   XML
                 </button>
               </div>
-              {mode === "text" && <pre className="message-payload-body">{text}</pre>}
+              {mode === "text" && (
+                <>
+                  <pre className="message-payload-body">{displayText}</pre>
+                  {isTextTruncated && (
+                    <p className="message-payload-truncation">
+                      Showing the first {Math.round(TEXT_PREVIEW_CHARS / 1024)} KB of{" "}
+                      {Math.round((text?.length ?? 0) / 1024).toLocaleString()} KB.{" "}
+                      <button type="button" className="link-button" onClick={() => setExpandedPayload(payloadBase64)}>
+                        Show the whole payload
+                      </button>
+                    </p>
+                  )}
+                </>
+              )}
               {mode === "json" &&
                 (json !== undefined ? (
+                  // Keyed by payload so every message gets a fresh tree.
+                  // `JsonNode` decides whether to start expanded in a
+                  // `useState` initialiser, which React runs once per mounted
+                  // instance — and nodes reconcile by position and property
+                  // name, so without this an `events` node expanded on a
+                  // message with three entries stays expanded on the next
+                  // message where it holds three thousand, rendering all of
+                  // them in one pass.
                   <JsonTreeView
+                    key={payloadBase64}
                     value={json}
                     onOpenInNewTab={() => {
                       const title = `Partition ${message.partition} · Offset ${message.offset}`;
@@ -168,7 +233,9 @@ export function MessagePayloadViewer() {
                   {decodeAvro.isPending && <p>Decoding…</p>}
                   {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
                   {decodeAvro.isSuccess && (
+                    // Same reason as the JSON view above.
                     <JsonTreeView
+                      key={payloadBase64}
                       value={decodeAvro.data}
                       onOpenInNewTab={() => {
                         const title = `Partition ${message.partition} · Offset ${message.offset}`;

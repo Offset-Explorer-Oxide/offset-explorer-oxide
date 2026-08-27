@@ -49,6 +49,21 @@ function primitiveTypeClass(value: unknown): string {
   return `json-tree-value--${typeof value}`;
 }
 
+/**
+ * How many entries a container can hold and still be expanded on sight. Sized
+ * to cover an ordinary message comfortably while keeping the arrays that make
+ * a payload megabytes long — event lists, line items, embedded documents —
+ * behind a click.
+ */
+const AUTO_EXPAND_MAX_CHILDREN = 100;
+
+/** Entries in an object or array; 0 for anything that isn't expandable. */
+function childCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  if (isExpandable(value)) return Object.keys(value as Record<string, unknown>).length;
+  return 0;
+}
+
 interface JsonNodeProps {
   label: string | null;
   value: unknown;
@@ -56,7 +71,14 @@ interface JsonNodeProps {
 }
 
 function JsonNode({ label, value, depth }: JsonNodeProps) {
-  const [expanded, setExpanded] = useState(true);
+  // Large containers start collapsed. Everything expanded is the right
+  // default for the documents this view was built for — a Kafka message of a
+  // few KB — but the same default on a multi-megabyte payload renders every
+  // node of it into the DOM at once, and the app stops responding until the
+  // browser finishes laying out a tree nobody asked to see in full. A
+  // container past this size is one the user has to scroll anyway, so it
+  // costs a click and saves the freeze.
+  const [expanded, setExpanded] = useState(() => childCount(value) <= AUTO_EXPAND_MAX_CHILDREN);
   const indent = { paddingLeft: `${depth * 14}px` };
 
   if (!isExpandable(value)) {

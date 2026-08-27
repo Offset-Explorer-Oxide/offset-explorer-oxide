@@ -24,7 +24,7 @@ use tokio::time::timeout;
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
 use crate::messages::{
-    apply_total_cap, clamp_offset, combined_start_offset, effective_max_messages_per_partition,
+    clamp_offset, combined_start_offset, distribute_total_budget, effective_max_messages_per_partition,
     newest_first_start_offset, partition_limits,
 };
 
@@ -426,10 +426,44 @@ impl KafkaClient for RdKafkaClient {
         config.set("group.id", "kafkaoxide-message-browser");
         config.set("enable.auto.commit", "false");
         config.set("max.partition.fetch.bytes", max_message_size_bytes.to_string());
+
+        // librdkafka keeps pre-fetching ahead of what this fetch will
+        // actually consume: assigning a partition at an offset tells it where
+        // to start, never where to stop, so it reads forward towards the high
+        // watermark until its local queue is full. That queue defaults to
+        // 64 MB, which on a topic of 2-10 MB records is several times more
+        // data pulled over the network than a 100-message fetch will ever
+        // show.
+        //
+        // Kept at twice the largest message the user expects (floor of 1 MB)
+        // so a single maximum-size record always fits with room to spare —
+        // a queue smaller than one message would stall the fetch outright.
+        let prefetch_kbytes = (u64::from(max_message_size_bytes) * 2 / 1024).max(1024);
+        config.set("queued.max.messages.kbytes", prefetch_kbytes.to_string());
+
+        // How long a broker may hold a fetch request open waiting for data
+        // before answering it (librdkafka's default is 500ms). That default
+        // is tuned for a streaming consumer, where an idle wait costs nothing
+        // and saves request churn. This is an interactive browse: every fetch
+        // here is bounded, already knows the offsets it wants, and has a user
+        // watching — so a half-second of the broker holding a request is a
+        // half-second of the UI looking stuck.
+        config.set("fetch.wait.max.ms", "50");
         let topic = topic.to_string();
         let filter = filter.clone();
-
         tokio::task::spawn_blocking(move || {
+            // A consumer per fetch, deliberately.
+            //
+            // Pooling them across fetches looks obviously right — the Data
+            // tab's per-row "Fetch payload" is a whole fetch for one message,
+            // and building a consumer means librdkafka's threads, a socket,
+            // and on a SASL/TLS cluster a full handshake. Measured against a
+            // real broker over 20 single-row fetches, it was 3x *slower*:
+            // ~104ms per row building a fresh consumer, ~346ms reusing one
+            // (~551ms before `fetch.wait.max.ms` was lowered below). Parking
+            // a consumer between fetches means unassigning and reassigning it,
+            // and whatever that costs inside librdkafka dwarfs what building
+            // a new one costs. Measure before reaching for this again.
             let consumer: BaseConsumer = config
                 .create()
                 .change_context(AppError::Kafka)
@@ -459,11 +493,28 @@ impl KafkaClient for RdKafkaClient {
                 None => topic_metadata.partitions().iter().map(|p| p.id()).collect(),
             };
 
+            // Queried once per partition and reused. `fetch_watermarks` is a
+            // blocking round trip to the partition's leader, and the offset
+            // maths below reads each partition's watermarks several times
+            // over — as a closure that re-queried, a 48-partition topic paid
+            // well over a hundred round trips before a single message moved.
+            let watermarks_by_partition: BTreeMap<i32, (i64, i64)> = target_partitions
+                .iter()
+                .map(|&partition| {
+                    consumer
+                        .fetch_watermarks(&topic, partition, read_timeout)
+                        .map(|watermarks| (partition, watermarks))
+                        .change_context(AppError::Kafka)
+                        .attach_printable_lazy(|| format!("failed to fetch watermarks for {topic}:{partition}"))
+                })
+                .collect::<Result<_, _>>()?;
+
             let watermarks = |partition: i32| -> Result<(i64, i64), AppError> {
-                consumer
-                    .fetch_watermarks(&topic, partition, read_timeout)
-                    .change_context(AppError::Kafka)
-                    .attach_printable_lazy(|| format!("failed to fetch watermarks for {topic}:{partition}"))
+                watermarks_by_partition
+                    .get(&partition)
+                    .copied()
+                    .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
+                    .attach_printable_lazy(|| format!("no such partition: {topic}:{partition}"))
             };
 
             // An explicit `offset` and a `from_timestamp_ms` are independent
@@ -490,25 +541,31 @@ impl KafkaClient for RdKafkaClient {
                 })
                 .transpose()?;
 
-            let start_offsets: BTreeMap<i32, i64> =
-                if explicit_start_offsets.is_some() || from_timestamp_start_offsets.is_some() {
-                    target_partitions
-                        .iter()
-                        .map(|&p| {
-                            let explicit = explicit_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
-                            let from_ts = from_timestamp_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
-                            let start = combined_start_offset(explicit, from_ts)
-                                .expect("at least one start-offset source is set for every target partition");
-                            (p, start)
-                        })
-                        .collect()
-                } else {
-                    let cap = i64::from(effective_max_messages_per_partition(filter.max_messages_per_partition));
-                    target_partitions
-                        .iter()
-                        .map(|&p| watermarks(p).map(|(low, high)| (p, newest_first_start_offset(low, high, cap))))
-                        .collect::<Result<_, _>>()?
-                };
+            // Where the *filter* puts each partition's start, before any count
+            // cap narrows it: the explicit offset / from-timestamp when either
+            // is given, the low watermark otherwise. Everything below measures
+            // against this — "how many messages match" is a property of the
+            // filter, and the count caps then carve a window out of that range
+            // rather than defining it.
+            let start_is_pinned_by_filter =
+                explicit_start_offsets.is_some() || from_timestamp_start_offsets.is_some();
+            let filter_start_offsets: BTreeMap<i32, i64> = if start_is_pinned_by_filter {
+                target_partitions
+                    .iter()
+                    .map(|&p| {
+                        let explicit = explicit_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
+                        let from_ts = from_timestamp_start_offsets.as_ref().and_then(|m| m.get(&p).copied());
+                        let start = combined_start_offset(explicit, from_ts)
+                            .expect("at least one start-offset source is set for every target partition");
+                        (p, start)
+                    })
+                    .collect()
+            } else {
+                target_partitions
+                    .iter()
+                    .map(|&p| watermarks(p).map(|(low, _)| (p, low)))
+                    .collect::<Result<_, _>>()?
+            };
 
             let end_offsets: BTreeMap<i32, i64> = if let Some(to_ms) = filter.to_timestamp_ms {
                 resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, to_ms, read_timeout, |p| {
@@ -521,33 +578,62 @@ impl KafkaClient for RdKafkaClient {
                     .collect::<Result<_, _>>()?
             };
 
-            // `partition_limits` treats `None` as "uncapped" — correct for
-            // it as a generic utility, but wrong for this caller: an
-            // offset- or timestamp-filtered fetch with no explicit count
-            // set must still fall back to a sane per-partition cap (the
-            // unfiltered/newest-first branch above already gets this via
-            // `effective_max_messages_per_partition`, since its start
-            // offset is derived from the same cap — this is that same
-            // fallback applied for every other branch too, or an explicit
-            // offset/timestamp filter would try to pull every message from
-            // its start point to the end of the partition).
             // How many messages actually satisfy the partition/offset/
-            // timestamp constraints, uncapped by the count limits below —
-            // the fetch may pull fewer than this if `max_messages_per_
-            // partition`/`max_total_messages` are set, and the frontend
-            // uses the gap to tell the user more remain beyond what was
-            // loaded.
-            let total_matching: u64 = partition_limits(&start_offsets, &end_offsets, None)
+            // timestamp constraints, uncapped by the count limits below — the
+            // frontend shows the gap ("100 of 4,812 loaded") so the user can
+            // tell more remain beyond what was pulled. Measured from the
+            // filter's own start, not from the capped window: measuring from
+            // the window made this the same number as the window itself, so
+            // "loaded / matching" reported the cap back to the user as though
+            // it were the size of the topic.
+            let total_matching: u64 = partition_limits(&filter_start_offsets, &end_offsets, None)
                 .values()
                 .map(|&available| available.max(0) as u64)
                 .sum();
 
-            let limits = partition_limits(
-                &start_offsets,
+            // Two independent limits, both honoured. "Max messages per
+            // partition" is a window — never read further back than this in
+            // any one partition. "Total max messages" is a budget — how many
+            // to actually read, spread over the partitions rather than
+            // draining them in id order.
+            //
+            // `partition_limits` treats `None` as "uncapped", which is right
+            // for it as a generic utility and wrong for this caller: an
+            // offset- or timestamp-filtered fetch with no count set would
+            // otherwise read from its start point to the end of the
+            // partition, so the per-partition window always gets a concrete
+            // value via `effective_max_messages_per_partition`.
+            let windows = partition_limits(
+                &filter_start_offsets,
                 &end_offsets,
                 Some(effective_max_messages_per_partition(filter.max_messages_per_partition)),
             );
-            let limits = apply_total_cap(&limits, filter.max_total_messages);
+            let limits = distribute_total_budget(&windows, filter.max_total_messages);
+
+            // The start offsets to actually assign. When the filter pinned a
+            // start, reading begins there. Otherwise the fetch is
+            // newest-first, and each partition begins exactly its allocation
+            // back from the end — so a budget of 100 across 48 partitions
+            // reads ~2 messages per partition instead of reading 100 from
+            // each and discarding 4,700 of them. On a topic of multi-megabyte
+            // records that difference is the whole fetch.
+            let start_offsets: BTreeMap<i32, i64> = if start_is_pinned_by_filter {
+                filter_start_offsets
+            } else {
+                target_partitions
+                    .iter()
+                    .map(|&p| {
+                        watermarks(p).map(|(low, high)| {
+                            // `end` rather than the high watermark: with a
+                            // to-timestamp filter the newest message in range
+                            // is that boundary, not the end of the partition.
+                            let end = end_offsets.get(&p).copied().unwrap_or(high);
+                            let take = limits.get(&p).copied().unwrap_or(0);
+                            (p, newest_first_start_offset(low, end, take))
+                        })
+                    })
+                    .collect::<Result<_, _>>()?
+            };
 
             let mut assign_tpl = TopicPartitionList::new();
             for (&partition, &limit) in &limits {

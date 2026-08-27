@@ -15,7 +15,7 @@ import {
   validateMaxMessagesPerPartition,
 } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
-import { base64ToBytes, base64ToDisplayText, bytesToText, detectConfluentAvro } from "./payloadDecoding";
+import { base64ToDisplayText, decodeValuePreview } from "./payloadDecoding";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
@@ -25,14 +25,34 @@ function formatTimestamp(params: ValueFormatterParams<TopicMessage, number | nul
   return params.value ? new Date(params.value).toISOString() : "";
 }
 
-/** Decodes a message's payload for the Value column — blank until "Load message payload" is checked and a fetch has run. */
+/**
+ * Previews are cached per message object rather than recomputed: AG Grid
+ * calls a `valueGetter` again on every sort, filter, quick-filter keystroke
+ * and re-render, and `matchesSearch` below asks for the same text again.
+ * Keyed weakly, so a row's preview is released with the row itself when a
+ * new fetch replaces the tab's messages.
+ */
+const valuePreviewCache = new WeakMap<TopicMessage, string>();
+
+/**
+ * The Value column's text: a bounded preview of the payload (see
+ * `decodeValuePreview`), blank until "Load message payload" is checked and a
+ * fetch has run. The full payload is decoded only when a row is opened in
+ * `MessagePayloadViewer`.
+ *
+ * This scopes the search box to each message's first few KB. Searching whole
+ * payloads would mean decoding and scanning every loaded message on every
+ * keystroke (~244ms per keystroke over 300 x 2 MB messages), which is a
+ * worse trade than a bounded search.
+ */
 function messageValueText(message: TopicMessage | undefined): string {
-  const payload = message?.payloadBase64;
-  if (!payload) return "";
-  const bytes = base64ToBytes(payload);
-  const avro = detectConfluentAvro(bytes);
-  if (avro) return `Avro (schema id: ${avro.schemaId})`;
-  return bytesToText(bytes);
+  if (!message) return "";
+  const cached = valuePreviewCache.get(message);
+  if (cached !== undefined) return cached;
+
+  const preview = decodeValuePreview(message.payloadBase64);
+  valuePreviewCache.set(message, preview);
+  return preview;
 }
 
 /** Decodes a message's key for display — base64 on the wire since a Kafka key is an arbitrary byte string, not guaranteed text. */
