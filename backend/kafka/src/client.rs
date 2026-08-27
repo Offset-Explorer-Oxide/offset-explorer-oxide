@@ -49,12 +49,19 @@ const WATERMARK_LOOKUP_CONCURRENCY: usize = 16;
 ///
 /// Fails as a whole if any partition's lookup fails: every caller needs all of
 /// them, and a partial answer would silently under-report a topic's contents.
-fn watermarks_for_partitions(
-    consumer: &BaseConsumer,
+fn watermarks_for_partitions<C>(
+    consumer: &BaseConsumer<C>,
     topic: &str,
     partitions: &[i32],
     read_timeout: Duration,
-) -> Result<BTreeMap<i32, (i64, i64)>, AppError> {
+) -> Result<BTreeMap<i32, (i64, i64)>, AppError>
+where
+    // Generic over the consumer's context so this works for both the plain
+    // consumers and the error-capturing ones the pooled clients use. The
+    // bound is what makes `&BaseConsumer<C>` shareable across the scoped
+    // threads below.
+    C: ConsumerContext + 'static,
+{
     if partitions.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -671,7 +678,7 @@ impl KafkaClient for RdKafkaClient {
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
             let partitions: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
-            let watermarks = watermarks_for_partitions(&consumer, &topic, &partitions, read_timeout)?;
+            let watermarks = watermarks_for_partitions(consumer.as_ref(), &topic, &partitions, read_timeout)?;
 
             Ok(watermarks.values().map(|&(low, high)| (high - low).max(0) as u64).sum())
         })
@@ -754,7 +761,7 @@ impl KafkaClient for RdKafkaClient {
             // over — as a closure that re-queried, a wide topic paid hundreds
             // of round trips before a single message moved.
             let watermarks_by_partition =
-                watermarks_for_partitions(&consumer, &topic, &target_partitions, read_timeout)?;
+                watermarks_for_partitions(consumer.as_ref(), &topic, &target_partitions, read_timeout)?;
 
             let watermarks = |partition: i32| -> Result<(i64, i64), AppError> {
                 watermarks_by_partition
@@ -969,7 +976,7 @@ impl KafkaClient for RdKafkaClient {
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
             let partition_ids: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
-            let watermarks = watermarks_for_partitions(&consumer, &topic, &partition_ids, read_timeout)?;
+            let watermarks = watermarks_for_partitions(consumer.as_ref(), &topic, &partition_ids, read_timeout)?;
 
             Ok(topic_metadata
                 .partitions()
@@ -1114,7 +1121,7 @@ impl KafkaClient for RdKafkaClient {
             let mut watermarks: HashMap<(String, i32), (i64, i64)> = HashMap::new();
             for (topic, topic_partitions) in &partitions_by_topic {
                 for (partition, marks) in
-                    watermarks_for_partitions(&consumer, topic, topic_partitions, read_timeout)?
+                    watermarks_for_partitions(consumer.as_ref(), topic, topic_partitions, read_timeout)?
                 {
                     watermarks.insert((topic.clone(), partition), marks);
                 }

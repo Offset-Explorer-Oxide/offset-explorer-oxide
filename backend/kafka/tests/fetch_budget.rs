@@ -89,7 +89,7 @@ async fn an_overall_budget_reads_only_what_it_returns() {
         return;
     };
 
-    let client = RdKafkaClient;
+    let client = RdKafkaClient::new();
     let connection = connection(bootstrap);
     let topic = topic();
 

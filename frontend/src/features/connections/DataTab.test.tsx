@@ -580,7 +580,6 @@ describe("DataTab", () => {
     await waitFor(() => expect(screen.getByText("1 loaded of 2 matching")).toBeInTheDocument());
   });
 
-<<<<<<< Updated upstream
   it("warns that search is bounded when a loaded message is larger than the searched prefix", async () => {
     const big = btoa("a".repeat(5000));
     const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: big, headers: [] }];
@@ -600,15 +599,12 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 / 1 loaded")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeInTheDocument());
 
     expect(screen.queryByText(/Search examines only/)).not.toBeInTheDocument();
   });
 
-  it("shows 0 / 0 loaded before any fetch has run", () => {
-=======
   it("shows nothing loaded before any fetch has run", () => {
->>>>>>> Stashed changes
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
     expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument();
   });
