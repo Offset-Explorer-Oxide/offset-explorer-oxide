@@ -237,6 +237,8 @@ export const api = {
   connectConnection: (id: string) => invoke<ConnectionStatus>("connection_connect", { id }),
   disconnectConnection: (id: string) => invoke<void>("connection_disconnect", { id }),
   isConnectionConnected: (id: string) => invoke<boolean>("connection_is_connected", { id }),
+  /** Why the backend is refusing this connection's requests without dialling the broker, or null if it isn't. */
+  connectionAuthBlockReason: (id: string) => invoke<string | null>("connection_auth_block_reason", { id }),
   listBrokers: (id: string) =>
     invoke<BrokerSummary[]>("connection_list_brokers", {
       id,

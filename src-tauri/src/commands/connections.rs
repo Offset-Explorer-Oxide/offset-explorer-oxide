@@ -28,15 +28,90 @@ impl From<error_stack::Report<kafkaoxide_core::AppError>> for CommandError {
 /// fit for end users — it includes box-drawing characters and `at
 /// file:line` source locations meant for developers reading logs.
 fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
+    let mut parts = vec![report.current_context().to_string()];
+    parts.push(report_reasons(report));
+    parts.retain(|part| !part.is_empty());
+    parts.join(": ")
+}
+
+/// Just the `.attach_printable(...)` reasons from a report, without the
+/// `AppError` heading — for callers that already say what went wrong and
+/// only need the detail (e.g. the reason stored against a connection whose
+/// credentials were rejected, which is shown under its name in the tree).
+fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
     use error_stack::{AttachmentKind, FrameKind};
 
-    let mut parts = vec![report.current_context().to_string()];
-    for frame in report.frames() {
-        if let FrameKind::Attachment(AttachmentKind::Printable(printable)) = frame.kind() {
-            parts.push(printable.to_string());
+    report
+        .frames()
+        .filter_map(|frame| match frame.kind() {
+            FrameKind::Attachment(AttachmentKind::Printable(printable)) => Some(printable.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+/// Loads a saved connection for a request that will talk to the broker,
+/// refusing it outright when the connection's authentication circuit breaker
+/// has tripped.
+///
+/// This is the fail-fast gate. Once the broker has rejected a connection's
+/// credentials `MAX_AUTH_ATTEMPTS` times, every further request for it is
+/// answered from memory: no client is created, no socket is opened, no
+/// handshake reaches the cluster — however hard the user clicks, and however
+/// many users have the same stale password saved. Retrying rejected
+/// credentials cannot succeed; all it can do is cost the brokers CPU and
+/// fill their logs.
+///
+/// The breaker is cleared by editing the connection (see
+/// `connection_update`) or by an explicit Reconnect (see
+/// `connection_connect`) — both are deliberate acts by a user who has had a
+/// chance to fix the credentials.
+async fn connection_for_request(state: &AppState, id: &str) -> Result<Connection, CommandError> {
+    if let Some(reason) = state.connections.auth_block_reason(id) {
+        return Err(CommandError {
+            message: format!(
+                "{}: authentication failed for this connection, so it is not being retried: {reason}. \
+                 Edit the connection's credentials and save to try again.",
+                AppError::Authentication
+            ),
+        });
+    }
+    Ok(kafkaoxide_db::connections::get(&state.pool, id).await?)
+}
+
+/// Feeds a broker call's outcome back to the connection's circuit breaker:
+/// a rejection counts against its attempt allowance, and any success clears
+/// the slate. Only `AppError::Authentication` counts — a timeout or a
+/// transport failure must stay retryable (see `kafkaoxide_kafka::auth`).
+fn record_auth_outcome<T>(
+    state: &AppState,
+    id: &str,
+    result: &Result<T, error_stack::Report<AppError>>,
+) {
+    match result {
+        Ok(_) => state.connections.record_auth_success(id),
+        Err(report) => {
+            if matches!(report.current_context(), AppError::Authentication) {
+                state.connections.record_auth_failure(id, &report_reasons(report));
+                // Keeping a client the broker has rejected would mean the
+                // next request reuses a connection that cannot work.
+                state.kafka.release(id);
+            }
         }
     }
-    parts.join(": ")
+}
+
+/// Logs how long a broker round trip took, to the Logs panel.
+///
+/// Every one of these commands builds a Kafka client from scratch, so its
+/// duration is a connection setup (TCP, plus TLS and SASL on a secured
+/// cluster) *plus* the request itself — not the request alone. When someone
+/// asks why listing topics on a freshly connected cluster isn't instant,
+/// this is the number that answers it, per call, from their own machine and
+/// their own cluster.
+fn log_broker_call(app: &AppHandle, what: &str, started: std::time::Instant, outcome: &str) {
+    crate::logging::emit_log(app, "info", format!("{what} {outcome} in {} ms", started.elapsed().as_millis()));
 }
 
 #[tauri::command]
@@ -63,6 +138,11 @@ pub async fn connection_update(
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
     let connection = kafkaoxide_db::connections::update(&state.pool, &id, &new_connection).await?;
+    // The settings the broker rejected no longer exist, so the verdict on
+    // them is meaningless — give the edited connection a clean slate.
+    state.connections.clear_auth_failures(&id);
+    // The pooled client was built from the settings that just changed.
+    state.kafka.release(&id);
     crate::logging::emit_log(&app, "info", format!("Updated connection \"{}\"", connection.name));
     Ok(connection)
 }
@@ -76,6 +156,8 @@ pub async fn connection_delete(
     kafkaoxide_db::connections::delete(&state.pool, &id).await?;
     kafkaoxide_db::topic_schemas::delete_all_for_connection(&state.pool, &id).await?;
     state.connections.mark_disconnected(&id);
+    state.connections.clear_auth_failures(&id);
+    state.kafka.release(&id);
     crate::logging::emit_log(&app, "info", format!("Deleted connection {id}"));
     Ok(())
 }
@@ -196,17 +278,34 @@ pub async fn connection_test(
         .await?)
 }
 
-/// Backs the cluster detail panel's "Reconnect" button. Pings the saved
-/// connection and, only on success, marks it connected in
+/// Backs the cluster detail panel's "Reconnect" button. Authenticates
+/// against the saved connection and, only on success, marks it connected in
 /// `AppState::connections` — this is what gates the tree's Brokers/Topics/
 /// Consumers expansion and the panel's field-disabling.
+///
+/// Reconnect *spends* one of the connection's authentication attempts; it
+/// does not hand back a fresh allowance. Otherwise clicking Reconnect would
+/// reset the counter every time and the breaker could never trip on the one
+/// path that matters most — a saved-but-wrong password, which is exactly
+/// what a user clicks Reconnect at. Editing the connection is what clears
+/// the slate, because that is the act that can actually fix the problem.
 #[tauri::command]
 pub async fn connection_connect(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ConnectionStatus, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let status = state.kafka.check_status(&connection).await?;
+    let connection = connection_for_request(&state, &id).await?;
+
+    let started = std::time::Instant::now();
+    // Authenticates *and* leaves the connection open for the requests that
+    // follow — the tree's brokers/topics/consumers land on this same client
+    // instead of each paying for its own handshake.
+    let result = state.kafka.connect(&connection).await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Connecting", started, if result.is_ok() { "finished" } else { "failed" });
+
+    let status = result?;
     if status == ConnectionStatus::Reachable {
         state.connections.mark_connected(&id);
     }
@@ -217,6 +316,11 @@ pub async fn connection_connect(
 #[tauri::command]
 pub async fn connection_disconnect(state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
     state.connections.mark_disconnected(&id);
+    // Disconnect means disconnect: drop the pooled client so the socket
+    // actually closes, rather than leaving an idle connection open against
+    // the cluster. This is also what the 120-minute idle auto-disconnect
+    // ends up calling.
+    state.kafka.release(&id);
     Ok(())
 }
 
@@ -225,57 +329,89 @@ pub async fn connection_is_connected(state: State<'_, AppState>, id: String) -> 
     Ok(state.connections.is_connected(&id))
 }
 
+/// Why this connection's requests are being refused without reaching the
+/// broker, or `None` if they aren't. Lets the tree show the user *that* the
+/// credentials were rejected — and what the broker said — instead of leaving
+/// them clicking a cluster whose every request fails identically.
+#[tauri::command]
+pub async fn connection_auth_block_reason(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, CommandError> {
+    Ok(state.connections.auth_block_reason(&id))
+}
+
 /// Backs the tree's "Brokers" sub-list once a cluster is connected.
 /// `read_timeout_ms` is the user's General settings > Brokers > Read Timeout
 /// value.
 #[tauri::command]
 pub async fn connection_list_brokers(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::BrokerSummary>, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_brokers(&connection, Duration::from_millis(read_timeout_ms)).await?)
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state.kafka.list_brokers(&connection, Duration::from_millis(read_timeout_ms)).await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Listing brokers", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// Backs the tree's "Topics" sub-list once a cluster is connected.
 #[tauri::command]
 pub async fn connection_list_topics(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::TopicSummary>, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state.kafka.list_topics(&connection, Duration::from_millis(read_timeout_ms)).await?)
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state.kafka.list_topics(&connection, Duration::from_millis(read_timeout_ms)).await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Listing topics", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// Backs the tree's "Consumers" sub-list once a cluster is connected.
 #[tauri::command]
 pub async fn connection_list_consumer_groups(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::ConsumerGroupSummary>, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state
         .kafka
         .list_consumer_groups(&connection, Duration::from_millis(read_timeout_ms))
-        .await?)
+        .await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Listing consumer groups", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// Backs the topic detail panel's Properties > Messages "Refresh" button.
 #[tauri::command]
 pub async fn connection_count_topic_messages(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     topic: String,
     read_timeout_ms: u64,
 ) -> Result<u64, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state
         .kafka
         .count_topic_messages(&connection, &topic, Duration::from_millis(read_timeout_ms))
-        .await?)
+        .await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Counting topic messages", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// One incrementally-fetched message, emitted on the `"messages-batch"`
@@ -315,7 +451,7 @@ pub async fn connection_fetch_messages(
     read_timeout_ms: u64,
     max_message_size_bytes: u32,
 ) -> Result<kafkaoxide_core::MessageFetchResult, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
+    let connection = connection_for_request(&state, &id).await?;
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
@@ -357,6 +493,7 @@ pub async fn connection_fetch_messages(
         )
         .await;
     let _ = forward_task.await;
+    record_auth_outcome(&state, &id, &result);
 
     match result {
         Ok(fetch_result) => {
@@ -395,44 +532,59 @@ pub async fn connection_fetch_messages(
 /// Backs the topic detail panel's Partitions tab.
 #[tauri::command]
 pub async fn connection_list_partitions(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     topic: String,
     read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::PartitionSummary>, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state
         .kafka
         .list_partitions(&connection, &topic, Duration::from_millis(read_timeout_ms))
-        .await?)
+        .await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Listing partitions", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// Backs the topic detail panel's Config tab.
 #[tauri::command]
 pub async fn connection_describe_topic_config(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     topic: String,
     read_timeout_ms: u64,
 ) -> Result<Vec<kafkaoxide_core::ConfigEntry>, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state
         .kafka
         .describe_topic_config(&connection, &topic, Duration::from_millis(read_timeout_ms))
-        .await?)
+        .await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Describing topic config", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }
 
 /// Backs the consumer group detail panel's "Refresh" button.
 #[tauri::command]
 pub async fn connection_fetch_consumer_group_lag(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     group_id: String,
     read_timeout_ms: u64,
 ) -> Result<kafkaoxide_core::ConsumerGroupLag, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    Ok(state
+    let connection = connection_for_request(&state, &id).await?;
+    let started = std::time::Instant::now();
+    let result = state
         .kafka
         .fetch_consumer_group_lag(&connection, &group_id, Duration::from_millis(read_timeout_ms))
-        .await?)
+        .await;
+    record_auth_outcome(&state, &id, &result);
+    log_broker_call(&app, "Fetching consumer group lag", started, if result.is_ok() { "finished" } else { "failed" });
+    Ok(result?)
 }

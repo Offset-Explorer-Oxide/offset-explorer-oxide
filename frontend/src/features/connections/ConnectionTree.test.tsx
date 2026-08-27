@@ -63,6 +63,49 @@ describe("ConnectionTree", () => {
     });
   });
 
+  it("marks a connection whose credentials the broker rejected with a red dot, whatever the TCP status poll says", async () => {
+    // The port is open — the credentials are the problem — so the plain
+    // reachability poll would otherwise leave this row looking healthy.
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => "Invalid username or password",
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    await waitFor(() => {
+      expect(screen.getByTestId("status-1").className).toContain("status-dot--red");
+    });
+  });
+
+  it("explains what the broker said when a connection is blocked on authentication", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => "Invalid username or password",
+    });
+    renderWithClient(<ConnectionTree />);
+
+    const message = await screen.findByText(/Authentication failed/);
+    expect(message).toHaveTextContent("Invalid username or password");
+  });
+
+  it("says nothing about authentication for a connection that is not blocked", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => true,
+      connection_auth_block_reason: () => null,
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    expect(screen.queryByText(/Authentication failed/)).not.toBeInTheDocument();
+  });
+
   it("renders a gray status dot when reachable but not yet connected", async () => {
     const checkStatus = vi.fn(() => "REACHABLE");
     const isConnected = vi.fn(() => false);

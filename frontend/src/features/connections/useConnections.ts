@@ -85,6 +85,23 @@ export function useTestConnection() {
   });
 }
 
+/**
+ * Why this connection's requests are being refused before they reach the
+ * broker — the reason the broker gave when it rejected its credentials — or
+ * `null` while it isn't blocked.
+ *
+ * Polled alongside the reachability dot, since the breaker can trip at any
+ * time (a rotated password takes effect mid-session, not at connect time).
+ */
+export function useConnectionAuthBlock(id: string) {
+  return useQuery({
+    queryKey: ["connection-auth-block", id],
+    queryFn: () => api.connectionAuthBlockReason(id),
+    refetchInterval: 10_000,
+    initialData: null,
+  });
+}
+
 /** Whether the cluster detail panel should treat this connection as connected (gates field-disabling and the tree's Brokers/Topics/Consumers expansion). */
 export function useConnectionConnected(id: string) {
   return useQuery({
@@ -113,6 +130,12 @@ export function useConnect(id: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["connection-connected", id] });
       queryClient.invalidateQueries({ queryKey: ["connection-status", id] });
+    },
+    // On settled, not on success: a Reconnect that the broker *rejects* is
+    // exactly when the breaker's state changes, and the tree needs to say so
+    // straight away rather than at the next poll.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["connection-auth-block", id] });
     },
   });
 }

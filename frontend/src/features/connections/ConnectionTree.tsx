@@ -6,6 +6,7 @@ import { Connection, ConnectionStatus } from "../../lib/tauri";
 import {
   connectMutationKey,
   useConnect,
+  useConnectionAuthBlock,
   useConnectionConnected,
   useConnectionsQuery,
   useConnectionStatus,
@@ -25,7 +26,11 @@ import { treeKey, useTreeUiStore } from "./useTreeUiStore";
  * connect-state-gated field disabling and the tree's Brokers/Topics/
  * Consumers expansion, which key off the same "connected" flag.
  */
-function statusClass(status: ConnectionStatus, isConnected: boolean): string {
+function statusClass(status: ConnectionStatus, isConnected: boolean, isAuthBlocked: boolean): string {
+  // Rejected credentials outrank the reachability poll: that poll is a plain
+  // TCP check, so a cluster whose password is wrong answers it perfectly
+  // happily and would otherwise sit there looking fine.
+  if (isAuthBlocked) return "status-dot status-dot--red";
   if (status === "UNREACHABLE") return "status-dot status-dot--red";
   if (status === "REACHABLE" && isConnected) return "status-dot status-dot--green";
   return "status-dot status-dot--gray";
@@ -41,6 +46,7 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
   const { id, name } = connection;
   const { data: status } = useConnectionStatus(id);
   const { data: isConnected } = useConnectionConnected(id);
+  const { data: authBlockReason } = useConnectionAuthBlock(id);
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectConnection = useWorkspaceSelectionStore((s) => s.selectConnection);
   const isSelected = selection?.type === "connection" && selection.id === id;
@@ -96,10 +102,19 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
             <span className="tree-caret" aria-hidden="true" />
           </button>
         )}
-        <span className={statusClass(status ?? "UNKNOWN", connected)} data-testid={`status-${id}`} />
+        <span
+          className={statusClass(status ?? "UNKNOWN", connected, Boolean(authBlockReason))}
+          data-testid={`status-${id}`}
+        />
         <span>{name}</span>
         {isConnecting && <span className="spinner" role="status" aria-label="Connecting" />}
       </li>
+      {authBlockReason && (
+        <li className="connection-row-auth-block" data-testid={`auth-block-${id}`}>
+          Authentication failed: {authBlockReason}. Requests to this cluster are paused. Edit the connection's
+          credentials and save to try again.
+        </li>
+      )}
       {menuPosition && (
         <ContextMenu
           x={menuPosition.x}

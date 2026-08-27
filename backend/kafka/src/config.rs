@@ -2,6 +2,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kafkaoxide_core::{Connection, SaslMechanism, SecurityProtocol};
 use rdkafka::ClientConfig;
+use std::sync::OnceLock;
 
 /// Broker TLS material from the New Connection modal's Security tab. Only
 /// `truststore_location`, `keystore_location`, `keystore_password`, and
@@ -34,6 +35,8 @@ pub fn build_client_config(
     let mut config = ClientConfig::new();
     config.set("bootstrap.servers", bootstrap_servers);
     config.set("security.protocol", security_protocol.to_string().to_lowercase());
+    apply_connection_attempt_limits(&mut config);
+    apply_connection_footprint_limits(&mut config);
 
     if let Some(mechanism) = sasl_mechanism {
         config.set("sasl.mechanism", mechanism.to_string());
@@ -65,6 +68,65 @@ pub fn build_client_config(
     config
 }
 
+/// Caps how hard a single client hammers the brokers while it exists.
+///
+/// librdkafka has no "give up on authentication failure" switch: a client
+/// whose credentials are rejected keeps reconnecting on
+/// `reconnect.backoff.ms`, doubling up to `reconnect.backoff.max.ms`, to
+/// every broker, for as long as the client object lives. With the defaults
+/// (100ms initial, 10s max) a single 10-second request against a cluster
+/// that rejects the password costs the brokers a double-digit number of TCP
+/// + TLS + SASL handshakes — each one logged, multiplied by every user
+/// running this app. Slowing the loop down cuts that to a handful.
+///
+/// This is damage limitation inside one client's lifetime, not the fix. The
+/// fix is not creating the client at all — see `ConnectionRegistry`'s
+/// authentication circuit breaker, which is what stops a rejected connection
+/// from reaching this code a third time.
+///
+/// `socket.connection.setup.timeout.ms` is lowered from librdkafka's 30s
+/// default for the same reason: a doomed handshake should be abandoned well
+/// inside the request's own read timeout rather than sitting in the retry
+/// loop until the very end of it.
+fn apply_connection_attempt_limits(config: &mut ClientConfig) {
+    config.set("reconnect.backoff.ms", "1000");
+    config.set("reconnect.backoff.max.ms", "30000");
+    config.set("socket.connection.setup.timeout.ms", "5000");
+}
+
+/// Bounds what a client does to the cluster beyond the requests it is asked
+/// to make.
+///
+/// Both of these are already librdkafka's defaults; they are set explicitly
+/// because both are properties this app depends on against real production
+/// clusters, and neither should be able to change underneath it on a
+/// librdkafka upgrade.
+///
+/// * `enable.sparse.connections` keeps a client connected only to the
+///   brokers it actually talks to. It is why one pooled metadata client
+///   costs the cluster roughly one connection rather than one per broker —
+///   the difference between a desktop fleet being unnoticeable and being a
+///   connection-count problem.
+/// * `allow.auto.create.topics` stops a metadata request for a topic that
+///   does not exist from *creating* it on a cluster with auto-creation
+///   enabled. A read-only browsing tool must never bring a topic into
+///   existence because someone clicked a stale row.
+fn apply_connection_footprint_limits(config: &mut ClientConfig) {
+    config.set("enable.sparse.connections", "true");
+    config.set("allow.auto.create.topics", "false");
+}
+
+/// The OS trust store, loaded and PEM-encoded once per run of the app.
+///
+/// Every `ClientConfig` this module builds needs the same bundle, and a
+/// config is built for *every* broker request — listing topics, listing
+/// partitions, each message fetch. Rebuilding it each time meant
+/// re-enumerating the OS certificate store (a Win32 call on Windows, a
+/// Keychain query on macOS) and re-base64-encoding ~150 certificates before
+/// a single byte went out on the wire, on every click. It cannot change
+/// while the app is running, so it is computed once.
+static NATIVE_CA_BUNDLE: OnceLock<Option<String>> = OnceLock::new();
+
 /// Loads the OS's native trust store (Windows cert store / macOS Keychain /
 /// Linux's /etc/ssl/certs, via `rustls-native-certs`) and re-encodes it as a
 /// PEM bundle for librdkafka's `ssl.ca.pem`. Needed because the vendored
@@ -74,7 +136,13 @@ pub fn build_client_config(
 /// using a certificate signed by a public CA the OS already trusts.
 /// Returns `None` if no certs could be loaded at all (better to leave
 /// librdkafka with its own — broken — default than to set an empty bundle).
-fn native_ca_bundle_pem() -> Option<String> {
+///
+/// Cached in [`NATIVE_CA_BUNDLE`]; the work below happens once per run.
+fn native_ca_bundle_pem() -> Option<&'static str> {
+    NATIVE_CA_BUNDLE.get_or_init(build_native_ca_bundle_pem).as_deref()
+}
+
+fn build_native_ca_bundle_pem() -> Option<String> {
     let result = rustls_native_certs::load_native_certs();
     if result.certs.is_empty() {
         return None;
@@ -91,6 +159,13 @@ fn native_ca_bundle_pem() -> Option<String> {
         pem.push_str("-----END CERTIFICATE-----\n");
     }
     Some(pem)
+}
+
+/// Loads and caches the OS trust store ahead of the first broker request, so
+/// that cost lands during app start-up rather than in the middle of the
+/// user's first click. Cheap and idempotent after the first call.
+pub fn warm_native_ca_bundle() {
+    let _ = native_ca_bundle_pem();
 }
 
 /// Builds a `ClientConfig` for a saved connection — every field, including
@@ -148,6 +223,83 @@ mod tests {
             created_at: "now".into(),
             updated_at: "now".into(),
         }
+    }
+
+    #[test]
+    fn keeps_each_client_connected_only_to_the_brokers_it_uses() {
+        // One pooled client per connection is only cheap for the cluster if
+        // it doesn't hold a socket open to every broker.
+        let config = client_config(&sample_connection());
+        assert_eq!(config.get("enable.sparse.connections"), Some("true"));
+    }
+
+    #[test]
+    fn never_lets_a_metadata_request_create_a_topic() {
+        let config = client_config(&sample_connection());
+        assert_eq!(config.get("allow.auto.create.topics"), Some("false"));
+    }
+
+    #[test]
+    fn applies_the_footprint_limits_to_unsaved_connections_too() {
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::Plaintext,
+            None,
+            None,
+            None,
+            BrokerSslConfig::default(),
+        );
+
+        assert_eq!(config.get("enable.sparse.connections"), Some("true"));
+        assert_eq!(config.get("allow.auto.create.topics"), Some("false"));
+    }
+
+    #[test]
+    fn reuses_one_cached_copy_of_the_native_ca_bundle_across_configs() {
+        // Rebuilt per config, this re-enumerated the OS certificate store on
+        // every single broker request — a cost paid on every click, before
+        // any byte went out on the wire.
+        let first = native_ca_bundle_pem();
+        let second = native_ca_bundle_pem();
+
+        match (first, second) {
+            (Some(a), Some(b)) => assert!(std::ptr::eq(a, b), "expected the same cached bundle, not a rebuilt one"),
+            (None, None) => {}
+            _ => panic!("the cached bundle changed between calls"),
+        }
+    }
+
+    #[test]
+    fn slows_the_reconnect_loop_down_from_librdkafkas_defaults() {
+        // The retry-storm guard: librdkafka reconnects a rejected client
+        // every 100ms by default, so a doomed request costs the broker a
+        // handshake burst rather than one attempt.
+        let config = client_config(&sample_connection());
+        assert_eq!(config.get("reconnect.backoff.ms"), Some("1000"));
+        assert_eq!(config.get("reconnect.backoff.max.ms"), Some("30000"));
+    }
+
+    #[test]
+    fn abandons_a_stalled_connection_setup_well_inside_a_request_timeout() {
+        let config = client_config(&sample_connection());
+        assert_eq!(config.get("socket.connection.setup.timeout.ms"), Some("5000"));
+    }
+
+    #[test]
+    fn applies_the_connection_attempt_limits_to_unsaved_connections_too() {
+        // The modal's Test button probes typed-but-unsaved values, and is
+        // exactly where a user with a wrong password will click repeatedly.
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::Plaintext,
+            None,
+            None,
+            None,
+            BrokerSslConfig::default(),
+        );
+
+        assert_eq!(config.get("reconnect.backoff.ms"), Some("1000"));
+        assert_eq!(config.get("socket.connection.setup.timeout.ms"), Some("5000"));
     }
 
     #[test]
