@@ -23,3 +23,30 @@ kafkaoxide-db = { path = "backend/db" }
 kafkaoxide-kafka = { path = "backend/kafka" }
 kafkaoxide-avro = { path = "backend/avro" }
 kafkaoxide-schema-registry = { path = "backend/schema-registry" }
+
+# Release builds had no profile at all, so they ran on cargo's defaults:
+# `codegen-units = 16` (which deliberately trades optimization quality for
+# parallel compile speed) and no LTO, meaning nothing was ever inlined or
+# specialized across crate boundaries — every call from `src-tauri` into
+# `kafkaoxide-kafka`, and from there into rdkafka, stayed an opaque function
+# call. For a desktop app that is built once by CI and then run for hours by
+# every user, that is the wrong side of the trade: compile time is paid once
+# on a build machine, runtime is paid continuously on the user's.
+#
+# `panic` is deliberately left at the default `unwind`. Several paths here
+# depend on catching a panic rather than dying on it: every
+# `spawn_blocking` call site turns a panicking task back into an
+# `AppError` (see `fetch_messages`'s "task panicked" attachment), and the
+# pooled-client mutexes recover from poisoning via
+# `unwrap_or_else(|err| err.into_inner())`. `panic = "abort"` would turn any
+# one of those into an immediate process kill, losing the user's session —
+# a behaviour change, not an optimization.
+#
+# `strip = "debuginfo"` rather than `"symbols"`: it removes the bulk without
+# reducing panic messages and `error-stack` backtraces to bare addresses,
+# which is what the Logs panel surfaces when something fails on a user's
+# machine.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
