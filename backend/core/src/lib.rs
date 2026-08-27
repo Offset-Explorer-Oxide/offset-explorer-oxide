@@ -1,3 +1,4 @@
+mod auth;
 mod cluster;
 mod connection;
 mod connection_export;
@@ -17,5 +18,7 @@ pub use connection_export::{
     partition_importable, select_for_export, ConnectionExportFile, PortableConnection,
     CURRENT_EXPORT_VERSION,
 };
+pub use auth::is_auth_failure_reason;
+pub use registry::MAX_AUTH_ATTEMPTS;
 pub use error::AppError;
 pub use registry::ConnectionRegistry;

@@ -77,12 +77,23 @@ fn main() {
 
                 handle.manage(AppState {
                     pool,
-                    kafka: Arc::new(kafkaoxide_kafka::RdKafkaClient),
+                    kafka: Arc::new(kafkaoxide_kafka::RdKafkaClient::new()),
                     zookeeper: Arc::new(kafkaoxide_kafka::TcpZookeeperClient),
                     connections: kafkaoxide_core::ConnectionRegistry::default(),
                 });
 
                 logging::emit_log(&handle, "info", "Application started");
+
+                // Enumerating the OS trust store is the one fixed cost every
+                // TLS connection pays; doing it here means the user's first
+                // click doesn't.
+                let ca_started = std::time::Instant::now();
+                kafkaoxide_kafka::warm_native_ca_bundle();
+                logging::emit_log(
+                    &handle,
+                    "info",
+                    format!("Loaded the OS trust store in {} ms", ca_started.elapsed().as_millis()),
+                );
 
                 // Which compression codecs work is fixed at compile time
                 // inside librdkafka, and a missing one stays invisible until a
@@ -124,6 +135,7 @@ fn main() {
             commands::connections::connection_connect,
             commands::connections::connection_disconnect,
             commands::connections::connection_is_connected,
+            commands::connections::connection_auth_block_reason,
             commands::connections::connection_list_brokers,
             commands::connections::connection_list_topics,
             commands::connections::connection_list_consumer_groups,

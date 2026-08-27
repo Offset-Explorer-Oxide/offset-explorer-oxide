@@ -11,6 +11,7 @@ import { ConnectionTree } from "./features/connections/ConnectionTree";
 import { ConnectionModal } from "./features/connections/modal/ConnectionModal";
 import { ConnectionDraft, connectionToDraft } from "./features/connections/modal/draft";
 import { api, Connection } from "./lib/tauri";
+import { retryDelay, shouldRetry } from "./lib/queryRetry";
 import { ClusterDetailPanel } from "./features/connections/ClusterDetailPanel";
 import { BrokerDetailPanel } from "./features/connections/BrokerDetailPanel";
 import { TopicDetailPanel } from "./features/connections/TopicDetailPanel";
@@ -29,7 +30,23 @@ import { useMessageViewerStore } from "./features/workspace/useMessageViewerStor
 import "./styles/themes.css";
 import "./styles/global.css";
 
-const queryClient = new QueryClient();
+// Every query here ends in a Kafka client, a socket and — on a secured
+// cluster — a TLS and SASL handshake, so React Query's defaults (three
+// retries, immediately, in lockstep across every open app) are broker load
+// rather than resilience. `shouldRetry` also refuses to retry rejected
+// credentials at all: see `frontend/src/lib/queryRetry.ts`.
+/**
+ * Exported so tests can reset it between cases. It is deliberately
+ * module-level — the app wants one cache for its whole lifetime — which
+ * means a test file's cases would otherwise share cached cluster data with
+ * each other now that those queries have a stale window.
+ */
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: shouldRetry, retryDelay },
+    mutations: { retry: false },
+  },
+});
 
 function AppShell() {
   const [showModal, setShowModal] = useState(false);

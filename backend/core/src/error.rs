@@ -10,6 +10,12 @@ pub enum AppError {
     Zookeeper,
     SchemaRegistry,
     Decode,
+    /// The broker rejected the connection's credentials (SASL) or refused
+    /// the TLS handshake. Distinct from `Kafka` because it is *not*
+    /// transient: retrying with the same connection settings will fail the
+    /// same way, so this is the one failure the app treats as a reason to
+    /// stop dialling until the user acts (see `ConnectionRegistry`).
+    Authentication,
 }
 
 impl fmt::Display for AppError {
@@ -23,6 +29,7 @@ impl fmt::Display for AppError {
             AppError::Zookeeper => write!(f, "zookeeper error"),
             AppError::SchemaRegistry => write!(f, "schema registry error"),
             AppError::Decode => write!(f, "payload decode error"),
+            AppError::Authentication => write!(f, "authentication error"),
         }
     }
 }
@@ -43,5 +50,6 @@ mod tests {
             "schema registry error"
         );
         assert_eq!(AppError::Decode.to_string(), "payload decode error");
+        assert_eq!(AppError::Authentication.to_string(), "authentication error");
     }
 }
