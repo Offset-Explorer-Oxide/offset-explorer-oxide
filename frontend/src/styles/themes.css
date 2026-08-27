@@ -9,6 +9,7 @@
   --color-status-green: #a6e3a1;
   --color-status-gray: #6c7086;
   --color-status-red: #f38ba8;
+  --color-status-amber: #f9e2af;
 }
 
 :root[data-theme="zed-light"] {
@@ -22,6 +23,7 @@
   --color-status-green: #40a02b;
   --color-status-gray: #9ca0b0;
   --color-status-red: #d20f39;
+  --color-status-amber: #df8e1d;
 }
 
 :root[data-theme="ayu-dark"] {
@@ -35,6 +37,7 @@
   --color-status-green: #aad94c;
   --color-status-gray: #4d5566;
   --color-status-red: #f26d78;
+  --color-status-amber: #ffb454;
 }
 
 :root[data-theme="one-light"] {
@@ -48,6 +51,7 @@
   --color-status-green: #50a14f;
   --color-status-gray: #a0a1a7;
   --color-status-red: #e45649;
+  --color-status-amber: #c18401;
 }
 
 :root[data-theme="one-dark"] {
@@ -61,6 +65,7 @@
   --color-status-green: #98c379;
   --color-status-gray: #5c6370;
   --color-status-red: #e06c75;
+  --color-status-amber: #e5c07b;
 }
 
 :root[data-theme="gruvbox-light-soft"] {
@@ -74,6 +79,7 @@
   --color-status-green: #79740e;
   --color-status-gray: #928374;
   --color-status-red: #9d0006;
+  --color-status-amber: #b57614;
 }
 
 :root[data-theme="gruvbox-light-hard"] {
@@ -87,6 +93,7 @@
   --color-status-green: #79740e;
   --color-status-gray: #928374;
   --color-status-red: #9d0006;
+  --color-status-amber: #b57614;
 }
 
 :root[data-theme="gruvbox-dark-soft"] {
@@ -100,6 +107,7 @@
   --color-status-green: #b8bb26;
   --color-status-gray: #928374;
   --color-status-red: #fb4934;
+  --color-status-amber: #fabd2f;
 }
 
 :root[data-theme="gruvbox-dark-hard"] {
@@ -113,4 +121,5 @@
   --color-status-green: #b8bb26;
   --color-status-gray: #928374;
   --color-status-red: #fb4934;
+  --color-status-amber: #fabd2f;
 }

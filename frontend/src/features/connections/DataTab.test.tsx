@@ -431,6 +431,93 @@ describe("DataTab", () => {
     expect(lastGridProps?.rowData).toEqual([]);
   });
 
+  it("disables every filter input, and the payload checkbox, while a fetch is in progress", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    setInvokeHandlers({ connection_fetch_messages: () => pending });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByLabelText("Max messages per partition")).toBeDisabled());
+
+    expect(screen.getByLabelText("Total max messages")).toBeDisabled();
+    expect(screen.getByLabelText("Partition filter")).toBeDisabled();
+    expect(screen.getByLabelText("Offset")).toBeDisabled();
+    expect(screen.getByLabelText("From")).toBeDisabled();
+    expect(screen.getByLabelText("To")).toBeDisabled();
+    expect(screen.getByLabelText("Load message payload")).toBeDisabled();
+  });
+
+  it("re-enables the filters once the fetch finishes", async () => {
+    let resolveFetch!: (value: { messages: unknown[]; totalMatching: number }) => void;
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
+      resolveFetch = resolve;
+    });
+    setInvokeHandlers({ connection_fetch_messages: () => pending });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByLabelText("Offset")).toBeDisabled());
+
+    resolveFetch({ messages: [], totalMatching: 0 });
+
+    await waitFor(() => expect(screen.getByLabelText("Offset")).not.toBeDisabled());
+  });
+
+  it("tells the backend to cancel the in-flight request id when Stop is clicked", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    const cancelFetch = vi.fn(() => null);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages, connection_cancel_fetch: cancelFetch });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(cancelFetch).toHaveBeenCalledWith({ requestId });
+  });
+
+  /**
+   * DataTab is reused (not remounted) across topics within a tab, so
+   * switching topics mid-fetch would otherwise leave the old fetch running
+   * against the broker for a tab the user has already left — exactly the
+   * kind of needless broker load the connection breaker/pooling work this
+   * session was about avoiding.
+   */
+  it("cancels the in-flight fetch and re-enables the filters when switching to a different topic mid-fetch", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    const cancelFetch = vi.fn(() => null);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages, connection_cancel_fetch: cancelFetch });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="orders" />
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="order-created" />
+      </QueryClientProvider>,
+    );
+
+    expect(cancelFetch).toHaveBeenCalledWith({ requestId });
+    expect(screen.getByRole("button", { name: "Fetch" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    expect(screen.getByLabelText("Offset")).not.toBeDisabled();
+  });
+
   it("keeps the loading overlay up while a fetch is running but has produced no rows yet", async () => {
     const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
     setInvokeHandlers({ connection_fetch_messages: () => pending });

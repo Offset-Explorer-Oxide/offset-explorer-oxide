@@ -562,6 +562,34 @@ body {
 .resource-category-header:hover {
   background: var(--color-bg);
 }
+
+/* Sits on the category header so a listing that failed is visible without
+   expanding it — the tree otherwise shows an empty category and an outright
+   refusal identically. */
+.resource-category-warning-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-status-amber);
+  color: var(--color-bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.resource-category-warning {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--color-status-amber);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .resource-category-body {
   padding-left: 15px;
   margin-left: 10px;

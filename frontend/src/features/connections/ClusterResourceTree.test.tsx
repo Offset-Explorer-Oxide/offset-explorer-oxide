@@ -21,6 +21,39 @@ beforeEach(() => {
 });
 
 describe("ClusterResourceTree", () => {
+  it("warns under Topics when the topic listing fails", async () => {
+    setInvokeHandlers({
+      connection_list_topics: () => {
+        throw new Error("Local: Timed out");
+      },
+    });
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    expect(await screen.findByTestId("category-Topics-warning")).toBeInTheDocument();
+  });
+
+
+  it("warns under Consumers when the group listing fails, and leaves the other categories alone", async () => {
+    // Listing consumer groups needs ACLs of its own, so it can be refused on
+    // a cluster whose topics and brokers read perfectly well. That must stay
+    // a note on this one category, not a failure of the whole cluster.
+    setInvokeHandlers({
+      connection_list_topics: () => [{ name: "orders", partitionCount: 1 }],
+      connection_list_consumer_groups: () => {
+        throw new Error("authentication error: failed to fetch consumer group list");
+      },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    expect(await screen.findByTestId("category-Consumers-warning")).toBeInTheDocument();
+    expect(screen.queryByTestId("category-Topics-warning")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("category-Topics"));
+    expect(await screen.findByText("orders")).toBeInTheDocument();
+  });
+
+
   it("renders Brokers, Topics, and Consumers category headers", () => {
     setInvokeHandlers({});
     renderWithClient(<ClusterResourceTree connectionId="1" />);

@@ -42,6 +42,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         label="Brokers"
         items={brokers.data}
         isLoading={brokers.isLoading}
+        error={brokers.error}
         onExpand={noop}
         treeKey={treeKey(activeTabId, connectionId, "Brokers")}
         getKey={(broker) => String(broker.id)}
@@ -60,6 +61,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         connectionId={connectionId}
         topics={topics.data}
         isLoading={topics.isLoading}
+        error={topics.error}
         onExpand={noop}
         isSelected={(topic) =>
           selection?.type === "topic" &&
@@ -76,6 +78,7 @@ export function ClusterResourceTree({ connectionId }: ClusterResourceTreeProps) 
         treeKey={consumersTreeKey}
         getKey={(group) => group.groupId}
         getLabel={(group) => group.groupId}
+        error={groups.error}
         matchesSearch={(group, query) => group.groupId.toLowerCase().includes(query.toLowerCase())}
         isSelected={(group) =>
           selection?.type === "consumerGroup" &&

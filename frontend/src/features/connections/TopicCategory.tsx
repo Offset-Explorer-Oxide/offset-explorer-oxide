@@ -1,5 +1,6 @@
 import { MouseEvent as ReactMouseEvent, useRef } from "react";
 import { TopicSummary } from "../../lib/tauri";
+import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { usePartitions } from "./useClusterResources";
@@ -9,6 +10,8 @@ export interface TopicCategoryProps {
   connectionId: string;
   topics: TopicSummary[] | undefined;
   isLoading: boolean;
+  /** The topic listing's failure, if it failed — reported on this category rather than as a failure of the whole connection. See `CategoryLoadWarning`. */
+  error?: Error | null;
   /** Called exactly once, the first time this category is expanded — triggers the lazy fetch. */
   onExpand: () => void;
   isSelected: (topic: TopicSummary) => boolean;
@@ -21,7 +24,7 @@ export interface TopicCategoryProps {
  * show its partitions, so this gets its own component rather than forcing
  * a per-item-expand concept onto the generic ResourceCategory.
  */
-export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSelected, onSelect }: TopicCategoryProps) {
+export function TopicCategory({ connectionId, topics, isLoading, error, onExpand, isSelected, onSelect }: TopicCategoryProps) {
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const key = treeKey(activeTabId, connectionId, "Topics");
   const expanded = useTreeUiStore((s) => s.expanded[key] ?? false);
@@ -49,6 +52,7 @@ export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSel
       >
         <span className="tree-caret" aria-hidden="true" />
         Topics
+        {error && <CategoryWarningMarker label="Topics" error={error} />}
       </div>
       {expanded && (
         <div className="resource-category-body">
@@ -59,6 +63,7 @@ export function TopicCategory({ connectionId, topics, isLoading, onExpand, isSel
             value={query}
             onChange={(e) => setSearchText(key, e.target.value)}
           />
+          {error && <CategoryLoadWarning label="Topics" error={error} />}
           {isLoading && <p>Loading…</p>}
           <ul className="resource-item-list">
             {filtered.map((topic) => (

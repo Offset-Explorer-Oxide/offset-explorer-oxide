@@ -75,8 +75,8 @@ pub fn build_client_config(
 /// `reconnect.backoff.ms`, doubling up to `reconnect.backoff.max.ms`, to
 /// every broker, for as long as the client object lives. With the defaults
 /// (100ms initial, 10s max) a single 10-second request against a cluster
-/// that rejects the password costs the brokers a double-digit number of TCP
-/// + TLS + SASL handshakes — each one logged, multiplied by every user
+/// that rejects the password costs the brokers a double-digit number of
+/// TCP/TLS/SASL handshakes — each one logged, multiplied by every user
 /// running this app. Slowing the loop down cuts that to a handful.
 ///
 /// This is damage limitation inside one client's lifetime, not the fix. The

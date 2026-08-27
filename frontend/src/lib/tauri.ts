@@ -269,6 +269,8 @@ export const api = {
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
       maxMessageSizeBytes: useGeneralSettingsStore.getState().maxMessageSizeBytes,
     }),
+  /** Interrupts a fetch already in flight — the Data tab's Stop button, and switching topics mid-fetch. A no-op if the request already finished. */
+  cancelFetch: (requestId: string) => invoke<void>("connection_cancel_fetch", { requestId }),
   listPartitions: (id: string, topic: string) =>
     invoke<PartitionSummary[]>("connection_list_partitions", {
       id,

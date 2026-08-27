@@ -3,6 +3,7 @@ mod cluster;
 mod connection;
 mod connection_export;
 mod error;
+mod fetch_cancellation;
 mod message;
 mod registry;
 
@@ -21,4 +22,5 @@ pub use connection_export::{
 pub use auth::is_auth_failure_reason;
 pub use registry::MAX_AUTH_ATTEMPTS;
 pub use error::AppError;
+pub use fetch_cancellation::FetchCancellations;
 pub use registry::ConnectionRegistry;
