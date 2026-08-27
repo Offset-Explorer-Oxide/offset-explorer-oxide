@@ -231,7 +231,7 @@ describe("DataTab", () => {
         filter: {
           partitions: null,
           maxMessagesPerPartition: 100,
-          maxTotalMessages: null,
+          maxTotalMessages: 100,
           fromTimestampMs: null,
           toTimestampMs: null,
           offset: null,

@@ -3,10 +3,12 @@ import {
   base64ToBytes,
   base64ToDisplayText,
   bytesToText,
+  decodeValuePreview,
   detectConfluentAvro,
   formatXmlNode,
   tryParseJson,
   tryParseXml,
+  VALUE_PREVIEW_BYTES,
 } from "./payloadDecoding";
 
 function toBase64(bytes: number[]): string {
@@ -128,5 +130,38 @@ describe("detectConfluentAvro", () => {
 
   it("returns null for an empty payload", () => {
     expect(detectConfluentAvro(new Uint8Array([]))).toBeNull();
+  });
+});
+
+describe("decodeValuePreview", () => {
+  const encodeText = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+  it("is blank when the payload wasn't loaded", () => {
+    expect(decodeValuePreview(null)).toBe("");
+  });
+
+  it("decodes a payload smaller than the preview limit in full", () => {
+    expect(decodeValuePreview(encodeText('{"id":42}'))).toBe('{"id":42}');
+  });
+
+  /**
+   * The regression this exists for: the Value column used to decode whole
+   * payloads, so a grid of multi-megabyte messages spent seconds decoding
+   * text no cell could show — and AG Grid then cached a lowercased copy of
+   * every one of them for the quick filter.
+   */
+  it("stops at the preview limit instead of decoding a huge payload in full", () => {
+    const payload = `${"a".repeat(VALUE_PREVIEW_BYTES * 4)}TAIL`;
+
+    const preview = decodeValuePreview(encodeText(payload));
+
+    expect(preview.length).toBeLessThan(payload.length);
+    expect(preview).not.toContain("TAIL");
+    expect(preview.startsWith("aaa")).toBe(true);
+  });
+
+  it("still recognises a Confluent Avro payload from its prefix", () => {
+    // magic byte 0x00, schema id 7 as 4-byte big-endian, then an avro body.
+    expect(decodeValuePreview(toBase64([0, 0, 0, 0, 7, 1, 2, 3]))).toBe("Avro (schema id: 7)");
   });
 });

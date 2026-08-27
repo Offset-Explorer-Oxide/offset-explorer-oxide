@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
 
 describe("emptyFilterForm", () => {
-  it("pre-fills maxMessagesPerPartition with the backend's own default cap, and leaves every other field blank with includePayload unchecked", () => {
+  it("pre-fills both count caps, and leaves every other field blank with includePayload unchecked", () => {
     const form = emptyFilterForm();
     expect(form.maxMessagesPerPartition).toBe("100");
-    expect(form.maxTotalMessages).toBe("");
+    // Prefilled rather than blank: blank means "no overall budget", which
+    // costs the per-partition cap times the topic's partition count.
+    expect(form.maxTotalMessages).toBe("100");
     expect(form.partitions).toBe("");
     expect(form.fromDate).toBe("");
     expect(form.toDate).toBe("");
@@ -15,11 +17,11 @@ describe("emptyFilterForm", () => {
 });
 
 describe("toMessageFilter", () => {
-  it("converts the default form to a filter that pulls everything except a 100-per-partition cap", () => {
+  it("converts the default form to a filter capped at 100 overall and 100 per partition", () => {
     expect(toMessageFilter(emptyFilterForm())).toEqual({
       partitions: null,
       maxMessagesPerPartition: 100,
-      maxTotalMessages: null,
+      maxTotalMessages: 100,
       fromTimestampMs: null,
       toTimestampMs: null,
       offset: null,
