@@ -15,6 +15,7 @@ use rdkafka::message::{BorrowedMessage, Headers};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -228,6 +229,12 @@ pub trait KafkaClient: Send + Sync {
     /// total, uncapped by `max_messages_per_partition`/`max_total_messages`
     /// — lets the frontend tell the user whether more remain beyond what was
     /// actually pulled.
+    ///
+    /// `cancelled` is checked once per poll slice (~500ms) so a Stop click,
+    /// or a topic switch that implies one, can interrupt the fetch instead
+    /// of only hiding its result once it eventually finishes — see
+    /// `kafkaoxide_core::FetchCancellations`.
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_messages(
         &self,
         connection: &Connection,
@@ -236,6 +243,7 @@ pub trait KafkaClient: Send + Sync {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
@@ -346,6 +354,26 @@ const ERROR_DRAIN_BUDGET: Duration = Duration::from_millis(250);
 struct ObservedClient {
     consumer: Arc<ObservedConsumer>,
     context: ClientErrorContext,
+    /// Serializes every request against a *pooled* client (see
+    /// `RdKafkaClient::metadata_client`).
+    ///
+    /// The tree fires brokers, topics and consumer groups concurrently the
+    /// moment a cluster connects, and all three share one pooled client —
+    /// one `ClientErrorContext` and one underlying librdkafka consumer.
+    /// Without this, their blocking tasks call `begin()`/`poll()` on that
+    /// shared state from different threads at the same time: one request's
+    /// `begin()` can wipe the reason another just captured, or a slower
+    /// request's `drain_error_events()` can read a reason a *different*
+    /// concurrent request's failure produced — misattributing, say, a
+    /// consumer-group ACL rejection as the reason brokers/topics failed, or
+    /// vice versa. Holding this for the whole request (not just the reason
+    /// read) also avoids polling the same librdkafka client from multiple
+    /// threads at once, which librdkafka itself does not guarantee is safe.
+    ///
+    /// Cheap to hold: every pooled request here is one broker round trip,
+    /// so serializing the three tree requests costs at most a couple of
+    /// hundred milliseconds of queuing, never the request itself.
+    request_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ObservedClient {
@@ -355,6 +383,7 @@ impl ObservedClient {
             Ok(consumer) => Ok(ObservedClient {
                 consumer: Arc::new(consumer),
                 context,
+                request_lock: Arc::new(tokio::sync::Mutex::new(())),
             }),
             Err(err) => {
                 // No client exists to drain, so the only reason available is
@@ -497,7 +526,9 @@ impl RdKafkaClient {
     /// Holds the pool lock across creation deliberately: the three requests
     /// the tree fires the moment a cluster connects would otherwise each
     /// build their own client for the same connection, which is the
-    /// stampede this pool exists to prevent.
+    /// stampede this pool exists to prevent. This lock only covers *which*
+    /// client those three requests get — see `ObservedClient::request_lock`
+    /// for what stops them from then using it concurrently.
     fn metadata_client(&self, connection: &Connection) -> Result<ObservedClient, AppError> {
         let mut pool = self.metadata_clients.lock().unwrap_or_else(|err| err.into_inner());
 
@@ -543,6 +574,7 @@ impl KafkaClient for RdKafkaClient {
             }
         };
 
+        let _guard = client.request_lock.clone().lock_owned().await;
         let result = tokio::task::spawn_blocking(move || probe_with(&client, PROBE_TIMEOUT))
             .await
             .change_context(AppError::Kafka)
@@ -589,6 +621,7 @@ impl KafkaClient for RdKafkaClient {
 
     async fn list_brokers(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<BrokerSummary>, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
             client.begin();
             let metadata = client
@@ -613,6 +646,7 @@ impl KafkaClient for RdKafkaClient {
 
     async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
             client.begin();
             let metadata = client
@@ -640,6 +674,7 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<Vec<ConsumerGroupSummary>, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
             client.begin();
             let groups = client
@@ -663,6 +698,7 @@ impl KafkaClient for RdKafkaClient {
 
     async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
             client.begin();
@@ -687,6 +723,7 @@ impl KafkaClient for RdKafkaClient {
         .attach_printable("count_topic_messages task panicked")?
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_messages(
         &self,
         connection: &Connection,
@@ -695,6 +732,7 @@ impl KafkaClient for RdKafkaClient {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError> {
         let mut config = client_config(connection);
         config.set("group.id", "kafkaoxide-message-browser");
@@ -912,7 +950,10 @@ impl KafkaClient for RdKafkaClient {
             let mut idle_elapsed = Duration::ZERO;
             let mut last_poll_error: Option<String> = None;
 
-            while (collected.len() as i64) < total_target && idle_elapsed < IDLE_TIMEOUT {
+            while (collected.len() as i64) < total_target
+                && idle_elapsed < IDLE_TIMEOUT
+                && !cancelled.load(Ordering::Relaxed)
+            {
                 match consumer.poll(POLL_TIMEOUT) {
                     Some(Ok(borrowed)) => {
                         idle_elapsed = Duration::ZERO;
@@ -961,6 +1002,7 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<Vec<PartitionSummary>, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
             client.begin();
@@ -1042,6 +1084,7 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError> {
         let client = self.metadata_client(connection)?;
+        let _guard = client.request_lock.clone().lock_owned().await;
         let mut group_config = client_config(connection);
         let group_id = group_id.to_string();
         tokio::task::spawn_blocking(move || {
@@ -1311,6 +1354,46 @@ mod tests {
         assert!(!Arc::ptr_eq(&first.consumer, &second.consumer));
     }
 
+    /// Regression test for the pooled-client race: three tree requests
+    /// (brokers/topics/consumer groups) share one `ObservedClient`, and
+    /// before `request_lock` existed, one request's `begin()` could clear a
+    /// reason another concurrent request was mid-read of, or vice versa —
+    /// misattributing one request's failure as another's.
+    #[tokio::test]
+    async fn request_lock_serializes_concurrent_users_of_the_same_pooled_client() {
+        let client = ObservedClient::create(&client_config(&pooled_test_connection())).expect("client");
+        let events: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let lock_a = client.request_lock.clone();
+        let events_a = Arc::clone(&events);
+        let task_a = tokio::spawn(async move {
+            let _guard = lock_a.lock_owned().await;
+            events_a.lock().unwrap().push("a-start");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            events_a.lock().unwrap().push("a-end");
+        });
+
+        // Gives task_a a real chance to be the one that acquires the lock
+        // first, so the assertion below is meaningful rather than a race on
+        // the test itself.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let lock_b = client.request_lock.clone();
+        let events_b = Arc::clone(&events);
+        let task_b = tokio::spawn(async move {
+            let _guard = lock_b.lock_owned().await;
+            events_b.lock().unwrap().push("b-start");
+        });
+
+        task_a.await.unwrap();
+        task_b.await.unwrap();
+
+        // task_b's start must never land between task_a's start and end —
+        // that ordering is exactly the "read another request's mid-flight
+        // state" race this lock exists to prevent.
+        assert_eq!(*events.lock().unwrap(), vec!["a-start", "a-end", "b-start"]);
+    }
+
     /// An edited connection must never keep talking to the broker with the
     /// settings the user just replaced — even if nothing thought to release
     /// the old client.
@@ -1578,7 +1661,15 @@ mod tests {
     async fn fetch_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient::new();
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
+            .fetch_messages(
+                &sample_connection(),
+                "orders",
+                &MessageFilter::default(),
+                None,
+                TEST_READ_TIMEOUT,
+                TEST_MAX_MESSAGE_SIZE_BYTES,
+                Arc::new(AtomicBool::new(false)),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -1593,7 +1684,15 @@ mod tests {
         // useless for diagnosing an intermittent broker/network issue.
         let client = RdKafkaClient::new();
         let report = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), None, TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
+            .fetch_messages(
+                &sample_connection(),
+                "orders",
+                &MessageFilter::default(),
+                None,
+                TEST_READ_TIMEOUT,
+                TEST_MAX_MESSAGE_SIZE_BYTES,
+                Arc::new(AtomicBool::new(false)),
+            )
             .await
             .expect_err("expected a metadata-fetch failure against a closed port");
         let printable = printable_attachments(&report).join(" | ").to_lowercase();
@@ -1614,7 +1713,15 @@ mod tests {
         let client = RdKafkaClient::new();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let result = client
-            .fetch_messages(&sample_connection(), "orders", &MessageFilter::default(), Some(tx), TEST_READ_TIMEOUT, TEST_MAX_MESSAGE_SIZE_BYTES)
+            .fetch_messages(
+                &sample_connection(),
+                "orders",
+                &MessageFilter::default(),
+                Some(tx),
+                TEST_READ_TIMEOUT,
+                TEST_MAX_MESSAGE_SIZE_BYTES,
+                Arc::new(AtomicBool::new(false)),
+            )
             .await;
         assert!(result.is_err());
         assert!(rx.recv().await.is_none());

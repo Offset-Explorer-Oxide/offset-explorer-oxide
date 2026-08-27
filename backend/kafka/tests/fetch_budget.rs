@@ -17,6 +17,8 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
@@ -104,6 +106,7 @@ async fn an_overall_budget_reads_only_what_it_returns() {
                 None,
                 Duration::from_secs(30),
                 12 * 1024 * 1024,
+                Arc::new(AtomicBool::new(false)),
             )
             .await
             .expect("fetch failed");

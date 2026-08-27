@@ -1,5 +1,6 @@
 import { CSSProperties, useRef, useState } from "react";
 import { FixedSizeList } from "react-window";
+import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { ContextMenu, ContextMenuItem } from "../../components/ContextMenu";
 import { useTreeUiStore } from "./useTreeUiStore";
 
@@ -27,6 +28,17 @@ export interface ResourceCategoryProps<T> {
   additionalFilter?: (item: T) => boolean;
   /** When given, right-clicking the category header opens a menu with these items instead of the browser's default context menu. */
   contextMenuItems?: ContextMenuItem[];
+  /**
+   * The failure from this category's own listing query, if it failed.
+   *
+   * Each category is fetched independently, so one of them being refused
+   * says nothing about the other two — a principal is routinely allowed to
+   * read topics and brokers but not to list consumer groups, which needs
+   * `Describe` on the `Group` resource. Reporting that here, on the one
+   * category it applies to, keeps the rest of the cluster usable instead of
+   * presenting the whole connection as broken.
+   */
+  error?: Error | null;
 }
 
 /**
@@ -47,6 +59,7 @@ export function ResourceCategory<T>({
   treeKey: key,
   additionalFilter,
   contextMenuItems,
+  error,
 }: ResourceCategoryProps<T>) {
   const expanded = useTreeUiStore((s) => s.expanded[key] ?? false);
   const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
@@ -98,6 +111,7 @@ export function ResourceCategory<T>({
       >
         <span className="tree-caret" aria-hidden="true" />
         {label}
+        {error && <CategoryWarningMarker label={label} error={error} />}
       </div>
       {menuPosition && contextMenuItems && (
         <ContextMenu x={menuPosition.x} y={menuPosition.y} items={contextMenuItems} onClose={() => setMenuPosition(null)} />
@@ -111,6 +125,7 @@ export function ResourceCategory<T>({
             value={query}
             onChange={(e) => setSearchText(key, e.target.value)}
           />
+          {error && <CategoryLoadWarning label={label} error={error} />}
           {isLoading && <p>Loading…</p>}
           {filtered.length > VIRTUALIZE_THRESHOLD ? (
             <FixedSizeList

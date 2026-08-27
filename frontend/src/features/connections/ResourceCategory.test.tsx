@@ -40,6 +40,43 @@ function renderCategory(overrides: Partial<Parameters<typeof ResourceCategory<It
 }
 
 describe("ResourceCategory", () => {
+  it("warns in the header when the listing failed, so the problem is visible while collapsed", () => {
+    renderCategory({ items: undefined, error: new Error("authentication error: failed to fetch consumer group list") });
+
+    expect(screen.getByTestId("category-Topics-warning")).toBeInTheDocument();
+  });
+
+  it("has no warning marker when the listing succeeded", () => {
+    renderCategory();
+
+    expect(screen.queryByTestId("category-Topics-warning")).not.toBeInTheDocument();
+  });
+
+  it("explains the failure, and that the rest of the cluster is unaffected, once expanded", async () => {
+    const user = userEvent.setup();
+    renderCategory({ items: undefined, error: new Error("group authorization failed") });
+
+    await user.click(screen.getByTestId("category-Topics"));
+
+    const warning = screen.getByRole("status");
+    expect(warning).toHaveTextContent("Topics could not be loaded");
+    expect(warning).toHaveTextContent("group authorization failed");
+    expect(warning).toHaveTextContent(/rest of the cluster is unaffected/i);
+  });
+
+  it("still shows previously loaded items alongside the warning", async () => {
+    // A refetch can fail while React Query still holds the last good list —
+    // dropping those rows would lose data the user can still act on.
+    const user = userEvent.setup();
+    renderCategory({ error: new Error("Local: Timed out") });
+
+    await user.click(screen.getByTestId("category-Topics"));
+
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByText("orders")).toBeInTheDocument();
+  });
+
+
   it("starts collapsed, showing neither the search box nor items", () => {
     renderCategory();
     expect(screen.queryByLabelText("Search Topics")).not.toBeInTheDocument();

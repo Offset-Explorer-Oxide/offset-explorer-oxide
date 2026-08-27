@@ -24,6 +24,8 @@
 //! the test reports itself skipped rather than failing — `cargo test` on a
 //! machine with no Kafka stays green.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -116,7 +118,15 @@ async fn every_compression_codec_can_be_fetched() {
     for codec in CODECS {
         let topic = topic_for(codec);
         let result = client
-            .fetch_messages(&connection, &topic, &filter(), None, Duration::from_secs(10), 1_048_576)
+            .fetch_messages(
+                &connection,
+                &topic,
+                &filter(),
+                None,
+                Duration::from_secs(10),
+                1_048_576,
+                Arc::new(AtomicBool::new(false)),
+            )
             .await;
 
         match result {

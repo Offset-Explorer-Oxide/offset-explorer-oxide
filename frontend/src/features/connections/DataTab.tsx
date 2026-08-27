@@ -16,6 +16,7 @@ import {
 } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { base64ToDisplayText, decodeValuePreview, exceedsValuePreview, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { api } from "../../lib/tauri";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
@@ -116,10 +117,10 @@ export interface DataTabProps {
 
 /**
  * Fetch pulls a bounded snapshot of message metadata applying the filters
- * below (an all-blank filter pulls everything). Stop doesn't cancel the
- * in-flight backend fetch (no cancellation plumbing there) — it just
- * discards the result when it eventually arrives, so the grid never
- * updates with data the user already asked to stop waiting for.
+ * below (an all-blank filter pulls everything). Stop both discards the
+ * result client-side (so late-arriving stream events/the final result never
+ * reach the grid) and tells the backend to interrupt the poll loop that's
+ * running it, via `connection_cancel_fetch` — see `stopActiveFetch`.
  */
 export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -216,8 +217,10 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // always changes on a topic/partition switch regardless of which sub-tab
   // (or component) happens to be mounted at the time.
   useEffect(() => {
+    stopActiveFetch();
     setSearchText("");
     setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, topicName, partitionId]);
 
   function updateForm(patch: Partial<FilterFormState>) {
@@ -278,10 +281,28 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     }
   }
 
-  function handleStop() {
+  /**
+   * Stops the in-flight fetch, client-side and on the backend, and
+   * re-enables the filters. Used by the Stop button directly, and by the
+   * topic/partition/connection-switch effect below — DataTab is reused
+   * (not remounted) across a tab's topics, so without this a fetch left
+   * running when the user switches away keeps polling the old topic's
+   * broker for a tab nobody is waiting on anymore. Safe to call when
+   * nothing is in flight: `activeRequestIdRef` is only set by a Fetch, and
+   * cancelling an already-finished/unknown request id is a no-op on the
+   * backend.
+   */
+  function stopActiveFetch() {
     stoppedRef.current = true;
     discardBufferedStream();
     setIsPlaying(false);
+    if (activeRequestIdRef.current) {
+      api.cancelFetch(activeRequestIdRef.current).catch(() => {});
+    }
+  }
+
+  function handleStop() {
+    stopActiveFetch();
   }
 
   /** Fetches just one row's payload (by its exact partition/offset) and patches it into the cached rows — reads the store directly so it always applies on top of the latest cached rows regardless of how long the fetch took. */
@@ -324,6 +345,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             inputMode="numeric"
             value={form.maxMessagesPerPartition}
             onChange={(e) => updateForm({ maxMessagesPerPartition: e.target.value })}
+            disabled={isPlaying}
           />
         </label>
         <label>
@@ -332,6 +354,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             inputMode="numeric"
             value={form.maxTotalMessages}
             onChange={(e) => updateForm({ maxTotalMessages: e.target.value })}
+            disabled={isPlaying}
           />
         </label>
         <label>
@@ -340,7 +363,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             value={form.partitions}
             onChange={(e) => updateForm({ partitions: e.target.value })}
             placeholder="e.g. 0, 1, 2"
-            disabled={partitionId !== undefined}
+            disabled={partitionId !== undefined || isPlaying}
           />
         </label>
         <label>
@@ -350,6 +373,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             value={form.offset}
             onChange={(e) => updateForm({ offset: e.target.value })}
             placeholder="e.g. 100"
+            disabled={isPlaying}
           />
         </label>
         <label>
@@ -358,11 +382,17 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             type="datetime-local"
             value={form.fromDate}
             onChange={(e) => updateForm({ fromDate: e.target.value })}
+            disabled={isPlaying}
           />
         </label>
         <label>
           To
-          <input type="datetime-local" value={form.toDate} onChange={(e) => updateForm({ toDate: e.target.value })} />
+          <input
+            type="datetime-local"
+            value={form.toDate}
+            onChange={(e) => updateForm({ toDate: e.target.value })}
+            disabled={isPlaying}
+          />
         </label>
       </div>
 
@@ -379,6 +409,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           type="checkbox"
           checked={form.includePayload}
           onChange={(e) => updateForm({ includePayload: e.target.checked })}
+          disabled={isPlaying}
         />
         Load message payload
       </label>

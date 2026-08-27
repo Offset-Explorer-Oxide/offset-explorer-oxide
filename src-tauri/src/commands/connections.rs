@@ -102,6 +102,37 @@ fn record_auth_outcome<T>(
     }
 }
 
+/// Feeds only the *success* half of a broker call's outcome to the breaker.
+///
+/// Used by the consumer-group calls, and only by them. Listing groups sits
+/// behind ACLs of its own — `Describe` on the `Group` resource, and a
+/// cluster-wide list — so a principal with perfectly valid credentials and
+/// full access to every topic can still be refused here. Counting that
+/// against the connection's attempt allowance would take an otherwise
+/// working cluster offline inside the app over a capability the user may
+/// never have needed: brokers and topics would stop loading because
+/// consumer groups didn't.
+///
+/// So a failure here is reported to the caller and nowhere else. A success
+/// still clears the slate, because it is proof the credentials work.
+///
+/// The pooled client is still dropped on an authentication failure — a
+/// client the broker has rejected cannot serve the next request either.
+fn record_auth_success_only<T>(
+    state: &AppState,
+    id: &str,
+    result: &Result<T, error_stack::Report<AppError>>,
+) {
+    match result {
+        Ok(_) => state.connections.record_auth_success(id),
+        Err(report) => {
+            if matches!(report.current_context(), AppError::Authentication) {
+                state.kafka.release(id);
+            }
+        }
+    }
+}
+
 /// Logs how long a broker round trip took, to the Logs panel.
 ///
 /// Every one of these commands builds a Kafka client from scratch, so its
@@ -389,7 +420,7 @@ pub async fn connection_list_consumer_groups(
         .kafka
         .list_consumer_groups(&connection, Duration::from_millis(read_timeout_ms))
         .await;
-    record_auth_outcome(&state, &id, &result);
+    record_auth_success_only(&state, &id, &result);
     log_broker_call(&app, "Listing consumer groups", started, if result.is_ok() { "finished" } else { "failed" });
     Ok(result?)
 }
@@ -454,6 +485,7 @@ pub async fn connection_fetch_messages(
     let connection = connection_for_request(&state, &id).await?;
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
 
+    let cancelled = state.fetch_cancellations.begin(&request_id);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
     let forward_task = {
         let app = app.clone();
@@ -490,9 +522,11 @@ pub async fn connection_fetch_messages(
             Some(tx),
             Duration::from_millis(read_timeout_ms),
             max_message_size_bytes,
+            cancelled,
         )
         .await;
     let _ = forward_task.await;
+    state.fetch_cancellations.finish(&request_id);
     record_auth_outcome(&state, &id, &result);
 
     match result {
@@ -527,6 +561,22 @@ pub async fn connection_fetch_messages(
             Err(command_err)
         }
     }
+}
+
+/// Backs the Data tab's Stop button, and the Data tab switching to a
+/// different topic/partition/connection while a fetch is still in flight —
+/// see the frontend's `stopActiveFetch`. Interrupts `connection_fetch_messages`'s
+/// poll loop at its next ~500ms check instead of only discarding the result
+/// once the fetch eventually finishes on its own, which otherwise keeps
+/// dialling the broker for data nothing is waiting for.
+///
+/// A no-op, not an error, when `request_id` names a fetch that already
+/// finished or was never started — Stop racing the fetch's own completion
+/// is the ordinary case.
+#[tauri::command]
+pub async fn connection_cancel_fetch(state: State<'_, AppState>, request_id: String) -> Result<(), CommandError> {
+    state.fetch_cancellations.cancel(&request_id);
+    Ok(())
 }
 
 /// Backs the topic detail panel's Partitions tab.
@@ -584,7 +634,7 @@ pub async fn connection_fetch_consumer_group_lag(
         .kafka
         .fetch_consumer_group_lag(&connection, &group_id, Duration::from_millis(read_timeout_ms))
         .await;
-    record_auth_outcome(&state, &id, &result);
+    record_auth_success_only(&state, &id, &result);
     log_broker_call(&app, "Fetching consumer group lag", started, if result.is_ok() { "finished" } else { "failed" });
     Ok(result?)
 }

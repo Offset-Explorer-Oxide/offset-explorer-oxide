@@ -80,6 +80,7 @@ fn main() {
                     kafka: Arc::new(kafkaoxide_kafka::RdKafkaClient::new()),
                     zookeeper: Arc::new(kafkaoxide_kafka::TcpZookeeperClient),
                     connections: kafkaoxide_core::ConnectionRegistry::default(),
+                    fetch_cancellations: kafkaoxide_core::FetchCancellations::default(),
                 });
 
                 logging::emit_log(&handle, "info", "Application started");
@@ -141,6 +142,7 @@ fn main() {
             commands::connections::connection_list_consumer_groups,
             commands::connections::connection_count_topic_messages,
             commands::connections::connection_fetch_messages,
+            commands::connections::connection_cancel_fetch,
             commands::connections::connection_list_partitions,
             commands::connections::connection_describe_topic_config,
             commands::connections::connection_fetch_consumer_group_lag,
