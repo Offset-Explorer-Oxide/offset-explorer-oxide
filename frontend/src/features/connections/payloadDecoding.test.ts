@@ -5,6 +5,7 @@ import {
   bytesToText,
   decodeValuePreview,
   detectConfluentAvro,
+  exceedsValuePreview,
   formatXmlNode,
   tryParseJson,
   tryParseXml,
@@ -163,5 +164,27 @@ describe("decodeValuePreview", () => {
   it("still recognises a Confluent Avro payload from its prefix", () => {
     // magic byte 0x00, schema id 7 as 4-byte big-endian, then an avro body.
     expect(decodeValuePreview(toBase64([0, 0, 0, 0, 7, 1, 2, 3]))).toBe("Avro (schema id: 7)");
+  });
+});
+
+describe("exceedsValuePreview", () => {
+  const encodeText = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+
+  it("is false when the payload wasn't loaded", () => {
+    expect(exceedsValuePreview(null)).toBe(false);
+  });
+
+  it("is false for a payload the preview covers in full", () => {
+    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES)))).toBe(false);
+  });
+
+  it("is true for a payload longer than the preview", () => {
+    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES + 1)))).toBe(true);
+  });
+
+  it("discounts base64 padding rather than counting it as payload bytes", () => {
+    // One byte over the limit before padding is added; the two '=' that
+    // padding it produces must not read as two extra payload bytes.
+    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES - 2)))).toBe(false);
   });
 });

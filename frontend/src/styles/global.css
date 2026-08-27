@@ -736,6 +736,11 @@ body {
   border-radius: 4px;
   padding: 5px 8px;
 }
+.data-tab-search-notice {
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--color-fg-muted);
+}
 .data-tab-total-count {
   font-size: 12px;
   color: var(--color-fg-muted);

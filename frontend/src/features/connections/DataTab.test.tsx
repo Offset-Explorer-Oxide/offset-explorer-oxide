@@ -538,6 +538,30 @@ describe("DataTab", () => {
     await waitFor(() => expect(screen.getByText("1 / 2 loaded")).toBeInTheDocument());
   });
 
+  it("warns that search is bounded when a loaded message is larger than the searched prefix", async () => {
+    const big = btoa("a".repeat(5000));
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: big, headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByText(/Search examines only the first 4 KB/)).toBeInTheDocument();
+  });
+
+  it("does not warn about bounded search when every loaded message fits within the searched prefix", async () => {
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("1 / 1 loaded")).toBeInTheDocument());
+
+    expect(screen.queryByText(/Search examines only/)).not.toBeInTheDocument();
+  });
+
   it("shows 0 / 0 loaded before any fetch has run", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
     expect(screen.getByText("0 / 0 loaded")).toBeInTheDocument();
