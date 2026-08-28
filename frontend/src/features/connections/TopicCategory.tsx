@@ -1,4 +1,4 @@
-import { MouseEvent as ReactMouseEvent, useRef } from "react";
+import { MouseEvent as ReactMouseEvent } from "react";
 import { TopicSummary } from "../../lib/tauri";
 import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { useTabsStore } from "../tabs/useTabsStore";
@@ -13,6 +13,7 @@ export interface TopicCategoryProps {
   /** The topic listing's failure, if it failed — reported on this category rather than as a failure of the whole connection. See `CategoryLoadWarning`. */
   error?: Error | null;
   /** Called exactly once, the first time this category is expanded — triggers the lazy fetch. */
+  /** Called each time the category is opened (never on collapse) — refreshes the topic list, which is otherwise fetched once and held. */
   onExpand: () => void;
   isSelected: (topic: TopicSummary) => boolean;
   onSelect: (topic: TopicSummary) => void;
@@ -31,11 +32,11 @@ export function TopicCategory({ connectionId, topics, isLoading, error, onExpand
   const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
   const query = useTreeUiStore((s) => s.searchText[key] ?? "");
   const setSearchText = useTreeUiStore((s) => s.setSearchText);
-  const hasExpandedBefore = useRef(false);
 
   function toggle() {
-    if (!hasExpandedBefore.current) {
-      hasExpandedBefore.current = true;
+    // Refetches on every open, not just the first — see the matching
+    // comment in ResourceCategory.
+    if (!expanded) {
       onExpand();
     }
     toggleExpanded(key);

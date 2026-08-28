@@ -25,8 +25,9 @@ use tokio::time::timeout;
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
 use crate::messages::{
-    clamp_offset, combined_start_offset, distribute_total_budget, effective_max_messages_per_partition,
-    newest_first_start_offset, partition_limits,
+    byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
+    effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
+    payload_preview_slice,
 };
 
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
@@ -234,6 +235,10 @@ pub trait KafkaClient: Send + Sync {
     /// or a topic switch that implies one, can interrupt the fetch instead
     /// of only hiding its result once it eventually finishes — see
     /// `kafkaoxide_core::FetchCancellations`.
+    ///
+    /// `max_total_payload_bytes` bounds the fetch by size rather than by
+    /// message count — see `byte_budget_reached`. `None` leaves it unbounded,
+    /// which only the single-message payload fetch should ever ask for.
     #[allow(clippy::too_many_arguments)]
     async fn fetch_messages(
         &self,
@@ -243,6 +248,7 @@ pub trait KafkaClient: Send + Sync {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
+        max_total_payload_bytes: Option<u64>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError>;
 
@@ -736,6 +742,7 @@ impl KafkaClient for RdKafkaClient {
         on_message: Option<mpsc::UnboundedSender<TopicMessage>>,
         read_timeout: Duration,
         max_message_size_bytes: u32,
+        max_total_payload_bytes: Option<u64>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError> {
         let mut config = client_config(connection);
@@ -780,8 +787,25 @@ impl KafkaClient for RdKafkaClient {
             // a consumer between fetches means unassigning and reassigning it,
             // and whatever that costs inside librdkafka dwarfs what building
             // a new one costs. Measure before reaching for this again.
+            // Stop has to be able to interrupt the setup, not just the poll
+            // loop below. Building a client, fetching metadata and reading
+            // every target partition's watermarks is seconds of broker work
+            // on a wide topic — long enough for the user to give up on it —
+            // and a cancellation that only took effect once the first poll
+            // came round left all of it running. Checked between phases
+            // rather than inside them: each is a single blocking librdkafka
+            // call that cannot be interrupted from here, so between them is
+            // as fine-grained as this gets.
+            let stopped = || cancelled.load(Ordering::Relaxed);
+            if stopped() {
+                return Ok(MessageFetchResult::default());
+            }
+
             let client = ObservedClient::create(&config)?;
             let consumer = Arc::clone(&client.consumer);
+            if stopped() {
+                return Ok(MessageFetchResult::default());
+            }
 
             let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
                 client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
@@ -804,6 +828,9 @@ impl KafkaClient for RdKafkaClient {
             // of round trips before a single message moved.
             let watermarks_by_partition =
                 watermarks_for_partitions(consumer.as_ref(), &topic, &target_partitions, read_timeout)?;
+            if stopped() {
+                return Ok(MessageFetchResult::default());
+            }
 
             let watermarks = |partition: i32| -> Result<(i64, i64), AppError> {
                 watermarks_by_partition
@@ -941,6 +968,9 @@ impl KafkaClient for RdKafkaClient {
                         .attach_printable("failed to build partition assignment")?;
                 }
             }
+            if stopped() {
+                return Ok(MessageFetchResult::default());
+            }
             consumer
                 .assign(&assign_tpl)
                 .change_context(AppError::Kafka)
@@ -961,9 +991,17 @@ impl KafkaClient for RdKafkaClient {
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
             let mut idle_elapsed = Duration::ZERO;
             let mut last_poll_error: Option<String> = None;
+            // Counted over every message this fetch takes off the broker,
+            // whether or not its bytes are kept: the read itself is what
+            // costs the time, and a metadata-only browse of a multi-megabyte
+            // topic pulls exactly as much over the wire as one that keeps the
+            // payloads.
+            let mut payload_bytes_read: u64 = 0;
+            let mut stopped_at_byte_budget = false;
 
             while (collected.len() as i64) < total_target
                 && idle_elapsed < IDLE_TIMEOUT
+                && !stopped_at_byte_budget
                 && !cancelled.load(Ordering::Relaxed)
             {
                 match consumer.poll(POLL_TIMEOUT) {
@@ -982,14 +1020,26 @@ impl KafkaClient for RdKafkaClient {
                         if *budget <= 0 {
                             continue;
                         }
+                        let payload = borrowed.payload().unwrap_or(&[]);
+                        payload_bytes_read += payload.len() as u64;
                         let message = TopicMessage {
                             partition,
                             offset: borrowed.offset(),
                             timestamp_ms: borrowed.timestamp().to_millis(),
                             key_base64: borrowed.key().map(|k| BASE64.encode(k)),
+                            // Only ever the slice the caller asked for. This
+                            // is the difference between a 1,000-row fetch of
+                            // 3 MB records costing a few MB of base64 and
+                            // costing ~4 GB of it — twice over, once streamed
+                            // and once in this result.
                             payload_base64: filter
                                 .include_payload
-                                .then(|| BASE64.encode(borrowed.payload().unwrap_or(&[]))),
+                                .then(|| BASE64.encode(payload_preview_slice(payload, filter.max_payload_preview_bytes))),
+                            // Sent whether or not the payload itself is,
+                            // so a row can report a message's real size and
+                            // the viewer can tell a cut preview from a whole
+                            // payload that happened to be short.
+                            payload_size_bytes: borrowed.payload().map(|p| p.len() as u64),
                             headers: extract_headers(&borrowed),
                         };
                         if let Some(sender) = &on_message {
@@ -997,6 +1047,9 @@ impl KafkaClient for RdKafkaClient {
                         }
                         collected.push(message);
                         *budget -= 1;
+                        // After taking the message, never before — see
+                        // `byte_budget_reached`.
+                        stopped_at_byte_budget = byte_budget_reached(payload_bytes_read, max_total_payload_bytes);
                     }
                     Some(Err(err)) => {
                         idle_elapsed += POLL_TIMEOUT;
@@ -1008,7 +1061,13 @@ impl KafkaClient for RdKafkaClient {
                 }
             }
 
-            Ok(MessageFetchResult { messages: collected, total_matching, poll_error: last_poll_error })
+            Ok(MessageFetchResult {
+                messages: collected,
+                total_matching,
+                poll_error: last_poll_error,
+                stopped_at_byte_budget,
+                payload_bytes_read,
+            })
         })
         .await
         .change_context(AppError::Kafka)
@@ -1677,6 +1736,38 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Stop has to reach the broker phases too, not just the poll loop.
+    ///
+    /// Before a single message can be polled, a fetch builds a client, asks
+    /// for topic metadata, and queries watermarks for every target partition
+    /// — on a wide topic against a slow cluster that is seconds of broker
+    /// work, and none of it used to look at the cancellation flag. Pressing
+    /// Stop during it did nothing at all until the setup finished.
+    ///
+    /// Proven without a broker: `sample_connection` points at a closed port,
+    /// so a fetch that reaches the metadata call can only fail. Coming back
+    /// `Ok` with nothing is therefore proof it stopped before dialling.
+    #[tokio::test]
+    async fn fetch_messages_already_cancelled_returns_immediately_without_touching_the_broker() {
+        let client = RdKafkaClient::new();
+        let result = client
+            .fetch_messages(
+                &sample_connection(),
+                "orders",
+                &MessageFilter::default(),
+                None,
+                TEST_READ_TIMEOUT,
+                TEST_MAX_MESSAGE_SIZE_BYTES,
+                None,
+                Arc::new(AtomicBool::new(true)),
+            )
+            .await;
+
+        let result = result.expect("a cancelled fetch is not a failure");
+        assert!(result.messages.is_empty());
+        assert_eq!(result.total_matching, 0);
+    }
+
     #[tokio::test]
     async fn fetch_messages_errors_for_a_closed_port() {
         let client = RdKafkaClient::new();
@@ -1688,6 +1779,7 @@ mod tests {
                 None,
                 TEST_READ_TIMEOUT,
                 TEST_MAX_MESSAGE_SIZE_BYTES,
+                None,
                 Arc::new(AtomicBool::new(false)),
             )
             .await;
@@ -1711,6 +1803,7 @@ mod tests {
                 None,
                 TEST_READ_TIMEOUT,
                 TEST_MAX_MESSAGE_SIZE_BYTES,
+                None,
                 Arc::new(AtomicBool::new(false)),
             )
             .await
@@ -1740,6 +1833,7 @@ mod tests {
                 Some(tx),
                 TEST_READ_TIMEOUT,
                 TEST_MAX_MESSAGE_SIZE_BYTES,
+                None,
                 Arc::new(AtomicBool::new(false)),
             )
             .await;

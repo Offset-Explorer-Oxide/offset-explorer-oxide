@@ -128,6 +128,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const [searchText, setSearchText] = useState("");
   const fetchMessages = useFetchMessages();
   const viewMessage = useMessageViewerStore((s) => s.viewMessage);
+  const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const stoppedRef = useRef(false);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const tabKey = dataTabCacheKey(activeTabId, connectionId, topicName, partitionId);
@@ -147,7 +148,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   );
   // Only worth telling the user the search is bounded when the loaded rows
   // actually reach that bound.
-  const hasOversizedValues = useMemo(() => messages.some((m) => exceedsValuePreview(m.payloadBase64)), [messages]);
+  const hasOversizedValues = useMemo(() => messages.some((m) => exceedsValuePreview(m.payloadSizeBytes)), [messages]);
+  /** Set when the last Fetch stopped on the byte budget rather than on the filter — see `MessageFetchResult.stoppedAtByteBudget`. Local rather than cached per tab: it describes the fetch that just ran, and a re-fetch always re-decides it. */
+  const [byteBudgetBytesRead, setByteBudgetBytesRead] = useState<number | null>(null);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
@@ -223,6 +226,22 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, topicName, partitionId]);
 
+  // The effect above only covers switches this component survives. Plenty of
+  // ordinary actions unmount it outright mid-fetch instead: TopicDetailPanel
+  // renders it as `{activeTab === "data" && <DataTab/>}`, so every other
+  // sub-tab drops it, as do selecting a broker/partition/consumer group,
+  // switching top-level tab, and closing the tab. Each of those used to
+  // leave the backend polling the broker for a fetch whose UI was gone and
+  // whose request id nothing held any more — unstoppable for as long as it
+  // took to finish on its own. Reads the request id from a ref at teardown,
+  // so it cancels whatever was in flight at that moment.
+  useEffect(() => {
+    return () => {
+      stopActiveFetch();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function updateForm(patch: Partial<FilterFormState>) {
     setStoredForm(tabKey, { ...form, ...patch });
   }
@@ -245,6 +264,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     const requestId = crypto.randomUUID();
     activeRequestIdRef.current = requestId;
     setTabMessages(tabKey, []);
+    setByteBudgetBytesRead(null);
+    // The grid is about to go blank/loading for a new result set, so a
+    // right panel left open from the previous fetch would be showing a row
+    // that may no longer exist in it.
+    clearViewedMessage();
     try {
       const result = await fetchMessages.mutateAsync({
         connectionId,
@@ -255,6 +279,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       if (!stoppedRef.current) {
         setTabMessages(tabKey, result.messages);
         setTabTotalMatching(tabKey, result.totalMatching);
+        setByteBudgetBytesRead(result.stoppedAtByteBudget ? (result.payloadBytesRead ?? 0) : null);
       }
     } catch (err) {
       if (!stoppedRef.current) {
@@ -318,6 +343,10 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         toTimestampMs: null,
         offset: row.offset,
         includePayload: true,
+        // Bounded like the grid's own fetch: this only fills the Value
+        // column's cell for a row that came back without one. Opening the
+        // message is what fetches the real bytes, in the payload viewer.
+        maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
       },
       // Own, unmatched request id — this single-row fetch shouldn't be
       // appended to the grid via the "messages-batch" listener above (which
@@ -428,6 +457,17 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           placeholder="Search by key or value"
         />
       </label>
+
+      {byteBudgetBytesRead !== null && (
+        // A count cap can't express this: on a topic of multi-megabyte
+        // records the fetch stops on size long before it stops on the
+        // message counts in the form, and without saying so a short result
+        // reads as "that's all there is".
+        <p role="status" className="data-tab-search-notice">
+          Stopped after reading {Math.round(byteBudgetBytesRead / (1024 * 1024)).toLocaleString()} MB of messages.
+          Narrow the filter, or raise Max total fetch size in Settings → General, to load more.
+        </p>
+      )}
 
       {hasOversizedValues && (
         <p className="data-tab-search-notice">

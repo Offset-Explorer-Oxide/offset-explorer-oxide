@@ -572,7 +572,7 @@ describe("App", () => {
     useMessageViewerStore
       .getState()
       .viewMessage(
-        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: null, headers: [] },
         "1",
         "orders",
       );
@@ -623,7 +623,7 @@ describe("App", () => {
     useMessageViewerStore
       .getState()
       .viewMessage(
-        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: null, headers: [] },
         "1",
         "orders",
       );
@@ -668,12 +668,12 @@ describe("App", () => {
     useTabDataStore
       .getState()
       .setTabMessages(dataTabCacheKey(tab1Id, "1", "orders"), [
-        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
       ]);
     useMessageViewerStore
       .getState()
       .viewMessage(
-        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] },
+        { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: null, headers: [] },
         "1",
         "orders",
       );
@@ -690,12 +690,12 @@ describe("App", () => {
     useTabDataStore
       .getState()
       .setTabMessages(dataTabCacheKey(tab2Id, "1", "payments"), [
-        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
       ]);
     useMessageViewerStore
       .getState()
       .viewMessage(
-        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eQ==", headers: [] },
+        { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eQ==", payloadSizeBytes: null, headers: [] },
         "1",
         "payments",
       );

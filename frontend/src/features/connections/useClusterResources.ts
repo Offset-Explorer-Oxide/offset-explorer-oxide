@@ -2,48 +2,83 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ConsumerGroupLag, MessageFetchResult, MessageFilter, SchemaFormat } from "../../lib/tauri";
 
 /**
- * How long a cluster listing stays fresh.
+ * How long a per-topic partition listing stays fresh.
  *
- * Every one of these queries is a full metadata request on the broker —
- * `fetch_metadata` for topics and brokers, a group listing for consumers —
- * and React Query, left at its defaults, refetches on every remount and
- * every time the window regains focus. The tree remounts on each top-level
- * tab switch, so ordinary use had the app re-asking a production cluster for
- * its entire topic list several times a minute, per open app.
- *
- * A minute is long enough to absorb tab-switching and alt-tabbing, and short
- * enough that a newly created topic shows up without the user thinking about
- * it.
+ * Unlike the three cluster listings below, this one is genuinely
+ * time-sensitive — a partition's low/high watermarks move with every
+ * produce, so cached offsets go wrong quickly in a way a topic *name* never
+ * does. A short stale window is the right trade here; "fetch once and leave
+ * it" is not.
  */
-export const CLUSTER_LISTING_STALE_MS = 60_000;
+export const PARTITION_LISTING_STALE_MS = 60_000;
 
-/** Backs the tree's "Brokers" sub-list — fetched lazily, only once the category is expanded. */
+/**
+ * Shared policy for the three cluster listings (brokers, topics, consumer
+ * groups).
+ *
+ * Each is a full metadata request on the broker — `fetch_metadata` for
+ * topics and brokers, a group listing for consumers — and each costs a fresh
+ * Kafka client, a socket, and on a secured cluster a TLS and SASL handshake.
+ *
+ * These used to carry a 60-second stale window, which sounds conservative
+ * and isn't: React Query refetches a *stale* query whenever an observer
+ * mounts or the window regains focus, and this app remounts the tree on
+ * every top-level tab switch and wires Tauri's real OS-level focus event
+ * into `focusManager` (see App.tsx). On a desktop app that gets alt-tabbed
+ * all day, that meant the broker was re-asked for the entire topic list over
+ * and over, indefinitely, long after it had been fetched successfully — the
+ * app looked like it was polling the cluster on a timer.
+ *
+ * So: fetch once, then hold it. `staleTime: Infinity` is the single lever
+ * that does this — mount, focus and reconnect refetches all only apply to
+ * stale queries. Refreshing is left to the user, who gets a new call by
+ * expanding the category (`onExpand` in `ClusterResourceTree`), and to the
+ * explicit invalidation that already follows connect/disconnect.
+ *
+ * `retry: false` for the same reason, overriding the app-wide `shouldRetry`:
+ * a listing that failed is shown as failed rather than quietly dialling a
+ * broker that is already not answering.
+ */
+const CLUSTER_LISTING_OPTIONS = {
+  staleTime: Infinity,
+  // `staleTime` alone isn't enough: the tree unmounts on every top-level tab
+  // switch, and a query with no observers is garbage-collected after
+  // `gcTime` (5 minutes by default). Coming back to a tab after a coffee
+  // therefore found an empty cache and re-asked the broker — "fetched once"
+  // has to survive the tree not being on screen. Freshness on reconnect is
+  // handled by invalidating these on connect (see `useConnect`), not by
+  // letting the cache lapse.
+  gcTime: Infinity,
+  retry: false,
+} as const;
+
+/** Backs the tree's "Brokers" sub-list. Fetched once when the cluster connects; expanding the category refetches — see `CLUSTER_LISTING_OPTIONS`. */
 export function useBrokers(connectionId: string, enabled: boolean) {
   return useQuery({
     queryKey: ["brokers", connectionId],
     queryFn: () => api.listBrokers(connectionId),
     enabled,
-    staleTime: CLUSTER_LISTING_STALE_MS,
+    ...CLUSTER_LISTING_OPTIONS,
   });
 }
 
-/** Backs the tree's "Topics" sub-list — fetched lazily, only once the category is expanded. */
+/** Backs the tree's "Topics" sub-list. Fetched once when the cluster connects; expanding the category refetches — see `CLUSTER_LISTING_OPTIONS`. */
 export function useTopics(connectionId: string, enabled: boolean) {
   return useQuery({
     queryKey: ["topics", connectionId],
     queryFn: () => api.listTopics(connectionId),
     enabled,
-    staleTime: CLUSTER_LISTING_STALE_MS,
+    ...CLUSTER_LISTING_OPTIONS,
   });
 }
 
-/** Backs the tree's "Consumers" sub-list — fetched lazily, only once the category is expanded. */
+/** Backs the tree's "Consumers" sub-list. Fetched once when the cluster connects; expanding the category refetches — see `CLUSTER_LISTING_OPTIONS`. */
 export function useConsumerGroups(connectionId: string, enabled: boolean) {
   return useQuery({
     queryKey: ["consumer-groups", connectionId],
     queryFn: () => api.listConsumerGroups(connectionId),
     enabled,
-    staleTime: CLUSTER_LISTING_STALE_MS,
+    ...CLUSTER_LISTING_OPTIONS,
   });
 }
 
@@ -66,13 +101,60 @@ export function useFetchMessages() {
   });
 }
 
+/**
+ * Fetches one message's whole payload, for the payload viewer.
+ *
+ * The Data tab's own fetch deliberately carries only a bounded preview of
+ * each payload (see `MessageFilter.maxPayloadPreviewBytes`) — enough for the
+ * grid's one-line Value cell, and the reason a 1,000-row fetch of
+ * multi-megabyte records no longer moves gigabytes of base64 into the
+ * webview. Actually displaying or decoding a message needs the real bytes,
+ * so they're pulled one message at a time, only for the message being
+ * looked at.
+ *
+ * Held in React Query's cache rather than patched back into the tab's cached
+ * rows: the row cache lives as long as the tab does, so writing full payloads
+ * into it would rebuild the retention problem one opened message at a time,
+ * whereas these are evicted once nothing is viewing them.
+ */
+export function useFullPayload(
+  connectionId: string | null,
+  topic: string | null,
+  partition: number | undefined,
+  offset: number | undefined,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["full-payload", connectionId, topic, partition, offset],
+    queryFn: () =>
+      api.fetchMessages(
+        connectionId!,
+        topic!,
+        {
+          partitions: [partition!],
+          maxMessagesPerPartition: 1,
+          maxTotalMessages: 1,
+          fromTimestampMs: null,
+          toTimestampMs: null,
+          offset: offset!,
+          includePayload: true,
+          // The whole point of this fetch — the only caller that asks for it.
+          maxPayloadPreviewBytes: null,
+        },
+        crypto.randomUUID(),
+      ),
+    enabled: enabled && connectionId !== null && topic !== null && partition !== undefined && offset !== undefined,
+    staleTime: Infinity,
+  });
+}
+
 /** Backs the topic detail panel's Partitions tab, and the sidebar tree's per-topic partition expand. */
 export function usePartitions(connectionId: string, topic: string, enabled: boolean = true) {
   return useQuery({
     queryKey: ["partitions", connectionId, topic],
     queryFn: () => api.listPartitions(connectionId, topic),
     enabled,
-    staleTime: CLUSTER_LISTING_STALE_MS,
+    staleTime: PARTITION_LISTING_STALE_MS,
   });
 }
 

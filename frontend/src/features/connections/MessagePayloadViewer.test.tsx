@@ -32,11 +32,122 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the payload as text by default", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("hello world"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("hello world"), payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
     expect(screen.getByText("hello world")).toBeInTheDocument();
+  });
+
+  // The grid's rows deliberately carry only a bounded preview of each
+  // payload — that truncation is what keeps a large fetch inside the
+  // webview's memory. Opening a message therefore has to go and get the real
+  // bytes, or the viewer would quietly show the first few KB of a multi-
+  // megabyte message as though it were the whole thing.
+  it("fetches the whole payload when the row only carried a truncated preview", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [
+          {
+            partition: 0,
+            offset: 7,
+            timestampMs: null,
+            keyBase64: null,
+            payloadBase64: btoa("the whole payload"),
+            payloadSizeBytes: 17,
+            headers: [],
+          },
+        ],
+        totalMatching: 1,
+      }),
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("the whole"),
+        payloadSizeBytes: 17,
+        headers: [],
+      },
+    });
+
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(await screen.findByText("the whole payload")).toBeInTheDocument();
+  });
+
+  // Without this the preview is rendered as though it were the message: a
+  // few KB of a multi-megabyte payload, indistinguishable from the whole
+  // thing, until the real bytes quietly replace it.
+  it("says the payload is still loading while only the preview is on screen", async () => {
+    let resolveFetch: (result: unknown) => void = () => {};
+    setInvokeHandlers({
+      connection_fetch_messages: () => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("the whole"),
+        payloadSizeBytes: 17,
+        headers: [],
+      },
+    });
+
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(await screen.findByText(/Loading the full payload/)).toBeInTheDocument();
+
+    resolveFetch({
+      messages: [
+        {
+          partition: 0,
+          offset: 7,
+          timestampMs: null,
+          keyBase64: null,
+          payloadBase64: btoa("the whole payload"),
+          payloadSizeBytes: 17,
+          headers: [],
+        },
+      ],
+      totalMatching: 1,
+    });
+
+    expect(await screen.findByText("the whole payload")).toBeInTheDocument();
+    expect(screen.queryByText(/Loading the full payload/)).not.toBeInTheDocument();
+  });
+
+  it("does not re-fetch a payload the row already carried in full", async () => {
+    const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("all of it"),
+        payloadSizeBytes: 9,
+        headers: [],
+      },
+    });
+
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(await screen.findByText("all of it")).toBeInTheDocument();
+    expect(fetchMessages).not.toHaveBeenCalled();
   });
 
   it("pretty-prints the payload as JSON when the JSON toggle is clicked", async () => {
@@ -47,6 +158,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: btoa('{"id":1,"name":"orders"}'),
+        payloadSizeBytes: null,
         headers: [],
       },
     });
@@ -67,6 +179,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: btoa('{"id":1}'),
+        payloadSizeBytes: null,
         headers: [],
       },
     });
@@ -84,7 +197,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when JSON is requested but the payload isn't valid JSON", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not json"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not json"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -96,7 +209,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when JSON is requested but the payload is XML", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("<a>1</a>"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("<a>1</a>"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -114,6 +227,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: btoa("<order><id>1</id></order>"),
+        payloadSizeBytes: null,
         headers: [],
       },
     });
@@ -134,6 +248,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: btoa("<order/>"),
+        payloadSizeBytes: null,
         headers: [],
       },
     });
@@ -151,7 +266,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows an error message when XML is requested but the payload isn't valid XML", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not xml"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("not xml"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -169,6 +284,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: btoa('{"id":1}'),
+        payloadSizeBytes: null,
         headers: [],
       },
     });
@@ -185,7 +301,7 @@ describe("MessagePayloadViewer", () => {
     useMessageViewerStore.setState({
       connectionId: "conn-1",
       topic: "orders",
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -210,7 +326,7 @@ describe("MessagePayloadViewer", () => {
     useMessageViewerStore.setState({
       connectionId: "conn-1",
       topic: "orders",
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("avro-bytes"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -222,7 +338,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows a hint to enable 'Load message payload' when payloadBase64 is null", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -232,7 +348,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the message's partition and offset even when the payload wasn't loaded", () => {
     useMessageViewerStore.setState({
-      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -242,7 +358,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows the message's partition and offset", () => {
     useMessageViewerStore.setState({
-      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), headers: [] },
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -252,7 +368,7 @@ describe("MessagePayloadViewer", () => {
 
   it("clears the viewed message when the close button is clicked", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), headers: [] },
+      message: { partition: 3, offset: 17, timestampMs: null, keyBase64: null, payloadBase64: btoa("x"), payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -264,7 +380,7 @@ describe("MessagePayloadViewer", () => {
 
   it("opens on the Value tab by default", () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
@@ -279,6 +395,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: null,
+        payloadSizeBytes: null,
         headers: [
           { key: "content-type", valueBase64: btoa("application/json") },
           { key: "empty-header", valueBase64: null },
@@ -297,7 +414,7 @@ describe("MessagePayloadViewer", () => {
 
   it("shows a placeholder on the Headers tab when the message has no headers", async () => {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     });
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
@@ -315,6 +432,7 @@ describe("MessagePayloadViewer", () => {
         timestampMs: null,
         keyBase64: null,
         payloadBase64: null,
+        payloadSizeBytes: null,
         headers: [{ key: "trace-id", valueBase64: btoa("abc") }],
       },
     });
@@ -328,7 +446,7 @@ describe("MessagePayloadViewer", () => {
 
   function viewMessage(payloadBase64: string, offset = 1) {
     useMessageViewerStore.setState({
-      message: { partition: 0, offset, timestampMs: null, keyBase64: null, payloadBase64, headers: [] },
+      message: { partition: 0, offset, timestampMs: null, keyBase64: null, payloadBase64, payloadSizeBytes: null, headers: [] },
     });
   }
 

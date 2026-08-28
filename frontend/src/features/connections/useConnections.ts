@@ -130,6 +130,16 @@ export function useConnect(id: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["connection-connected", id] });
       queryClient.invalidateQueries({ queryKey: ["connection-status", id] });
+      // The cluster listings are fetched once and then held for as long as
+      // the app runs (see `CLUSTER_LISTING_OPTIONS`), which is right while a
+      // connection stays up and wrong the moment it is re-established: the
+      // cluster may have gained or lost topics while it was down, and
+      // nothing else would ever ask again. Connecting is the one event that
+      // means "whatever we knew about this cluster is from a previous
+      // session".
+      for (const key of ["brokers", "topics", "consumer-groups"]) {
+        queryClient.invalidateQueries({ queryKey: [key, id] });
+      }
     },
     // On settled, not on success: a Reconnect that the broker *rejects* is
     // exactly when the breaker's state changes, and the tree needs to say so

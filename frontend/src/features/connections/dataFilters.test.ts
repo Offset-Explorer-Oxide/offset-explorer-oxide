@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
+import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 
 describe("emptyFilterForm", () => {
   it("pre-fills both count caps, and leaves every other field blank with includePayload unchecked", () => {
@@ -26,12 +27,26 @@ describe("toMessageFilter", () => {
       toTimestampMs: null,
       offset: null,
       includePayload: false,
+      maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
     });
   });
 
   it("falls back to the backend's own default cap (null) when maxMessagesPerPartition is cleared back to blank", () => {
     const form = { ...emptyFilterForm(), maxMessagesPerPartition: "" };
     expect(toMessageFilter(form).maxMessagesPerPartition).toBeNull();
+  });
+
+  // The grid draws one line per row and its search only ever examines
+  // VALUE_PREVIEW_BYTES of a value, so asking the backend for whole payloads
+  // shipped gigabytes of base64 across the IPC boundary to render a few
+  // hundred KB of text — twice over, once streamed and once in the fetch
+  // result — and the webview was killed holding it. The bound has to travel
+  // with every fetch this form produces, checkbox on or off.
+  it("always bounds the payload each row carries to what the grid can actually show", () => {
+    expect(toMessageFilter(emptyFilterForm()).maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+    expect(
+      toMessageFilter({ ...emptyFilterForm(), includePayload: true }).maxPayloadPreviewBytes,
+    ).toBe(VALUE_PREVIEW_BYTES);
   });
 
   it("carries includePayload through when checked", () => {

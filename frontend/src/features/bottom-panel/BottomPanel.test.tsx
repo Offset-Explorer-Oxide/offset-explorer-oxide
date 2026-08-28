@@ -87,7 +87,7 @@ describe("BottomPanel tab memory", () => {
   });
 
   it("reflects the active tab's cached Data tab rows as a byte-size estimate", () => {
-    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabsStore.setState({ activeTabId: "tab-1" });
     useTabDataStore.setState({ messagesByTab: { [dataTabCacheKey("tab-1", "1", "orders")]: cached } });
 
@@ -102,12 +102,12 @@ describe("BottomPanel tab memory", () => {
     useWorkspaceSelectionStore.setState({
       selection: { type: "topic", connectionId: "1", topicName: "orders" },
     });
-    const orders = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const orders = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     const payments = [
-      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
-      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     ];
-    const partitionZero = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const partitionZero = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.setState({
       messagesByTab: {
         [dataTabCacheKey("tab-1", "1", "orders")]: orders,
@@ -128,7 +128,7 @@ describe("BottomPanel tab memory", () => {
 
   it("does not switch to 0.00 MB when navigating away from the topic that was viewed when it was fetched", () => {
     useTabsStore.setState({ activeTabId: "tab-1" });
-    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.setState({ messagesByTab: { [dataTabCacheKey("tab-1", "1", "orders")]: cached } });
     // No selection at all — as if the user switched to a different topic
     // (or nothing) after fetching "orders". The old, per-selection
@@ -146,7 +146,7 @@ describe("BottomPanel tab memory", () => {
     useTabDataStore.setState({
       messagesByTab: {
         [dataTabCacheKey("tab-2", "1", "orders")]: [
-          { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+          { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
         ],
       },
     });
@@ -165,10 +165,10 @@ describe("BottomPanel tab memory", () => {
     });
     useMessageViewerStore.setState({
       activeTabId: "tab-1",
-      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
       byTab: {
         "tab-1": {
-          message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+          message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
           connectionId: "1",
           topic: "orders",
         },
@@ -179,9 +179,9 @@ describe("BottomPanel tab memory", () => {
     const otherTabKey = dataTabCacheKey("tab-2", "1", "orders");
     useTabDataStore.setState({
       messagesByTab: {
-        [ordersKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }],
-        [paymentsKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }],
-        [otherTabKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }],
+        [ordersKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }],
+        [paymentsKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }],
+        [otherTabKey]: [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }],
       },
     });
     const user = userEvent.setup();

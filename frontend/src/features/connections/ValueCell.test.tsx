@@ -7,7 +7,7 @@ import { ValueCell, ValueCellContext } from "./ValueCell";
 import { decodeValuePreview } from "./payloadDecoding";
 
 function sampleRow(overrides: Partial<TopicMessage> = {}): TopicMessage {
-  return { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [], ...overrides };
+  return { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [], ...overrides };
 }
 
 function renderCell(

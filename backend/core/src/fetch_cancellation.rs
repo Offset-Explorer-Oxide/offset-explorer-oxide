@@ -25,20 +25,36 @@ impl FetchCancellations {
     /// poll loop should check on every iteration. Callers must pair this
     /// with [`Self::finish`] once the fetch is done — win, lose, or
     /// cancelled — or its entry leaks for the life of the app.
+    /// Deliberately reuses an entry a [`Self::cancel`] already created rather
+    /// than overwriting it with a fresh `false`: the request id is generated
+    /// by the frontend and can be cancelled before the backend has finished
+    /// registering it (see the test), and a fetch that has already been told
+    /// to stop must start stopped.
     pub fn begin(&self, request_id: &str) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
-        self.flags.lock().unwrap().insert(request_id.to_string(), Arc::clone(&flag));
-        flag
+        Arc::clone(
+            self.flags
+                .lock()
+                .unwrap()
+                .entry(request_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        )
     }
 
-    /// Signals the named fetch's poll loop to stop at its next check. A
-    /// no-op if the fetch already finished (or was never registered) —
-    /// Stop racing the fetch's own completion is the ordinary case, not an
-    /// error.
+    /// Signals the named fetch's poll loop to stop at its next check.
+    ///
+    /// Records the cancellation even when no fetch is registered under this
+    /// id yet, so a Stop that beats its own fetch into the backend still
+    /// takes effect — `connection_fetch_messages` reads the connection out
+    /// of SQLite before it registers, and a cancel arriving in that window
+    /// used to be dropped on the floor, leaving a fetch nothing could stop.
+    /// The entry is cleared by [`Self::finish`] like any other.
     pub fn cancel(&self, request_id: &str) {
-        if let Some(flag) = self.flags.lock().unwrap().get(request_id) {
-            flag.store(true, Ordering::Relaxed);
-        }
+        self.flags
+            .lock()
+            .unwrap()
+            .entry(request_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .store(true, Ordering::Relaxed);
     }
 
     /// Forgets a finished fetch's flag.
@@ -64,6 +80,56 @@ mod tests {
         let flag = cancellations.begin("req-1");
         cancellations.cancel("req-1");
         assert!(flag.load(Ordering::Relaxed));
+    }
+
+    /// The bug this exists for: a Stop click could be silently discarded.
+    ///
+    /// `connection_fetch_messages` looks the connection up in SQLite before
+    /// it registers the fetch here, so there is a real window between the
+    /// frontend generating a request id (and being able to cancel it) and
+    /// this map knowing that id. A cancel landing in that window used to
+    /// find nothing, do nothing, and be forgotten — and the `begin` that
+    /// followed handed the poll loop a fresh, un-cancelled flag. The fetch
+    /// then ran to completion against the broker with nothing able to stop
+    /// it, which is exactly "I pressed Stop and the backend kept fetching".
+    ///
+    /// Cancellation is therefore recorded whether or not the fetch has
+    /// registered yet, and `begin` inherits it.
+    #[test]
+    fn a_cancel_that_arrives_before_the_fetch_registers_still_cancels_it() {
+        let cancellations = FetchCancellations::default();
+
+        cancellations.cancel("req-1");
+        let flag = cancellations.begin("req-1");
+
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a fetch registering after its own cancel must start already cancelled"
+        );
+    }
+
+    #[test]
+    fn a_fetch_registering_after_an_unrelated_cancel_is_not_cancelled() {
+        let cancellations = FetchCancellations::default();
+
+        cancellations.cancel("some-other-request");
+        let flag = cancellations.begin("req-1");
+
+        assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    /// Otherwise every cancel that raced a fetch would leave an entry behind
+    /// for the life of the app.
+    #[test]
+    fn finishing_clears_a_cancellation_that_arrived_before_the_fetch_registered() {
+        let cancellations = FetchCancellations::default();
+
+        cancellations.cancel("req-1");
+        cancellations.begin("req-1");
+        cancellations.finish("req-1");
+
+        assert!(!cancellations.begin("req-1").load(Ordering::Relaxed));
+        cancellations.finish("req-1");
     }
 
     #[test]
