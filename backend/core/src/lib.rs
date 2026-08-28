@@ -11,7 +11,7 @@ pub use cluster::{
     BrokerSummary, ConfigEntry, ConsumerGroupLag, ConsumerGroupSummary, PartitionLag,
     PartitionSummary, TopicSummary,
 };
-pub use message::{MessageFetchResult, MessageFilter, MessageHeader, TopicMessage};
+pub use message::{MessageFetchResult, MessageFilter, MessageHeader, MessagesBatchEvent, TopicMessage};
 pub use connection::{
     Connection, ConnectionStatus, NewConnection, SaslMechanism, SecurityProtocol,
 };
