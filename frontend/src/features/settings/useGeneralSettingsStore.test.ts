@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_BROKER_READ_TIMEOUT_MS,
   DEFAULT_MAX_MESSAGE_SIZE_BYTES,
+  DEFAULT_MAX_TOTAL_FETCH_BYTES,
   DEFAULT_ZOOKEEPER_TIMEOUT_MS,
   loadStoredGeneralSettings,
   useGeneralSettingsStore,
@@ -69,6 +70,16 @@ describe("useGeneralSettingsStore", () => {
       zookeeperTimeoutMs: 7000,
       brokerReadTimeoutMs: DEFAULT_BROKER_READ_TIMEOUT_MS,
       maxMessageSizeBytes: DEFAULT_MAX_MESSAGE_SIZE_BYTES,
+      maxTotalFetchBytes: DEFAULT_MAX_TOTAL_FETCH_BYTES,
     });
+  });
+
+  it("clamps the max total fetch size to a positive integer and persists it", () => {
+    useGeneralSettingsStore.getState().setMaxTotalFetchBytes(0);
+    expect(useGeneralSettingsStore.getState().maxTotalFetchBytes).toBe(1);
+
+    useGeneralSettingsStore.getState().setMaxTotalFetchBytes(268_435_456);
+    expect(useGeneralSettingsStore.getState().maxTotalFetchBytes).toBe(268_435_456);
+    expect(loadStoredGeneralSettings().maxTotalFetchBytes).toBe(268_435_456);
   });
 });

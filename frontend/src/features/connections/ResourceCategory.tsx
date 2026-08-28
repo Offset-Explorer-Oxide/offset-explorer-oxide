@@ -1,4 +1,4 @@
-import { CSSProperties, useRef, useState } from "react";
+import { CSSProperties, useState } from "react";
 import { FixedSizeList } from "react-window";
 import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { ContextMenu, ContextMenuItem } from "../../components/ContextMenu";
@@ -20,7 +20,7 @@ export interface ResourceCategoryProps<T> {
   matchesSearch: (item: T, query: string) => boolean;
   isSelected: (item: T) => boolean;
   onSelect: (item: T) => void;
-  /** Called exactly once, the first time this category is expanded — triggers the lazy fetch. */
+  /** Called each time this category is opened (never on collapse) — refreshes its listing, which is otherwise fetched once and held. */
   onExpand: () => void;
   /** Tab-scoped key (see `treeKey`) this category's expand/search state is stored under, so it starts fresh for a new tab and stays exactly as left for one you've already visited. */
   treeKey: string;
@@ -65,12 +65,16 @@ export function ResourceCategory<T>({
   const toggleExpanded = useTreeUiStore((s) => s.toggleExpanded);
   const query = useTreeUiStore((s) => s.searchText[key] ?? "");
   const setSearchText = useTreeUiStore((s) => s.setSearchText);
-  const hasExpandedBefore = useRef(false);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
 
   function toggle() {
-    if (!hasExpandedBefore.current) {
-      hasExpandedBefore.current = true;
+    // Every time the category is opened, not just the first time. The
+    // listing behind it is fetched once and then held indefinitely (see
+    // `CLUSTER_LISTING_OPTIONS`), so opening the category is the user's way
+    // of saying "show me what's there now" — without this it would be the
+    // only way to refresh, and it would work exactly once per session.
+    // Collapsing is not a request for anything, so it doesn't fetch.
+    if (!expanded) {
       onExpand();
     }
     toggleExpanded(key);

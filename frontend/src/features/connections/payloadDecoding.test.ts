@@ -5,7 +5,9 @@ import {
   bytesToText,
   decodeValuePreview,
   detectConfluentAvro,
+  base64DecodedLength,
   exceedsValuePreview,
+  isPayloadTruncated,
   formatXmlNode,
   tryParseJson,
   tryParseXml,
@@ -168,23 +170,59 @@ describe("decodeValuePreview", () => {
 });
 
 describe("exceedsValuePreview", () => {
-  const encodeText = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
-
-  it("is false when the payload wasn't loaded", () => {
+  it("is false when the payload's size is unknown", () => {
     expect(exceedsValuePreview(null)).toBe(false);
   });
 
   it("is false for a payload the preview covers in full", () => {
-    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES)))).toBe(false);
+    expect(exceedsValuePreview(VALUE_PREVIEW_BYTES)).toBe(false);
   });
 
   it("is true for a payload longer than the preview", () => {
-    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES + 1)))).toBe(true);
+    expect(exceedsValuePreview(VALUE_PREVIEW_BYTES + 1)).toBe(true);
   });
 
-  it("discounts base64 padding rather than counting it as payload bytes", () => {
-    // One byte over the limit before padding is added; the two '=' that
-    // padding it produces must not read as two extra payload bytes.
-    expect(exceedsValuePreview(encodeText("a".repeat(VALUE_PREVIEW_BYTES - 2)))).toBe(false);
+  // The size now comes from the backend rather than being inferred from the
+  // base64 it sent: since the backend truncates payloads to the preview
+  // bound, a payload cut to exactly that size is byte-for-byte
+  // indistinguishable from one that was genuinely that long, and measuring
+  // the base64 would call every large message "not oversized".
+  it("reads the real size even for a payload whose base64 was truncated to the preview bound", () => {
+    expect(exceedsValuePreview(3_145_728)).toBe(true);
+  });
+});
+
+describe("base64DecodedLength", () => {
+  const encodeBytes = (n: number) => btoa("a".repeat(n));
+
+  it("counts the bytes a base64 string decodes to", () => {
+    expect(base64DecodedLength(encodeBytes(3))).toBe(3);
+    expect(base64DecodedLength(encodeBytes(4))).toBe(4);
+    expect(base64DecodedLength(encodeBytes(5))).toBe(5);
+    expect(base64DecodedLength(encodeBytes(6))).toBe(6);
+  });
+
+  it("is zero for an empty string", () => {
+    expect(base64DecodedLength("")).toBe(0);
+  });
+});
+
+describe("isPayloadTruncated", () => {
+  const encodeBytes = (n: number) => btoa("a".repeat(n));
+
+  it("is false when no payload was loaded at all", () => {
+    expect(isPayloadTruncated(null, 5000)).toBe(false);
+  });
+
+  it("is false when the size is unknown", () => {
+    expect(isPayloadTruncated(encodeBytes(10), null)).toBe(false);
+  });
+
+  it("is false when the base64 carries the whole payload", () => {
+    expect(isPayloadTruncated(encodeBytes(100), 100)).toBe(false);
+  });
+
+  it("is true when the base64 carries less than the payload's real size", () => {
+    expect(isPayloadTruncated(encodeBytes(4096), 3_145_728)).toBe(true);
   });
 });

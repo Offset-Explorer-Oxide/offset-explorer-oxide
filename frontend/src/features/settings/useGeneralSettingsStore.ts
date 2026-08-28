@@ -3,14 +3,28 @@ import { create } from "zustand";
 export const DEFAULT_ZOOKEEPER_TIMEOUT_MS = 10_000;
 export const DEFAULT_BROKER_READ_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_MESSAGE_SIZE_BYTES = 1_048_576;
+/**
+ * Ceiling on how many payload bytes one Fetch reads from the broker before
+ * stopping and saying so. Mirrors the backend's own
+ * `DEFAULT_MAX_TOTAL_PAYLOAD_BYTES`.
+ *
+ * Every other limit on the Data tab counts *messages*, which says nothing
+ * about what a fetch costs: on a topic of multi-megabyte records the
+ * prefilled "100 per partition" across a 12-partition topic is a multi-
+ * gigabyte read, and nothing in the form hints at that. Half a gigabyte is
+ * far more than a browse needs and keeps the pathological case bounded.
+ */
+export const DEFAULT_MAX_TOTAL_FETCH_BYTES = 536_870_912;
 
 interface GeneralSettingsState {
   zookeeperTimeoutMs: number;
   brokerReadTimeoutMs: number;
   maxMessageSizeBytes: number;
+  maxTotalFetchBytes: number;
   setZookeeperTimeoutMs: (ms: number) => void;
   setBrokerReadTimeoutMs: (ms: number) => void;
   setMaxMessageSizeBytes: (bytes: number) => void;
+  setMaxTotalFetchBytes: (bytes: number) => void;
 }
 
 const STORAGE_KEY = "kafkaoxide.generalSettings";
@@ -19,12 +33,14 @@ interface StoredGeneralSettings {
   zookeeperTimeoutMs: number;
   brokerReadTimeoutMs: number;
   maxMessageSizeBytes: number;
+  maxTotalFetchBytes: number;
 }
 
 const DEFAULTS: StoredGeneralSettings = {
   zookeeperTimeoutMs: DEFAULT_ZOOKEEPER_TIMEOUT_MS,
   brokerReadTimeoutMs: DEFAULT_BROKER_READ_TIMEOUT_MS,
   maxMessageSizeBytes: DEFAULT_MAX_MESSAGE_SIZE_BYTES,
+  maxTotalFetchBytes: DEFAULT_MAX_TOTAL_FETCH_BYTES,
 };
 
 export function loadStoredGeneralSettings(): StoredGeneralSettings {
@@ -37,6 +53,7 @@ export function loadStoredGeneralSettings(): StoredGeneralSettings {
       zookeeperTimeoutMs: parsed.zookeeperTimeoutMs ?? DEFAULT_ZOOKEEPER_TIMEOUT_MS,
       brokerReadTimeoutMs: parsed.brokerReadTimeoutMs ?? DEFAULT_BROKER_READ_TIMEOUT_MS,
       maxMessageSizeBytes: parsed.maxMessageSizeBytes ?? DEFAULT_MAX_MESSAGE_SIZE_BYTES,
+      maxTotalFetchBytes: parsed.maxTotalFetchBytes ?? DEFAULT_MAX_TOTAL_FETCH_BYTES,
     };
   } catch {
     return DEFAULTS;
@@ -61,6 +78,7 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>((set) => ({
   zookeeperTimeoutMs: initial.zookeeperTimeoutMs,
   brokerReadTimeoutMs: initial.brokerReadTimeoutMs,
   maxMessageSizeBytes: initial.maxMessageSizeBytes,
+  maxTotalFetchBytes: initial.maxTotalFetchBytes,
   setZookeeperTimeoutMs: (ms) => {
     const clamped = clampPositiveInt(ms);
     persist({ zookeeperTimeoutMs: clamped });
@@ -75,5 +93,10 @@ export const useGeneralSettingsStore = create<GeneralSettingsState>((set) => ({
     const clamped = clampPositiveInt(bytes);
     persist({ maxMessageSizeBytes: clamped });
     set({ maxMessageSizeBytes: clamped });
+  },
+  setMaxTotalFetchBytes: (bytes) => {
+    const clamped = clampPositiveInt(bytes);
+    persist({ maxTotalFetchBytes: clamped });
+    set({ maxTotalFetchBytes: clamped });
   },
 }));

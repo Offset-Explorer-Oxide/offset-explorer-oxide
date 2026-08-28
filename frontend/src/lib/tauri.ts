@@ -173,6 +173,18 @@ export interface MessageFilter {
   toTimestampMs: number | null;
   offset: number | null;
   includePayload: boolean;
+  /**
+   * How many payload bytes to carry back per message; `null` means the whole
+   * payload.
+   *
+   * The Data tab's grid fetch always sets this to `VALUE_PREVIEW_BYTES` — it
+   * renders one line per row and searches only that much of a value, so
+   * shipping whole payloads for it cost ~4 GB of base64 on a 1,000-row fetch
+   * of 3 MB records (once streamed, once in the result) to display a few
+   * hundred KB of text, and the webview died holding it. Only the
+   * single-message fetch behind the payload viewer passes `null`.
+   */
+  maxPayloadPreviewBytes: number | null;
 }
 
 export interface MessageHeader {
@@ -187,8 +199,10 @@ export interface TopicMessage {
   timestampMs: number | null;
   /** Base64-encoded — a Kafka message key is an arbitrary byte string, not guaranteed text. Decode with `base64ToBytes`/`bytesToText` from `payloadDecoding.ts` to display. */
   keyBase64: string | null;
-  /** null unless the fetch's `includePayload` filter was set. */
+  /** null unless the fetch's `includePayload` filter was set, and truncated to its `maxPayloadPreviewBytes` when that was set — use `isPayloadTruncated` before treating this as the whole message. */
   payloadBase64: string | null;
+  /** The payload's true size in bytes, however much of it `payloadBase64` carries. Populated whenever the message has a payload, even on a metadata-only fetch. */
+  payloadSizeBytes: number | null;
   /** Always populated regardless of `includePayload` — headers are cheap metadata, not the payload itself. */
   headers: MessageHeader[];
 }
@@ -204,6 +218,10 @@ export interface MessageFetchResult {
   messages: TopicMessage[];
   totalMatching: number;
   pollError?: string | null;
+  /** True when the fetch stopped because it had read `maxTotalFetchBytes` of message payloads rather than because it satisfied the filter — the row count alone can't distinguish the two, and on a topic of large messages this is the cap that actually bites. */
+  stoppedAtByteBudget?: boolean;
+  /** Payload bytes read from the broker during this fetch, before any preview truncation. */
+  payloadBytesRead?: number;
 }
 
 export interface ImportSummary {
@@ -268,6 +286,7 @@ export const api = {
       requestId,
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
       maxMessageSizeBytes: useGeneralSettingsStore.getState().maxMessageSizeBytes,
+      maxTotalPayloadBytes: useGeneralSettingsStore.getState().maxTotalFetchBytes,
     }),
   /** Interrupts a fetch already in flight — the Data tab's Stop button, and switching topics mid-fetch. A no-op if the request already finished. */
   cancelFetch: (requestId: string) => invoke<void>("connection_cancel_fetch", { requestId }),

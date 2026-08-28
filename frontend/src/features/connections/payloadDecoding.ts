@@ -131,16 +131,41 @@ export function decodeValuePreview(payloadBase64: string | null): string {
 }
 
 /**
+ * How many bytes a base64 string decodes to, without decoding it: every 4
+ * characters carry 3 bytes, less one byte per '=' of padding.
+ */
+export function base64DecodedLength(base64: string): number {
+  if (base64.length === 0) return 0;
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return (base64.length / 4) * 3 - padding;
+}
+
+/**
  * Whether a payload is longer than the preview [`decodeValuePreview`] builds
  * — i.e. whether the grid's Value column, and the search over it, sees only
  * part of this message.
  *
- * Measured from the base64 length rather than by decoding: every 4 characters
- * carry 3 bytes, less one byte per '=' of padding.
+ * Takes the size the backend reported (`TopicMessage.payloadSizeBytes`)
+ * rather than measuring the base64 it sent. Since the backend now truncates
+ * payloads to the grid's preview bound, that base64 is itself a preview: a
+ * message cut to exactly the bound is indistinguishable from one that was
+ * genuinely that long, so measuring it would report every large message as
+ * fitting comfortably.
  */
-export function exceedsValuePreview(payloadBase64: string | null): boolean {
-  if (!payloadBase64) return false;
+export function exceedsValuePreview(payloadSizeBytes: number | null): boolean {
+  return payloadSizeBytes !== null && payloadSizeBytes > VALUE_PREVIEW_BYTES;
+}
 
-  const padding = payloadBase64.endsWith("==") ? 2 : payloadBase64.endsWith("=") ? 1 : 0;
-  return (payloadBase64.length / 4) * 3 - padding > VALUE_PREVIEW_BYTES;
+/**
+ * Whether `payloadBase64` holds only part of the message it came from.
+ *
+ * The Data tab's fetch asks the backend for a bounded slice of each payload,
+ * so a row's `payloadBase64` is usually a preview — enough for the grid's
+ * one-line cell, never enough to display or decode as the message. Anything
+ * that shows the payload itself has to check this and fetch the real bytes
+ * for that single message first.
+ */
+export function isPayloadTruncated(payloadBase64: string | null, payloadSizeBytes: number | null): boolean {
+  if (payloadBase64 === null || payloadSizeBytes === null) return false;
+  return base64DecodedLength(payloadBase64) < payloadSizeBytes;
 }

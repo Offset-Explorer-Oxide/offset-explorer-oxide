@@ -23,6 +23,22 @@ pub struct MessageFilter {
     /// every row, so a metadata-only browse doesn't pay for encoding/
     /// transferring payload bytes it isn't going to show.
     pub include_payload: bool,
+    /// How many payload bytes to actually carry back per message, when
+    /// `include_payload` is set. `None` means the whole payload.
+    ///
+    /// The Data tab's grid renders one line per row and searches only the
+    /// first few KB of a value, so shipping whole payloads for it bought
+    /// nothing and cost everything: a 1,000-row fetch of 3 MB records moved
+    /// ~4 GB of base64 across the IPC boundary (once per streamed message,
+    /// then again in the fetch result), and the webview held two copies of it
+    /// at once while swapping the streamed rows for the final ones. That is
+    /// several times the renderer's memory ceiling, so the app hung and was
+    /// killed. Bounded here instead, the same fetch moves a few MB.
+    ///
+    /// Left `None` by the per-row fetch behind
+    /// `MessagePayloadViewer`/`ValueCell`, which needs the real bytes — one
+    /// message at a time, which is what makes it affordable.
+    pub max_payload_preview_bytes: Option<u32>,
 }
 
 /// A single Kafka message header — arbitrary key/value metadata sent
@@ -77,7 +93,20 @@ pub struct TopicMessage {
     pub offset: i64,
     pub timestamp_ms: Option<i64>,
     pub key_base64: Option<String>,
+    /// The payload, base64-encoded — truncated to the fetch's
+    /// [`MessageFilter::max_payload_preview_bytes`] when it set one, so this
+    /// is not necessarily the whole message. Compare its decoded length
+    /// against `payload_size_bytes` to tell; `None` when the fetch didn't ask
+    /// for payloads at all.
     pub payload_base64: Option<String>,
+    /// The payload's true length in bytes, whatever `payload_base64` carries
+    /// of it. Populated whenever the message has a payload, including on a
+    /// metadata-only fetch — a row can then say how big a message is, and the
+    /// viewer can tell a truncated preview from a whole small payload, which
+    /// a truncated `payload_base64` alone cannot express (a payload cut to
+    /// exactly the preview size is indistinguishable from one that happened
+    /// to be that long).
+    pub payload_size_bytes: Option<u64>,
     pub headers: Vec<MessageHeader>,
 }
 
@@ -101,6 +130,18 @@ pub struct MessageFetchResult {
     /// messages than `total_matching` promises for a real, diagnosable
     /// reason rather than just running out of time.
     pub poll_error: Option<String>,
+    /// Whether the fetch stopped because it had read its payload byte
+    /// budget rather than because it satisfied the filter. Every other cap
+    /// here counts *messages*, which says nothing about size: on a topic of
+    /// multi-megabyte records a 1,000-message fetch is a multi-gigabyte read,
+    /// and the count the user typed gives no hint of that. Surfaced so the
+    /// Data tab can say the result was cut short and why, instead of silently
+    /// showing fewer rows than the filter implies.
+    pub stopped_at_byte_budget: bool,
+    /// Total payload bytes read from the broker during this fetch, counted
+    /// before any preview truncation — what the budget above measures, and
+    /// what the Data tab reports back to the user.
+    pub payload_bytes_read: u64,
 }
 
 #[cfg(test)]
@@ -124,6 +165,7 @@ mod tests {
                 timestamp_ms: None,
                 key_base64: None,
                 payload_base64: None,
+                payload_size_bytes: None,
                 headers: Vec::new(),
             },
         };
@@ -145,8 +187,40 @@ mod tests {
         let json = serde_json::to_string(&filter).unwrap();
         assert_eq!(
             json,
-            r#"{"partitions":null,"maxMessagesPerPartition":null,"maxTotalMessages":null,"fromTimestampMs":null,"toTimestampMs":null,"offset":null,"includePayload":false}"#
+            r#"{"partitions":null,"maxMessagesPerPartition":null,"maxTotalMessages":null,"fromTimestampMs":null,"toTimestampMs":null,"offset":null,"includePayload":false,"maxPayloadPreviewBytes":null}"#
         );
+    }
+
+    /// The grid only ever renders a few KB of a payload, so the Data tab's
+    /// own fetch asks for a bound; the per-row "open this message" fetch
+    /// leaves it `None` to get the real bytes.
+    #[test]
+    fn message_filter_carries_a_payload_preview_bound() {
+        let filter = MessageFilter { max_payload_preview_bytes: Some(4096), ..MessageFilter::default() };
+        let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(json["maxPayloadPreviewBytes"], 4096);
+
+        let round_tripped: MessageFilter = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped.max_payload_preview_bytes, Some(4096));
+    }
+
+    /// Truncating the payload would otherwise make every message look like it
+    /// was exactly the preview size, so the real length travels separately —
+    /// it is what tells the UI a payload is partial and must be re-fetched in
+    /// full before it can be displayed or decoded.
+    #[test]
+    fn topic_message_reports_its_true_payload_size_alongside_a_truncated_preview() {
+        let message = TopicMessage {
+            partition: 0,
+            offset: 42,
+            timestamp_ms: None,
+            key_base64: None,
+            payload_base64: Some("eyJpZCI6MX0=".into()),
+            payload_size_bytes: Some(3_145_728),
+            headers: vec![],
+        };
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["payloadSizeBytes"], 3_145_728u64);
     }
 
     #[test]
@@ -157,12 +231,13 @@ mod tests {
             timestamp_ms: Some(1_700_000_000_000),
             key_base64: Some("b3JkZXItMQ==".into()),
             payload_base64: Some("eyJpZCI6MX0=".into()),
+            payload_size_bytes: Some(8),
             headers: vec![],
         };
         let json = serde_json::to_string(&message).unwrap();
         assert_eq!(
             json,
-            r#"{"partition":0,"offset":42,"timestampMs":1700000000000,"keyBase64":"b3JkZXItMQ==","payloadBase64":"eyJpZCI6MX0=","headers":[]}"#
+            r#"{"partition":0,"offset":42,"timestampMs":1700000000000,"keyBase64":"b3JkZXItMQ==","payloadBase64":"eyJpZCI6MX0=","payloadSizeBytes":8,"headers":[]}"#
         );
     }
 
@@ -174,6 +249,7 @@ mod tests {
             timestamp_ms: None,
             key_base64: None,
             payload_base64: None,
+            payload_size_bytes: None,
             headers: vec![],
         };
         let json = serde_json::to_string(&message).unwrap();
@@ -199,14 +275,40 @@ mod tests {
                 timestamp_ms: None,
                 key_base64: None,
                 payload_base64: None,
+                payload_size_bytes: None,
                 headers: vec![],
             }],
             total_matching: 150,
             poll_error: None,
+            stopped_at_byte_budget: false,
+            payload_bytes_read: 0,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""totalMatching":150"#));
         assert!(json.contains(r#""messages":[{"#));
+    }
+
+    /// A count cap can't bound a fetch's size on a topic of multi-megabyte
+    /// records — "1000 messages" reads as modest and is several gigabytes.
+    /// The byte budget is what actually bounds it, so the result has to say
+    /// when it was the budget that ended the fetch rather than the filter.
+    #[test]
+    fn message_fetch_result_reports_stopping_at_the_byte_budget() {
+        let result = MessageFetchResult {
+            stopped_at_byte_budget: true,
+            payload_bytes_read: 268_435_456,
+            ..MessageFetchResult::default()
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["stoppedAtByteBudget"], true);
+        assert_eq!(json["payloadBytesRead"], 268_435_456u64);
+    }
+
+    #[test]
+    fn message_fetch_result_defaults_to_not_having_hit_the_byte_budget() {
+        let result = MessageFetchResult::default();
+        assert!(!result.stopped_at_byte_budget);
+        assert_eq!(result.payload_bytes_read, 0);
     }
 
     #[test]
@@ -224,6 +326,7 @@ mod tests {
                 },
                 MessageHeader { key: "empty".into(), value_base64: None },
             ],
+            payload_size_bytes: None,
         };
         let json = serde_json::to_string(&message).unwrap();
         assert!(json.contains(r#""headers":[{"key":"trace-id","valueBase64":"YWJjMTIz"},{"key":"empty","valueBase64":null}]"#));

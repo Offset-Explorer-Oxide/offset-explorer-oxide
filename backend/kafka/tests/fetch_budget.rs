@@ -81,6 +81,9 @@ fn filter(max_total_messages: Option<u32>) -> MessageFilter {
         to_timestamp_ms: None,
         offset: None,
         include_payload: true,
+        // Measures what a fetch costs on the wire, which preview truncation
+        // does not change — librdkafka still receives the whole record.
+        max_payload_preview_bytes: None,
     }
 }
 
@@ -106,6 +109,7 @@ async fn an_overall_budget_reads_only_what_it_returns() {
                 None,
                 Duration::from_secs(30),
                 12 * 1024 * 1024,
+                None,
                 Arc::new(AtomicBool::new(false)),
             )
             .await

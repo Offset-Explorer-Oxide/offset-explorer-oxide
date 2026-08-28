@@ -46,6 +46,10 @@ describe("ClusterResourceTree", () => {
     const user = userEvent.setup();
     renderWithClient(<ClusterResourceTree connectionId="1" />);
 
+    // The group listing is lazy, so the refusal only surfaces once the
+    // category is opened and the call is actually made.
+    await user.click(screen.getByTestId("category-Consumers"));
+
     expect(await screen.findByTestId("category-Consumers-warning")).toBeInTheDocument();
     expect(screen.queryByTestId("category-Topics-warning")).not.toBeInTheDocument();
 
@@ -63,20 +67,92 @@ describe("ClusterResourceTree", () => {
     expect(screen.getByTestId("category-Consumers")).toBeInTheDocument();
   });
 
-  it("eagerly fetches brokers, topics, and consumer groups on mount, without needing any category expanded first", async () => {
+  it("eagerly fetches brokers and topics on mount, without needing any category expanded first", async () => {
     const listBrokers = vi.fn(() => []);
     const listTopics = vi.fn(() => []);
-    const listConsumerGroups = vi.fn(() => []);
     setInvokeHandlers({
       connection_list_brokers: listBrokers,
       connection_list_topics: listTopics,
-      connection_list_consumer_groups: listConsumerGroups,
     });
     renderWithClient(<ClusterResourceTree connectionId="1" />);
 
     await waitFor(() => expect(listBrokers).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
     await waitFor(() => expect(listTopics).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
+  });
+
+  // Consumer groups are the odd one out: the listing is the most expensive of
+  // the three on a busy cluster, needs ACLs the other two don't (Describe on
+  // Group), and is the category a user may never open at all. Paying for it
+  // on every connect — and failing visibly when the principal isn't allowed
+  // it — is work nobody asked for.
+  it("does not list consumer groups until the Consumers category is opened", async () => {
+    const listConsumerGroups = vi.fn(() => []);
+    setInvokeHandlers({
+      connection_list_topics: () => [],
+      connection_list_consumer_groups: listConsumerGroups,
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    await waitFor(() => expect(screen.getByTestId("category-Consumers")).toBeInTheDocument());
+    expect(listConsumerGroups).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("category-Consumers"));
+
     await waitFor(() => expect(listConsumerGroups).toHaveBeenCalledWith({ id: "1", readTimeoutMs: 10_000 }));
+  });
+
+  // The listings are held indefinitely once fetched, so re-opening a
+  // category is the user's way of saying "show me what's there now". Without
+  // this there is no way to pick up a topic created since the app started,
+  // short of reconnecting.
+  it("re-lists topics each time the Topics category is re-opened", async () => {
+    const listTopics = vi.fn(() => [{ name: "orders", partitionCount: 1 }]);
+    setInvokeHandlers({ connection_list_topics: listTopics });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+    await waitFor(() => expect(listTopics).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByTestId("category-Topics"));
+    await waitFor(() => expect(listTopics).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByTestId("category-Topics"));
+    await user.click(screen.getByTestId("category-Topics"));
+
+    await waitFor(() => expect(listTopics).toHaveBeenCalledTimes(3));
+  });
+
+  it("re-lists consumer groups when Consumers is re-opened, having fetched none before the first open", async () => {
+    const listConsumerGroups = vi.fn(() => [{ groupId: "g1", state: "Stable" }]);
+    setInvokeHandlers({
+      connection_list_topics: () => [],
+      connection_list_consumer_groups: listConsumerGroups,
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    await user.click(screen.getByTestId("category-Consumers"));
+    await waitFor(() => expect(listConsumerGroups).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByTestId("category-Consumers"));
+    await user.click(screen.getByTestId("category-Consumers"));
+
+    await waitFor(() => expect(listConsumerGroups).toHaveBeenCalledTimes(2));
+  });
+
+  it("lists consumer groups exactly once when Consumers is first opened", async () => {
+    const listConsumerGroups = vi.fn(() => [{ groupId: "g1", state: "Stable" }]);
+    setInvokeHandlers({
+      connection_list_topics: () => [],
+      connection_list_consumer_groups: listConsumerGroups,
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    await user.click(screen.getByTestId("category-Consumers"));
+
+    expect(await screen.findByText("g1")).toBeInTheDocument();
+    expect(listConsumerGroups).toHaveBeenCalledTimes(1);
   });
 
   it("fetches and shows brokers once Brokers is expanded", async () => {

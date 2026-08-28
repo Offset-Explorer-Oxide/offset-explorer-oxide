@@ -458,6 +458,14 @@ const PROGRESS_LOG_INTERVAL: usize = 25;
 /// result on success. `MessageFetchResult::total_matching` lets the Data tab
 /// show "42 loaded of 150 matching" so the user can tell whether more
 /// messages remain beyond what this fetch actually pulled.
+///
+/// `max_total_payload_bytes` is General settings > Messages > Max Total Fetch
+/// Size. It is the only cap here measured in bytes — every other one counts
+/// messages, which on a topic of multi-megabyte records says nothing about
+/// what a fetch costs. Paired with the filter's `max_payload_preview_bytes`
+/// (the Data tab sends the few KB its grid can actually display), it is what
+/// keeps a large fetch from moving gigabytes of base64 into the webview and
+/// killing it.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn connection_fetch_messages(
@@ -469,19 +477,42 @@ pub async fn connection_fetch_messages(
     request_id: String,
     read_timeout_ms: u64,
     max_message_size_bytes: u32,
+    max_total_payload_bytes: Option<u64>,
 ) -> Result<kafkaoxide_core::MessageFetchResult, CommandError> {
-    let connection = connection_for_request(&state, &id).await?;
-    crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
-
+    // Registered before anything that can await, so the window in which a
+    // Stop click has nothing to cancel is as small as the IPC hop that
+    // carries it. `connection_for_request` reads SQLite, and doing that
+    // first meant a Stop pressed early in a fetch arrived while this id was
+    // still unknown. `FetchCancellations::cancel` now records such a cancel
+    // regardless, so this ordering is belt to that braces rather than the
+    // whole fix.
     let cancelled = state.fetch_cancellations.begin(&request_id);
+    let connection = match connection_for_request(&state, &id).await {
+        Ok(connection) => connection,
+        Err(err) => {
+            // Nothing else will call `finish` for this id now.
+            state.fetch_cancellations.finish(&request_id);
+            return Err(err);
+        }
+    };
+    crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
     let forward_task = {
         let app = app.clone();
         let topic = topic.clone();
         let request_id = request_id.clone();
+        let cancelled = std::sync::Arc::clone(&cancelled);
         tokio::spawn(async move {
             let mut count = 0usize;
             while let Some(message) = rx.recv().await {
+                // Stopping the poll loop isn't the whole of stopping: whatever
+                // it had already queued here would still be serialized, sent
+                // to a Data tab that is discarding it, and logged as "fetched
+                // ... so far" — so Stop looked like it had been ignored for as
+                // long as the backlog took to drain.
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
                 count += 1;
                 let _ = app.emit(
                     "messages-batch",
@@ -501,6 +532,7 @@ pub async fn connection_fetch_messages(
         })
     };
 
+    let was_cancelled = std::sync::Arc::clone(&cancelled);
     let result = state
         .kafka
         .fetch_messages(
@@ -510,24 +542,49 @@ pub async fn connection_fetch_messages(
             Some(tx),
             Duration::from_millis(read_timeout_ms),
             max_message_size_bytes,
+            max_total_payload_bytes,
             cancelled,
         )
         .await;
     let _ = forward_task.await;
     state.fetch_cancellations.finish(&request_id);
+    let was_cancelled = was_cancelled.load(std::sync::atomic::Ordering::Relaxed);
     record_auth_outcome(&state, &id, &result);
 
     match result {
         Ok(fetch_result) => {
+            // Says so explicitly when the user stopped it. Without this the
+            // last thing in the panel was an ordinary "Fetched N of M" line,
+            // which reads as the fetch having run to completion regardless of
+            // the Stop that ended it.
             crate::logging::emit_log(
                 &app,
                 "info",
-                format!(
-                    "Fetched {} of {} matching messages for topic \"{topic}\"",
-                    fetch_result.messages.len(),
-                    fetch_result.total_matching
-                ),
+                if was_cancelled {
+                    format!(
+                        "Stopped fetching messages for topic \"{topic}\" after {} message(s)",
+                        fetch_result.messages.len()
+                    )
+                } else {
+                    format!(
+                        "Fetched {} of {} matching messages for topic \"{topic}\"",
+                        fetch_result.messages.len(),
+                        fetch_result.total_matching
+                    )
+                },
             );
+            if fetch_result.stopped_at_byte_budget {
+                crate::logging::emit_log(
+                    &app,
+                    "warn",
+                    format!(
+                        "Fetch for topic \"{topic}\" stopped after reading {} MB — raise \
+                         General settings > Messages > Max Total Fetch Size, or narrow the filter, \
+                         to pull more.",
+                        fetch_result.payload_bytes_read / (1024 * 1024)
+                    ),
+                );
+            }
             if let Some(poll_error) = &fetch_result.poll_error {
                 crate::logging::emit_log(
                     &app,

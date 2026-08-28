@@ -1,4 +1,5 @@
 import { MessageFilter } from "../../lib/tauri";
+import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 
 /** Editable form state for the topic Data tab's filter inputs. */
 export interface FilterFormState {
@@ -96,5 +97,9 @@ export function toMessageFilter(form: FilterFormState): MessageFilter {
     toTimestampMs: parseDate(form.toDate),
     offset: parsePositiveInt(form.offset),
     includePayload: form.includePayload,
+    // Never the whole payload: this filter only ever feeds the grid, whose
+    // Value column shows one line and whose search reads no further than
+    // this. The full bytes are fetched per message, when one is opened.
+    maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
   };
 }

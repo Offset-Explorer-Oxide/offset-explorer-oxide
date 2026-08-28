@@ -141,6 +141,48 @@ pub fn distribute_total_budget(
 /// monotonically non-decreasing with timestamp within a partition. `None`
 /// means that source wasn't set at all; the result is `None` only when
 /// neither was.
+/// A fetch's default ceiling on how many payload bytes to read from the
+/// broker before stopping, when the caller doesn't set one.
+///
+/// Every other cap on a fetch counts messages, which on this app's problem
+/// topics says nothing about cost: a "1,000 message" browse of 3 MB records
+/// is a 3 GB read, and nothing in the filter form hints at that. Half a
+/// gigabyte is far more than an interactive browse needs and still bounds
+/// the pathological case to something a desktop app can hold and a user is
+/// willing to wait for.
+pub const DEFAULT_MAX_TOTAL_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
+/// How much of a payload to actually carry back to the frontend.
+///
+/// The Data tab's grid draws one line per row and searches only the first
+/// few KB of a value, so the rest of a multi-megabyte payload is fetched,
+/// base64-encoded, serialized, shipped across the IPC boundary and retained
+/// by the webview purely to be ignored. Cutting it here is what keeps a
+/// large fetch inside the renderer's memory ceiling — the full bytes are
+/// still one click away, fetched for the single message being opened.
+///
+/// `None` means "the whole payload", which is what that single-message
+/// fetch asks for.
+pub fn payload_preview_slice(payload: &[u8], max_bytes: Option<u32>) -> &[u8] {
+    match max_bytes {
+        Some(max) => &payload[..payload.len().min(max as usize)],
+        None => payload,
+    }
+}
+
+/// Whether a fetch that has read `bytes_read` payload bytes should stop.
+///
+/// Deliberately `>=` and deliberately checked *after* a message has been
+/// taken: a budget checked beforehand would drop any record bigger than the
+/// remaining allowance, and a single record bigger than the whole budget
+/// would make the fetch return nothing at all — which looks like a broken
+/// topic rather than a capped read. Taking the message first means the
+/// budget always yields at least one row and is overshot by at most one
+/// message.
+pub fn byte_budget_reached(bytes_read: u64, budget: Option<u64>) -> bool {
+    budget.is_some_and(|budget| bytes_read >= budget)
+}
+
 pub fn combined_start_offset(explicit_offset: Option<i64>, from_timestamp_offset: Option<i64>) -> Option<i64> {
     match (explicit_offset, from_timestamp_offset) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -316,5 +358,50 @@ mod tests {
         // "timestamp >= from" simultaneously.
         assert_eq!(combined_start_offset(Some(50), Some(80)), Some(80));
         assert_eq!(combined_start_offset(Some(80), Some(50)), Some(80));
+    }
+
+    #[test]
+    fn an_unbounded_preview_keeps_the_whole_payload() {
+        let payload = b"hello world";
+        assert_eq!(payload_preview_slice(payload, None), payload);
+    }
+
+    #[test]
+    fn a_payload_shorter_than_the_bound_is_kept_whole() {
+        let payload = b"hello";
+        assert_eq!(payload_preview_slice(payload, Some(4096)), payload);
+    }
+
+    #[test]
+    fn a_payload_longer_than_the_bound_is_cut_to_it() {
+        let payload = vec![b'x'; 10_000];
+        assert_eq!(payload_preview_slice(&payload, Some(4096)).len(), 4096);
+    }
+
+    #[test]
+    fn a_zero_byte_bound_keeps_nothing() {
+        let payload = b"hello";
+        assert!(payload_preview_slice(payload, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn no_budget_never_stops_the_fetch() {
+        assert!(!byte_budget_reached(u64::MAX, None));
+    }
+
+    #[test]
+    fn a_fetch_stops_once_it_has_read_its_budget() {
+        assert!(!byte_budget_reached(99, Some(100)));
+        assert!(byte_budget_reached(100, Some(100)));
+        assert!(byte_budget_reached(101, Some(100)));
+    }
+
+    /// Checked after a message is taken rather than before, so a single
+    /// record larger than the whole budget still comes back instead of the
+    /// fetch returning nothing at all and looking broken.
+    #[test]
+    fn a_single_message_over_the_whole_budget_is_still_returned_before_stopping() {
+        let one_huge_message = 500_000_000u64;
+        assert!(byte_budget_reached(one_huge_message, Some(1_024)));
     }
 }

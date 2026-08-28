@@ -167,7 +167,7 @@ describe("useTabsStore deleteTab", () => {
       ],
       activeTabId: "1",
     });
-    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.getState().setTabMessages(dataTabCacheKey("2", "1", "orders"), cached);
     useTabDataStore.getState().setTabTotalMatching(dataTabCacheKey("2", "1", "orders"), 5);
 
@@ -186,7 +186,7 @@ describe("useTabsStore deleteTab", () => {
       ],
       activeTabId: "1",
     });
-    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.getState().setTabMessages(dataTabCacheKey("1", "1", "orders"), cached);
 
     await useTabsStore.getState().deleteTab("2");
@@ -209,7 +209,7 @@ describe("useTabsStore deleteTab", () => {
     useMessageViewerStore.setState({
       byTab: {
         "2": {
-          message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+          message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
           connectionId: "1",
           topic: "orders",
         },
@@ -247,7 +247,7 @@ describe("useTabsStore deleteTab", () => {
       tabs: [{ id: "1", name: "Alpha", position: 0 }],
       activeTabId: "1",
     });
-    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const cached = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.getState().setTabMessages(dataTabCacheKey("1", "1", "orders"), cached);
 
     await useTabsStore.getState().deleteTab("1");

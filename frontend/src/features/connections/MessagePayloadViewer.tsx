@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { XmlTreeView } from "../../components/XmlTreeView";
-import { useDecodeAvro } from "./useClusterResources";
+import { useDecodeAvro, useFullPayload } from "./useClusterResources";
 import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
-import { base64ToBytes, base64ToDisplayText, bytesToText, tryParseJson, tryParseXml } from "./payloadDecoding";
+import {
+  base64ToBytes,
+  base64ToDisplayText,
+  bytesToText,
+  isPayloadTruncated,
+  tryParseJson,
+  tryParseXml,
+} from "./payloadDecoding";
 
 type PanelTabId = "headers" | "value";
 type ValueMode = "text" | "json" | "avro" | "xml";
@@ -55,7 +62,30 @@ export function MessagePayloadViewer() {
   const [expandedPayload, setExpandedPayload] = useState<string | null>(null);
   const decodeAvro = useDecodeAvro();
   const { mutate: runDecodeAvro } = decodeAvro;
-  const payloadBase64 = message?.payloadBase64 ?? null;
+
+  // The Data tab's grid rows carry only a bounded slice of each payload —
+  // that truncation is what keeps a large fetch inside the webview's memory
+  // ceiling. So what a row hands this component is usually a preview, and
+  // displaying or decoding the message means going back for the real bytes,
+  // for this one message.
+  const rowPayloadBase64 = message?.payloadBase64 ?? null;
+  const needsFullPayload = isPayloadTruncated(rowPayloadBase64, message?.payloadSizeBytes ?? null);
+  const fullPayload = useFullPayload(
+    connectionId,
+    topic,
+    message?.partition,
+    message?.offset,
+    needsFullPayload,
+  );
+  const fetchedPayloadBase64 =
+    fullPayload.data?.messages.find((m) => m.partition === message?.partition && m.offset === message?.offset)
+      ?.payloadBase64 ?? null;
+  // Falls back to the preview while the full fetch is in flight or if it
+  // fails — a truncated payload beats a blank pane — but that fallback is
+  // always labelled, because a few KB of a multi-megabyte message is
+  // otherwise indistinguishable from the whole of a small one.
+  const payloadBase64 = needsFullPayload ? (fetchedPayloadBase64 ?? rowPayloadBase64) : rowPayloadBase64;
+  const isShowingPreviewOnly = needsFullPayload && fetchedPayloadBase64 === null;
 
   // Re-decodes whenever a different message is viewed while Avro mode is
   // already active (e.g. clicking through grid rows without switching
@@ -163,6 +193,13 @@ export function MessagePayloadViewer() {
             </p>
           ) : (
             <>
+              {isShowingPreviewOnly && (
+                <p className="message-payload-truncation">
+                  {fullPayload.isError
+                    ? `Showing a preview only — the full payload could not be loaded: ${fullPayload.error?.message}`
+                    : "Loading the full payload — showing a preview until it arrives."}
+                </p>
+              )}
               <div className="message-payload-toggle" role="group" aria-label="Payload view mode">
                 <button
                   type="button"

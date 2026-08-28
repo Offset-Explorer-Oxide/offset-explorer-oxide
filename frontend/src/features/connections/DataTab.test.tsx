@@ -3,9 +3,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
+import { MessageFilter } from "../../lib/tauri";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { useTabDataStore } from "../workspace/useTabDataStore";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
+import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -236,10 +238,12 @@ describe("DataTab", () => {
           toTimestampMs: null,
           offset: null,
           includePayload: false,
+          maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
         },
         requestId: expect.any(String),
         readTimeoutMs: 10_000,
         maxMessageSizeBytes: 1_048_576,
+        maxTotalPayloadBytes: 536_870_912,
       }),
     );
   });
@@ -518,6 +522,42 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Offset")).not.toBeDisabled();
   });
 
+  /**
+   * The topic-switch case above only covers a switch this component survives.
+   * DataTab is unmounted outright by plenty of ordinary actions mid-fetch —
+   * `TopicDetailPanel` renders it as `{activeTab === "data" && <DataTab/>}`,
+   * so any other sub-tab drops it, as does selecting a broker, a partition or
+   * a consumer group, switching top-level tab, or closing the tab. With no
+   * unmount cleanup, every one of those left the backend polling the broker
+   * for a fetch whose UI no longer existed and which nothing could ever stop.
+   */
+  it("cancels the in-flight fetch when the tab is unmounted mid-fetch", async () => {
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    const cancelFetch = vi.fn(() => null);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages, connection_cancel_fetch: cancelFetch });
+    const user = userEvent.setup();
+    const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    unmount();
+
+    expect(cancelFetch).toHaveBeenCalledWith({ requestId });
+  });
+
+  it("does not cancel anything when unmounted without a fetch ever having run", () => {
+    const cancelFetch = vi.fn(() => null);
+    setInvokeHandlers({ connection_cancel_fetch: cancelFetch });
+    const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    unmount();
+
+    expect(cancelFetch).not.toHaveBeenCalled();
+  });
+
   it("keeps the loading overlay up while a fetch is running but has produced no rows yet", async () => {
     const pending = new Promise<{ messages: unknown[]; totalMatching: number }>(() => {});
     setInvokeHandlers({ connection_fetch_messages: () => pending });
@@ -652,8 +692,8 @@ describe("DataTab", () => {
 
   it("narrows the single loaded/total count to only messages matching the search text", async () => {
     const messages = [
-      { partition: 0, offset: 1, timestampMs: null, keyBase64: "b3JkZXItMQ==", payloadBase64: null, headers: [] },
-      { partition: 0, offset: 2, timestampMs: null, keyBase64: "b3RoZXI=", payloadBase64: null, headers: [] },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: "b3JkZXItMQ==", payloadBase64: null, payloadSizeBytes: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: "b3RoZXI=", payloadBase64: null, payloadSizeBytes: null, headers: [] },
     ];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
@@ -669,7 +709,9 @@ describe("DataTab", () => {
 
   it("warns that search is bounded when a loaded message is larger than the searched prefix", async () => {
     const big = btoa("a".repeat(5000));
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: big, headers: [] }];
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: big, payloadSizeBytes: 5000, headers: [] },
+    ];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -680,7 +722,7 @@ describe("DataTab", () => {
   });
 
   it("does not warn about bounded search when every loaded message fits within the searched prefix", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", headers: [] }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: null, headers: [] }];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -698,8 +740,8 @@ describe("DataTab", () => {
 
   it("shows every loaded message as matching the total when the fetch wasn't capped", async () => {
     const messages = [
-      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
-      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] },
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     ];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
     const user = userEvent.setup();
@@ -711,7 +753,7 @@ describe("DataTab", () => {
   });
 
   it("shows fewer loaded than total matching when a max-messages cap trimmed the fetch, so the user knows more remain", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 150 }) });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -722,7 +764,7 @@ describe("DataTab", () => {
   });
 
   it("keeps showing the last fetch's loaded/total count for a tab across an unmount/remount", async () => {
-    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 150 }) });
     const user = userEvent.setup();
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
@@ -761,6 +803,137 @@ describe("DataTab", () => {
     expect(useMessageViewerStore.getState().message).toEqual(message);
     expect(useMessageViewerStore.getState().connectionId).toBe("1");
     expect(useMessageViewerStore.getState().topic).toBe("orders");
+  });
+
+  // The crash this guards: a 1,000-row fetch of multi-megabyte records shipped
+  // ~4 GB of base64 across the IPC boundary (once per streamed message, then
+  // again in the fetch result) to fill a grid that shows one line per row, and
+  // the webview was killed holding two copies of it.
+  it("asks the backend for a bounded payload preview rather than whole payloads", async () => {
+    const fetchMessages = vi.fn((_args: { filter: MessageFilter }) => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    expect(fetchMessages.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+  });
+
+  it("bounds the per-row payload fetch too, since it only fills the grid's Value cell", async () => {
+    const initial = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: 9000 },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages: initial, totalMatching: 1 }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(lastGridProps?.rowData).toEqual(initial));
+
+    const perRowFetch = vi.fn((_args: { filter: MessageFilter }) => ({ messages: [], totalMatching: 0 }));
+    setInvokeHandlers({ connection_fetch_messages: perRowFetch });
+    await lastGridProps?.context.fetchPayload(initial[0]);
+
+    expect(perRowFetch.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+  });
+
+  // Counts say nothing about size on a topic of large records, so a fetch can
+  // stop for a reason the row count alone cannot express. Silently showing
+  // fewer rows would read as "that's all there is".
+  it("says so when the fetch stopped because it hit the byte budget", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [],
+        totalMatching: 5000,
+        stoppedAtByteBudget: true,
+        payloadBytesRead: 536_870_912,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent(/512 MB/);
+  });
+
+  it("shows no byte-budget notice for a fetch that finished within it", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [], totalMatching: 0, stoppedAtByteBudget: false }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument());
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("clears a previous fetch's byte-budget notice when Fetch runs again", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [],
+        totalMatching: 5000,
+        stoppedAtByteBudget: true,
+        payloadBytesRead: 536_870_912,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await screen.findByRole("status");
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [], totalMatching: 0, stoppedAtByteBudget: false }),
+    });
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+  });
+
+  // Driven by the size the backend reports, not by measuring the base64 it
+  // sent: that base64 is now itself a preview, so measuring it would report
+  // every truncated message as comfortably fitting.
+  it("warns that search is bounded using each message's real size, not the preview it was sent", async () => {
+    const messages = [
+      {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("a".repeat(VALUE_PREVIEW_BYTES)),
+        payloadSizeBytes: 3_145_728,
+      },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 1 }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByText(/Search examines only the first/)).toBeInTheDocument();
+  });
+
+  it("clears the viewed message when Fetch runs again, so the right panel doesn't keep showing a row from a superseded fetch", async () => {
+    let resolveFetch: (result: { messages: unknown[]; totalMatching: number }) => void = () => {};
+    const pending = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
+      resolveFetch = resolve;
+    });
+    setInvokeHandlers({ connection_fetch_messages: () => pending });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const message = { partition: 0, offset: 5, timestampMs: null, keyBase64: null, payloadBase64: "eA==" };
+    lastGridProps?.onRowClicked({ data: message });
+    expect(useMessageViewerStore.getState().message).toEqual(message);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(useMessageViewerStore.getState().message).toBeNull();
+
+    resolveFetch({ messages: [], totalMatching: 0 });
   });
 
   it("does not open the viewer when the row click originated from a button (e.g. Fetch payload)", () => {
@@ -803,10 +976,12 @@ describe("DataTab", () => {
         toTimestampMs: null,
         offset: 1,
         includePayload: true,
+        maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
       },
       requestId: expect.any(String),
       readTimeoutMs: 10_000,
       maxMessageSizeBytes: 1_048_576,
+      maxTotalPayloadBytes: 536_870_912,
     });
     expect(lastGridProps?.rowData).toEqual([
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },

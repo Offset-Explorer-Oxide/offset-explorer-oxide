@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { dataTabCacheKey, tabDataKey, tabDataPrefix, UNASSIGNED_TAB_KEY, useTabDataStore } from "./useTabDataStore";
 
-const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
 
 beforeEach(() => {
   useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
@@ -46,7 +46,7 @@ describe("useTabDataStore", () => {
   });
 
   it("keeps each tab's cached messages independent", () => {
-    const other = [{ partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] }];
+    const other = [{ partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
     useTabDataStore.getState().setTabMessages("tab-1", sample);
     useTabDataStore.getState().setTabMessages("tab-2", other);
 
@@ -70,7 +70,7 @@ describe("useTabDataStore", () => {
   });
 
   it("appends a streamed message after a tab's existing cached rows", () => {
-    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] };
     useTabDataStore.getState().setTabMessages("tab-1", sample);
     useTabDataStore.getState().appendTabMessage("tab-1", second);
 
@@ -78,8 +78,8 @@ describe("useTabDataStore", () => {
   });
 
   it("appends a whole batch of streamed messages in one update", () => {
-    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
-    const third = { partition: 2, offset: 3, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    const second = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] };
+    const third = { partition: 2, offset: 3, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] };
     useTabDataStore.getState().setTabMessages("tab-1", sample);
 
     useTabDataStore.getState().appendTabMessages("tab-1", [second, third]);
@@ -98,7 +98,7 @@ describe("useTabDataStore", () => {
   });
 
   it("keeps appended messages scoped to their own tab", () => {
-    const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+    const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] };
     useTabDataStore.getState().appendTabMessage("tab-1", sample[0]);
     useTabDataStore.getState().appendTabMessage("tab-2", other);
 

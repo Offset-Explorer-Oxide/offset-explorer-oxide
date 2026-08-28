@@ -94,12 +94,29 @@ describe("ResourceCategory", () => {
     expect(screen.getByText("payments")).toBeInTheDocument();
   });
 
-  it("calls onExpand exactly once, the first time it's expanded", async () => {
+  // A category's listing is fetched once and then held for the life of the
+  // app, so opening the category is the user's only way to ask for a current
+  // one. Firing just the first time — as this did — made that refresh work
+  // exactly once per session and silently never again.
+  it("calls onExpand every time it is opened, so each open can refresh the listing", async () => {
     const user = userEvent.setup();
     const { onExpand } = renderCategory();
 
     await user.click(screen.getByTestId("category-Topics"));
     await user.click(screen.getByTestId("category-Topics"));
+    await user.click(screen.getByTestId("category-Topics"));
+
+    // Three clicks: open, close, open.
+    expect(onExpand).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not call onExpand when the category is collapsed — closing asks for nothing", async () => {
+    const user = userEvent.setup();
+    const { onExpand } = renderCategory();
+
+    await user.click(screen.getByTestId("category-Topics"));
+    expect(onExpand).toHaveBeenCalledTimes(1);
+
     await user.click(screen.getByTestId("category-Topics"));
 
     expect(onExpand).toHaveBeenCalledTimes(1);

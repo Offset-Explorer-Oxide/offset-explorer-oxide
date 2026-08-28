@@ -205,7 +205,7 @@ describe("ConnectionTree", () => {
     expect(screen.getByTestId("category-Brokers")).toBeInTheDocument();
   });
 
-  it("eagerly loads Brokers/Topics/Consumers data as soon as connected, before the row is ever expanded", async () => {
+  it("eagerly loads Brokers/Topics data as soon as connected, before the row is ever expanded, but leaves Consumers alone", async () => {
     const isConnected = vi.fn(() => true);
     const listBrokers = vi.fn(() => []);
     const listTopics = vi.fn(() => []);
@@ -223,7 +223,10 @@ describe("ConnectionTree", () => {
 
     await waitFor(() => expect(listBrokers).toHaveBeenCalled());
     await waitFor(() => expect(listTopics).toHaveBeenCalled());
-    await waitFor(() => expect(listConsumerGroups).toHaveBeenCalled());
+    // Consumer groups are fetched only when that category is opened — the
+    // listing is the most expensive of the three and needs ACLs the other
+    // two don't.
+    expect(listConsumerGroups).not.toHaveBeenCalled();
   });
 
   it("keeps the resource tree hidden (but mounted, already loading) until the row is expanded", async () => {

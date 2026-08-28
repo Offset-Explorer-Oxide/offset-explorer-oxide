@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useMessageViewerStore } from "./useMessageViewerStore";
 
-const sample = { partition: 0, offset: 1, timestampMs: 123, keyBase64: "k", payloadBase64: "eA==", headers: [] };
+const sample = { partition: 0, offset: 1, timestampMs: 123, keyBase64: "k", payloadBase64: "eA==", payloadSizeBytes: null, headers: [] };
 
 beforeEach(() => {
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, activeTabId: null, byTab: {} });
@@ -43,7 +43,7 @@ describe("useMessageViewerStore", () => {
 });
 
 describe("useMessageViewerStore per-tab isolation", () => {
-  const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, headers: [] };
+  const other = { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] };
 
   it("keeps each tab's viewed message independent", () => {
     const store = useMessageViewerStore.getState();

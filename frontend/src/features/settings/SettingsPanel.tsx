@@ -50,6 +50,8 @@ function GeneralSettingsTab() {
   const brokerReadTimeoutMs = useGeneralSettingsStore((s) => s.brokerReadTimeoutMs);
   const setBrokerReadTimeoutMs = useGeneralSettingsStore((s) => s.setBrokerReadTimeoutMs);
   const maxMessageSizeBytes = useGeneralSettingsStore((s) => s.maxMessageSizeBytes);
+  const maxTotalFetchBytes = useGeneralSettingsStore((s) => s.maxTotalFetchBytes);
+  const setMaxTotalFetchBytes = useGeneralSettingsStore((s) => s.setMaxTotalFetchBytes);
   const setMaxMessageSizeBytes = useGeneralSettingsStore((s) => s.setMaxMessageSizeBytes);
 
   return (
@@ -97,6 +99,21 @@ function GeneralSettingsTab() {
             onChange={(e) => setMaxMessageSizeBytes(Number(e.target.value))}
           />
         </label>
+        <label className="dropdown-field">
+          <span>Max Total Fetch Size (MB)</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            aria-label="Max total fetch size (MB)"
+            value={Math.round(maxTotalFetchBytes / (1024 * 1024))}
+            onChange={(e) => setMaxTotalFetchBytes(Number(e.target.value) * 1024 * 1024)}
+          />
+        </label>
+        <p className="settings-panel__hint">
+          How much one Fetch reads before stopping. Every other limit on the Data tab counts messages, which says
+          nothing about size — on a topic of multi-megabyte records, "100 messages" can be several gigabytes.
+        </p>
       </section>
     </div>
   );
