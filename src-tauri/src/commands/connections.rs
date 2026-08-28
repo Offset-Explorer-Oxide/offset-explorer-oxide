@@ -2,7 +2,7 @@ use crate::state::AppState;
 use error_stack::ResultExt;
 use kafkaoxide_core::{
     partition_importable, select_for_export, AppError, Connection, ConnectionExportFile, ConnectionStatus,
-    NewConnection,
+    MessagesBatchEvent, NewConnection,
 };
 use kafkaoxide_kafka::BrokerSslConfig;
 use std::collections::HashSet;
@@ -443,18 +443,6 @@ pub async fn connection_count_topic_messages(
     record_auth_outcome(&state, &id, &result);
     log_broker_call(&app, "Counting topic messages", started, if result.is_ok() { "finished" } else { "failed" });
     Ok(result?)
-}
-
-/// One incrementally-fetched message, emitted on the `"messages-batch"`
-/// event as soon as it's polled from the broker. Tagged with the
-/// frontend-generated `request_id` passed into `connection_fetch_messages`
-/// so a Data tab that started a second fetch (or was stopped) can filter
-/// out late-arriving events from a superseded request instead of having
-/// them corrupt its current rows.
-#[derive(Clone, serde::Serialize)]
-struct MessagesBatchEvent {
-    request_id: String,
-    message: kafkaoxide_core::TopicMessage,
 }
 
 /// How often (in messages received) to log fetch progress to the Logs
