@@ -43,7 +43,7 @@ const valuePreviewCache = new WeakMap<TopicMessage, string>();
 
 /**
  * The Value column's text: a bounded preview of the payload (see
- * `decodeValuePreview`), blank until "Load message payload" is checked and a
+ * `decodeValuePreview`), blank until "Fetch message payload" is checked and a
  * fetch has run. The full payload is decoded only when a row is opened in
  * `MessagePayloadViewer`.
  *
@@ -448,7 +448,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           onChange={(e) => updateForm({ includePayload: e.target.checked })}
           disabled={isPlaying}
         />
-        Load message payload
+        Fetch message payload
       </label>
 
       {error && (

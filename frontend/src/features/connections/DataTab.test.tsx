@@ -213,9 +213,9 @@ describe("DataTab", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
   });
 
-  it("shows a 'Load message payload' checkbox below Fetch/Stop, unchecked by default", () => {
+  it("shows a 'Fetch message payload' checkbox below Fetch/Stop, unchecked by default", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    expect(screen.getByLabelText("Load message payload")).not.toBeChecked();
+    expect(screen.getByLabelText("Fetch message payload")).not.toBeChecked();
   });
 
   it("fetches messages with a default-capped, no-payload filter when Fetch is clicked with no filters touched", async () => {
@@ -267,7 +267,7 @@ describe("DataTab", () => {
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    await user.click(screen.getByLabelText("Load message payload"));
+    await user.click(screen.getByLabelText("Fetch message payload"));
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     await waitFor(() =>
@@ -449,7 +449,7 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Offset")).toBeDisabled();
     expect(screen.getByLabelText("From")).toBeDisabled();
     expect(screen.getByLabelText("To")).toBeDisabled();
-    expect(screen.getByLabelText("Load message payload")).toBeDisabled();
+    expect(screen.getByLabelText("Fetch message payload")).toBeDisabled();
   });
 
   it("re-enables the filters once the fetch finishes", async () => {

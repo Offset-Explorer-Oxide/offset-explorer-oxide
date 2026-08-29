@@ -168,6 +168,41 @@ describe("ConsumerGroupDetailPanel", () => {
     expect(screen.getByText("payments")).toBeInTheDocument();
   });
 
+  it("clears the previous group's lag table when switching groups (App remounts via key)", async () => {
+    setInvokeHandlers({
+      connection_fetch_consumer_group_lag: ({ groupId }: { groupId: string }) =>
+        groupId === "billing-service"
+          ? {
+              state: "Stable",
+              partitions: [
+                { topic: "orders", partition: 0, currentOffset: 100, logEndOffset: 100, lag: 0, clientId: null, clientHost: null },
+              ],
+            }
+          : { state: "Stable", partitions: [] },
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    // Mirrors how App.tsx renders this panel: keyed by group so switching
+    // selection remounts it instead of reusing the previous group's state.
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ConsumerGroupDetailPanel key="billing-service" connectionId="1" groupId="billing-service" />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("orders")).toBeInTheDocument();
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ConsumerGroupDetailPanel key="payments-service" connectionId="1" groupId="payments-service" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("payments-service")).toBeInTheDocument();
+    expect(screen.queryByText("orders")).not.toBeInTheDocument();
+  });
+
   it("applies a warning class at 1,000+ lag and a critical class at 10,000+ lag", async () => {
     setInvokeHandlers({
       connection_fetch_consumer_group_lag: () => ({

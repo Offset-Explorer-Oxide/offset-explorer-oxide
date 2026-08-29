@@ -233,7 +233,11 @@ function AppShell() {
                       />
                     )}
                     {selection?.type === "consumerGroup" && (
-                      <ConsumerGroupDetailPanel connectionId={selection.connectionId} groupId={selection.groupId} />
+                      <ConsumerGroupDetailPanel
+                        key={`${selection.connectionId}-${selection.groupId}`}
+                        connectionId={selection.connectionId}
+                        groupId={selection.groupId}
+                      />
                     )}
                     {!selection && <p className="app-main-placeholder">Select a cluster, broker, or topic.</p>}
                   </>
