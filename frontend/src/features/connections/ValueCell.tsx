@@ -8,7 +8,7 @@ export interface ValueCellContext {
 }
 
 /**
- * The Data tab's Value column. Rows fetched without "Load message payload"
+ * The Data tab's Value column. Rows fetched without "Fetch message payload"
  * checked have no payload to show — rather than leaving the cell blank,
  * offer a per-row way to go back and fetch just that one message's payload
  * instead of re-running the whole filter with the checkbox on.

@@ -12,7 +12,7 @@ export interface FilterFormState {
   toDate: string;
   /** An explicit starting offset — takes priority over fromDate on the backend when both are set. */
   offset: string;
-  /** The "Load message payload" checkbox below Play. */
+  /** The "Fetch message payload" checkbox below Fetch. */
   includePayload: boolean;
 }
 

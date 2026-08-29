@@ -210,7 +210,7 @@ export function MessagePayloadViewer() {
         <div role="tabpanel" aria-label="Value">
           {text === null ? (
             <p className="resizable-pane-placeholder">
-              Payload wasn't loaded for this fetch — check "Load message payload" below Play, then Play again.
+              Payload wasn't loaded for this fetch — check "Fetch message payload" below Fetch, then Fetch again.
             </p>
           ) : (
             <>

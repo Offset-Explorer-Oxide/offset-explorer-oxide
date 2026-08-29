@@ -468,13 +468,13 @@ describe("MessagePayloadViewer", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/no schema registry configured/i);
   });
 
-  it("shows a hint to enable 'Load message payload' when payloadBase64 is null", () => {
+  it("shows a hint to enable 'Fetch message payload' when payloadBase64 is null", () => {
     useMessageViewerStore.setState({
       message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
     });
     renderWithClient(<MessagePayloadViewer />);
 
-    expect(screen.getByText(/load message payload/i)).toBeInTheDocument();
+    expect(screen.getByText(/fetch message payload/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Text" })).not.toBeInTheDocument();
   });
 
