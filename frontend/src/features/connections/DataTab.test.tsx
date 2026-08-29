@@ -7,7 +7,7 @@ import { MessageFilter } from "../../lib/tauri";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { useTabDataStore } from "../workspace/useTabDataStore";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
-import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { MAX_INLINE_PAYLOAD_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -238,7 +238,7 @@ describe("DataTab", () => {
           toTimestampMs: null,
           offset: null,
           includePayload: false,
-          maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
+          maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
         },
         requestId: expect.any(String),
         readTimeoutMs: 10_000,
@@ -818,10 +818,10 @@ describe("DataTab", () => {
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
-    expect(fetchMessages.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+    expect(fetchMessages.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(MAX_INLINE_PAYLOAD_BYTES);
   });
 
-  it("bounds the per-row payload fetch too, since it only fills the grid's Value cell", async () => {
+  it("bounds the per-row payload fetch too, at the bound that lets the viewer open it without refetching", async () => {
     const initial = [
       { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: 9000 },
     ];
@@ -835,7 +835,7 @@ describe("DataTab", () => {
     setInvokeHandlers({ connection_fetch_messages: perRowFetch });
     await lastGridProps?.context.fetchPayload(initial[0]);
 
-    expect(perRowFetch.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+    expect(perRowFetch.mock.calls[0][0].filter.maxPayloadPreviewBytes).toBe(MAX_INLINE_PAYLOAD_BYTES);
   });
 
   // Counts say nothing about size on a topic of large records, so a fetch can
@@ -976,7 +976,7 @@ describe("DataTab", () => {
         toTimestampMs: null,
         offset: 1,
         includePayload: true,
-        maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
+        maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
       },
       requestId: expect.any(String),
       readTimeoutMs: 10_000,

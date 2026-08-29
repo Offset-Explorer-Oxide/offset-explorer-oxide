@@ -31,6 +31,23 @@ const PANEL_TABS: { id: PanelTabId; label: string }[] = [
   { id: "value", label: "Value" },
 ];
 
+/**
+ * Shown by the structured views while the real bytes are still coming.
+ *
+ * Those views can't render a truncated preview honestly: `JSON.parse` on a
+ * payload cut mid-document fails, and an Avro decode of one fails at the
+ * broker's expense. Both used to report that failure — "Payload is not valid
+ * JSON", an Avro error — for as long as the fetch took, which reads as a
+ * broken message rather than a pending one.
+ */
+function PayloadLoadingSpinner() {
+  return (
+    <p className="message-payload-truncation">
+      <span className="spinner" role="status" aria-label="Loading the full payload" />
+    </p>
+  );
+}
+
 function CloseIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -86,15 +103,19 @@ export function MessagePayloadViewer() {
   // otherwise indistinguishable from the whole of a small one.
   const payloadBase64 = needsFullPayload ? (fetchedPayloadBase64 ?? rowPayloadBase64) : rowPayloadBase64;
   const isShowingPreviewOnly = needsFullPayload && fetchedPayloadBase64 === null;
+  // A failed fetch is not still in flight: the banner above says why, and the
+  // views below go back to reporting what they actually have rather than
+  // spinning for a payload that is never going to arrive.
+  const isLoadingFullPayload = isShowingPreviewOnly && !fullPayload.isError;
 
   // Re-decodes whenever a different message is viewed while Avro mode is
   // already active (e.g. clicking through grid rows without switching
   // modes each time) — not just on the button click that first selects it.
   useEffect(() => {
-    if (mode === "avro" && payloadBase64 && connectionId && topic) {
+    if (mode === "avro" && !isLoadingFullPayload && payloadBase64 && connectionId && topic) {
       runDecodeAvro({ connectionId, topic, payloadBase64 });
     }
-  }, [mode, payloadBase64, connectionId, topic, runDecodeAvro]);
+  }, [mode, payloadBase64, connectionId, topic, runDecodeAvro, isLoadingFullPayload]);
 
 
   // Decoding is memoised on the payload itself, not left to run inline.
@@ -245,7 +266,9 @@ export function MessagePayloadViewer() {
                 </>
               )}
               {mode === "json" &&
-                (json !== undefined ? (
+                (isLoadingFullPayload ? (
+                  <PayloadLoadingSpinner />
+                ) : json !== undefined ? (
                   // Keyed by payload so every message gets a fresh tree.
                   // `JsonNode` decides whether to start expanded in a
                   // `useState` initialiser, which React runs once per mounted
@@ -265,7 +288,8 @@ export function MessagePayloadViewer() {
                 ) : (
                   <p role="alert">Payload is not valid JSON.</p>
                 ))}
-              {mode === "avro" && (
+              {mode === "avro" && isLoadingFullPayload && <PayloadLoadingSpinner />}
+              {mode === "avro" && !isLoadingFullPayload && (
                 <>
                   {decodeAvro.isPending && <p>Decoding…</p>}
                   {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
@@ -283,7 +307,9 @@ export function MessagePayloadViewer() {
                 </>
               )}
               {mode === "xml" &&
-                (xml !== undefined ? (
+                (isLoadingFullPayload ? (
+                  <PayloadLoadingSpinner />
+                ) : xml !== undefined ? (
                   <XmlTreeView
                     value={xml}
                     onOpenInNewTab={() => {

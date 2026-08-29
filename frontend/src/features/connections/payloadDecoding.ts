@@ -169,3 +169,53 @@ export function isPayloadTruncated(payloadBase64: string | null, payloadSizeByte
   if (payloadBase64 === null || payloadSizeBytes === null) return false;
   return base64DecodedLength(payloadBase64) < payloadSizeBytes;
 }
+
+/**
+ * The most of any one payload a grid fetch carries back.
+ *
+ * Deliberately not [`VALUE_PREVIEW_BYTES`], which the two used to share.
+ * That constant is sized for what a *grid cell* decodes and what the search
+ * box reads — 4 KB, ample for both — and using it as the transport bound too
+ * meant every row of any ordinary JSON or Avro topic arrived truncated. The
+ * payload viewer then had nothing whole to show, so opening a message went
+ * back to the broker for its real bytes: a fresh consumer, a TLS and SASL
+ * handshake, metadata and watermarks, on every single click. Carrying more
+ * per row costs memory once, at fetch time, and makes opening anything that
+ * fits instant again.
+ *
+ * 256 KB covers ordinary records many times over while still cutting the
+ * multi-megabyte payloads this bound exists to cut.
+ */
+export const MAX_INLINE_PAYLOAD_BYTES = 256 * 1024;
+
+/**
+ * Total payload bytes one fetch's rows may hold in the webview at once.
+ *
+ * This is what keeps [`MAX_INLINE_PAYLOAD_BYTES`] from being the memory bug
+ * again. A bound applied per row says nothing about what a fetch costs in
+ * aggregate — 1,000 rows of multi-megabyte records is what killed the
+ * webview — so the per-row bound is priced out of this budget rather than
+ * fixed: the more rows a fetch asks for, the less of each payload it
+ * carries.
+ */
+export const PAYLOAD_RETENTION_BUDGET_BYTES = 64 * 1024 * 1024;
+
+/**
+ * How much of each payload a fetch of `estimatedRows` rows may carry.
+ *
+ * Floored at [`VALUE_PREVIEW_BYTES`] and capped at
+ * [`MAX_INLINE_PAYLOAD_BYTES`], so the bytes one fetch retains never exceed
+ * `max(PAYLOAD_RETENTION_BUDGET_BYTES, rows * VALUE_PREVIEW_BYTES)` — and
+ * that second term is exactly what a flat `VALUE_PREVIEW_BYTES` bound
+ * retained. A fetch can therefore never hold more than the code this
+ * replaced, whatever the user types into the filter form.
+ *
+ * `null` rows means the count isn't knowable from the filter alone (no
+ * overall budget and no explicit partition list, so it is the topic's
+ * partition count that decides), which takes the conservative floor.
+ */
+export function inlinePayloadBytesFor(estimatedRows: number | null): number {
+  if (estimatedRows === null || estimatedRows <= 0) return VALUE_PREVIEW_BYTES;
+  const perRow = Math.floor(PAYLOAD_RETENTION_BUDGET_BYTES / estimatedRows);
+  return Math.min(MAX_INLINE_PAYLOAD_BYTES, Math.max(VALUE_PREVIEW_BYTES, perRow));
+}

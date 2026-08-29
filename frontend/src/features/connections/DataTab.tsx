@@ -15,7 +15,13 @@ import {
   validateMaxMessagesPerPartition,
 } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
-import { base64ToDisplayText, decodeValuePreview, exceedsValuePreview, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import {
+  base64ToDisplayText,
+  decodeValuePreview,
+  exceedsValuePreview,
+  MAX_INLINE_PAYLOAD_BYTES,
+  VALUE_PREVIEW_BYTES,
+} from "./payloadDecoding";
 import { api } from "../../lib/tauri";
 import { useFetchMessages } from "./useClusterResources";
 import { ValueCell, ValueCellContext } from "./ValueCell";
@@ -343,10 +349,12 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         toTimestampMs: null,
         offset: row.offset,
         includePayload: true,
-        // Bounded like the grid's own fetch: this only fills the Value
-        // column's cell for a row that came back without one. Opening the
-        // message is what fetches the real bytes, in the payload viewer.
-        maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
+        // Bounded, but at the whole-row bound rather than the grid cell's:
+        // this is one message, so the retention budget the grid fetch
+        // divides between hundreds of rows is spent on it alone — and a row
+        // filled in here should open in the viewer without needing a second
+        // trip to the broker, exactly like a row the grid fetch brought back.
+        maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
       },
       // Own, unmatched request id — this single-row fetch shouldn't be
       // appended to the grid via the "messages-batch" listener above (which

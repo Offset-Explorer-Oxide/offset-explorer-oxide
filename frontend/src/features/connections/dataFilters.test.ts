@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
-import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { MAX_INLINE_PAYLOAD_BYTES, PAYLOAD_RETENTION_BUDGET_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 
 describe("emptyFilterForm", () => {
   it("pre-fills both count caps, and leaves every other field blank with includePayload unchecked", () => {
@@ -27,7 +27,7 @@ describe("toMessageFilter", () => {
       toTimestampMs: null,
       offset: null,
       includePayload: false,
-      maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
+      maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
     });
   });
 
@@ -36,17 +36,67 @@ describe("toMessageFilter", () => {
     expect(toMessageFilter(form).maxMessagesPerPartition).toBeNull();
   });
 
-  // The grid draws one line per row and its search only ever examines
-  // VALUE_PREVIEW_BYTES of a value, so asking the backend for whole payloads
-  // shipped gigabytes of base64 across the IPC boundary to render a few
-  // hundred KB of text — twice over, once streamed and once in the fetch
-  // result — and the webview was killed holding it. The bound has to travel
-  // with every fetch this form produces, checkbox on or off.
-  it("always bounds the payload each row carries to what the grid can actually show", () => {
-    expect(toMessageFilter(emptyFilterForm()).maxPayloadPreviewBytes).toBe(VALUE_PREVIEW_BYTES);
+  // Asking the backend for whole payloads shipped gigabytes of base64 across
+  // the IPC boundary to render a few hundred KB of text — twice over, once
+  // streamed and once in the fetch result — and the webview was killed
+  // holding it. A bound has to travel with every fetch this form produces,
+  // checkbox on or off.
+  it("always bounds the payload each row carries", () => {
+    expect(toMessageFilter(emptyFilterForm()).maxPayloadPreviewBytes).not.toBeNull();
     expect(
       toMessageFilter({ ...emptyFilterForm(), includePayload: true }).maxPayloadPreviewBytes,
+    ).not.toBeNull();
+  });
+
+  // Regression test for opening a message taking seconds. The bound above
+  // used to be VALUE_PREVIEW_BYTES — 4 KB, what a *grid cell* decodes — so
+  // every row of any ordinary JSON or Avro topic arrived truncated, and
+  // opening one had to go back to the broker for the real bytes: a fresh
+  // consumer, a TLS and SASL handshake, metadata and watermarks, on every
+  // click. A default fetch is 100 rows, which fits far more than that per
+  // row inside the retention budget.
+  it("gives each row enough payload for the viewer to open it without a second fetch", () => {
+    expect(toMessageFilter(emptyFilterForm()).maxPayloadPreviewBytes).toBe(MAX_INLINE_PAYLOAD_BYTES);
+  });
+
+  // The budget is what keeps the line above from being the memory bug again:
+  // the more rows a fetch asks for, the less of each payload it carries.
+  it("shrinks the per-row bound as the row budget grows, so the total stays inside the retention budget", () => {
+    const rows = 512;
+    const filter = toMessageFilter({ ...emptyFilterForm(), maxTotalMessages: String(rows) });
+    expect(filter.maxPayloadPreviewBytes).toBe(PAYLOAD_RETENTION_BUDGET_BYTES / rows);
+    expect(filter.maxPayloadPreviewBytes! * rows).toBeLessThanOrEqual(PAYLOAD_RETENTION_BUDGET_BYTES);
+  });
+
+  // The floor, and the reason this can never retain more than the code it
+  // replaced: a fetch big enough to price each row below the grid's own
+  // preview gets exactly the old bound back.
+  it("never drops below what the grid cell decodes, however many rows are asked for", () => {
+    expect(
+      toMessageFilter({ ...emptyFilterForm(), maxTotalMessages: "1000000" }).maxPayloadPreviewBytes,
     ).toBe(VALUE_PREVIEW_BYTES);
+  });
+
+  // With no overall budget and no explicit partition list the row count is
+  // whatever the topic's partition count makes it, which this form cannot
+  // see — so it stays at the old conservative bound rather than guessing.
+  it("stays at the grid's bound when the fetch has no knowable row count", () => {
+    expect(
+      toMessageFilter({ ...emptyFilterForm(), maxTotalMessages: "" }).maxPayloadPreviewBytes,
+    ).toBe(VALUE_PREVIEW_BYTES);
+  });
+
+  // An explicit partition list does make it knowable, without an overall budget.
+  it("derives the row count from an explicit partition list when there is no overall budget", () => {
+    const filter = toMessageFilter({
+      ...emptyFilterForm(),
+      maxTotalMessages: "",
+      maxMessagesPerPartition: "100",
+      partitions: "0, 1, 2, 3",
+    });
+    // 100 per partition x 4 partitions = 400 rows, priced out of the budget.
+    expect(filter.maxPayloadPreviewBytes).toBe(Math.floor(PAYLOAD_RETENTION_BUDGET_BYTES / 400));
+    expect(filter.maxPayloadPreviewBytes).toBeGreaterThan(VALUE_PREVIEW_BYTES);
   });
 
   it("carries includePayload through when checked", () => {

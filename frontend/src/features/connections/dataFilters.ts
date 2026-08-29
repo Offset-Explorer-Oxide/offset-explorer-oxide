@@ -1,5 +1,5 @@
 import { MessageFilter } from "../../lib/tauri";
-import { VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { inlinePayloadBytesFor } from "./payloadDecoding";
 
 /** Editable form state for the topic Data tab's filter inputs. */
 export interface FilterFormState {
@@ -97,9 +97,27 @@ export function toMessageFilter(form: FilterFormState): MessageFilter {
     toTimestampMs: parseDate(form.toDate),
     offset: parsePositiveInt(form.offset),
     includePayload: form.includePayload,
-    // Never the whole payload: this filter only ever feeds the grid, whose
-    // Value column shows one line and whose search reads no further than
-    // this. The full bytes are fetched per message, when one is opened.
-    maxPayloadPreviewBytes: VALUE_PREVIEW_BYTES,
+    // Never the whole payload — that is what killed the webview — but enough
+    // of one that opening a message doesn't have to go back to the broker
+    // for it. Priced out of a fixed retention budget, so a bigger fetch
+    // carries less of each row rather than more in total.
+    maxPayloadPreviewBytes: inlinePayloadBytesFor(estimatedFetchRows(form)),
   };
+}
+
+/**
+ * How many rows this filter will bring back, as far as the form can tell.
+ *
+ * `null` when it can't tell: with no overall budget and no explicit
+ * partition list the count is the per-partition cap times however many
+ * partitions the topic has, which is not in the form.
+ */
+export function estimatedFetchRows(form: FilterFormState): number | null {
+  const perPartition = parsePositiveInt(form.maxMessagesPerPartition);
+  const total = parsePositiveInt(form.maxTotalMessages);
+  const partitions = parsePartitions(form.partitions);
+  const byPartition =
+    perPartition !== null && partitions !== null ? perPartition * partitions.length : null;
+  if (total !== null && byPartition !== null) return Math.min(total, byPartition);
+  return total ?? byPartition;
 }

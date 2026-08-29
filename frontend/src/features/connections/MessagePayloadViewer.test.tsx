@@ -127,6 +127,138 @@ describe("MessagePayloadViewer", () => {
     expect(screen.queryByText(/Loading the full payload/)).not.toBeInTheDocument();
   });
 
+  // A truncated preview is not the message: parsing it reports "not valid
+  // JSON" (and Avro decoding fails outright) for as long as the real bytes
+  // take to arrive, which reads as the payload being broken rather than as
+  // still loading. The structured views wait instead.
+  it("shows a spinner rather than an invalid-JSON alert while the full payload is still loading", async () => {
+    setInvokeHandlers({ connection_fetch_messages: () => new Promise(() => {}) });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa('{"id":1,"nam'),
+        payloadSizeBytes: 64,
+        headers: [],
+      },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+
+    expect(await screen.findByRole("status", { name: /loading the full payload/i })).toBeInTheDocument();
+    expect(screen.queryByText(/not valid json/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the JSON tree once the full payload arrives", async () => {
+    let resolveFetch: (result: unknown) => void = () => {};
+    setInvokeHandlers({
+      connection_fetch_messages: () => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa('{"id":1,"nam'),
+        payloadSizeBytes: 24,
+        headers: [],
+      },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+    resolveFetch({
+      messages: [
+        {
+          partition: 0,
+          offset: 7,
+          timestampMs: null,
+          keyBase64: null,
+          payloadBase64: btoa('{"id":1,"name":"orders"}'),
+          payloadSizeBytes: 24,
+          headers: [],
+        },
+      ],
+      totalMatching: 1,
+    });
+
+    expect(await screen.findByText("id:")).toBeInTheDocument();
+    expect(screen.getByText('"orders"')).toBeInTheDocument();
+  });
+
+  // Decoding a cut Avro payload doesn't just look wrong, it costs a backend
+  // round trip to be told so. The decode waits for the real bytes.
+  it("shows a spinner and does not attempt an Avro decode while the full payload is still loading", async () => {
+    const decodeAvro = vi.fn(() => ({ id: 1 }));
+    setInvokeHandlers({
+      connection_fetch_messages: () => new Promise(() => {}),
+      connection_decode_avro: decodeAvro,
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("avro-pre"),
+        payloadSizeBytes: 64,
+        headers: [],
+      },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "Avro" }));
+
+    expect(await screen.findByRole("status", { name: /loading the full payload/i })).toBeInTheDocument();
+    expect(decodeAvro).not.toHaveBeenCalled();
+  });
+
+  // The spinner means "still coming". A fetch that failed is not still
+  // coming, and the error banner already says so, so the view goes back to
+  // reporting what it actually has rather than spinning forever.
+  it("stops spinning and reports the payload it has when the full-payload fetch fails", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => {
+        throw new Error("broker unreachable");
+      },
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa('{"id":1,"nam'),
+        payloadSizeBytes: 64,
+        headers: [],
+      },
+    });
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+
+    expect(await screen.findByText(/not valid json/i)).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /loading the full payload/i })).not.toBeInTheDocument();
+  });
+
   it("does not re-fetch a payload the row already carried in full", async () => {
     const fetchMessages = vi.fn(() => ({ messages: [], totalMatching: 0 }));
     setInvokeHandlers({ connection_fetch_messages: fetchMessages });
