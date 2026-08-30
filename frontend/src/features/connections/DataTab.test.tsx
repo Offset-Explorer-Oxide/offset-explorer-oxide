@@ -778,6 +778,37 @@ describe("DataTab", () => {
     expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument();
   });
 
+  it("resets the loaded/matching count when a new fetch starts, instead of keeping the previous fetch's stale total", async () => {
+    let resolveSecond: (result: { messages: unknown[]; totalMatching: number }) => void = () => {};
+    const second = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMessages = vi
+      .fn()
+      .mockResolvedValueOnce({
+        messages: [
+          { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
+        ],
+        totalMatching: 6000,
+      })
+      .mockReturnValueOnce(second);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("1 loaded of 6,000 matching")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    // The second fetch hasn't resolved yet, but starting it should already
+    // have cleared the first fetch's total rather than leaving "6000"
+    // displayed next to a grid that's about to show a different result.
+    await waitFor(() => expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument());
+
+    resolveSecond({ messages: [], totalMatching: 0 });
+  });
+
   it("excludes partition, offset, and timestamp from the quick filter, leaving only key and value searchable", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
@@ -857,6 +888,7 @@ describe("DataTab", () => {
 
     const notice = await screen.findByRole("status");
     expect(notice).toHaveTextContent(/512 MB/);
+    expect(notice).toHaveClass("data-tab-search-notice--warning");
   });
 
   it("shows no byte-budget notice for a fetch that finished within it", async () => {
