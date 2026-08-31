@@ -35,6 +35,10 @@ pub fn build_client_config(
     let mut config = ClientConfig::new();
     config.set("bootstrap.servers", bootstrap_servers);
     config.set("security.protocol", security_protocol.to_string().to_lowercase());
+    // Set here rather than at each call site so it covers every client the
+    // app builds — the pooled metadata consumer, each fetch's own consumer,
+    // the admin client, and the modal's Test probe alike. See `CLIENT_ID`.
+    config.set("client.id", client_id());
     apply_connection_attempt_limits(&mut config);
     apply_connection_footprint_limits(&mut config);
 
@@ -66,6 +70,65 @@ pub fn build_client_config(
     }
 
     config
+}
+
+/// What this app calls itself when it talks to a broker.
+///
+/// librdkafka defaults `client.id` to the bare string `rdkafka`, which is
+/// the same value every other rdkafka-based producer, consumer and CLI tool
+/// on the cluster sends. That default costs an operator two things:
+///
+/// * **Attribution.** Broker request metrics, connection counts and quota
+///   violations are reported per client id. Under the default, load from
+///   this app is indistinguishable from load from anything else built on
+///   librdkafka.
+/// * **Control.** Kafka client quotas are keyed on client id (and
+///   principal). With a shared default the only quota an operator can apply
+///   to this app also throttles unrelated services — so in practice they
+///   cannot contain it at all short of blocking the user outright.
+///
+/// Deliberately *not* included: hostname or username. Both would help an
+/// operator, and both would send the user's machine identity to every
+/// cluster they connect to — including ones they do not control. Name and
+/// version are enough to attribute and throttle, which is the point.
+///
+/// The version is supplied at startup by [`set_app_version`] rather than
+/// compiled in from `CARGO_PKG_VERSION`: the crates in this workspace are all
+/// still at `0.1.0` and are not bumped per release, so the only true version
+/// of the app is the one in `tauri.conf.json` that Tauri reports at runtime.
+/// Baking in the crate version would have shipped `kafkaoxide/0.1.0` from
+/// every release — attributable, but useless for telling an operator (or a
+/// support thread) *which* build a user is running.
+fn client_id() -> &'static str {
+    APP_CLIENT_ID.get().map(String::as_str).unwrap_or(FALLBACK_CLIENT_ID)
+}
+
+/// Used until [`set_app_version`] runs, and by this crate's own tests, which
+/// exercise the config builders directly with no Tauri app around them.
+const FALLBACK_CLIENT_ID: &str = "kafkaoxide";
+
+static APP_CLIENT_ID: OnceLock<String> = OnceLock::new();
+
+/// Records the running app's version so every client this module builds can
+/// identify itself as `kafkaoxide/<version>` — see [`client_id`].
+///
+/// Called once at startup from `src-tauri`, which is the only place that
+/// knows the real version (`tauri.conf.json` via `package_info()`). Ignores
+/// repeat calls: the version cannot change while the app is running, and the
+/// first caller is the authoritative one.
+///
+/// Missing this call is not fatal — clients still identify themselves as
+/// `kafkaoxide`, just without a version — so `src-tauri` also logs the
+/// resulting id at startup, which is what makes a forgotten call visible
+/// instead of silent.
+pub fn set_app_version(version: &str) {
+    let _ = APP_CLIENT_ID.set(format!("{FALLBACK_CLIENT_ID}/{version}"));
+}
+
+/// The client id every broker connection from this app reports, for the
+/// startup log line — see [`set_app_version`].
+pub fn broker_client_id() -> &'static str {
+    client_id()
 }
 
 /// Caps how hard a single client hammers the brokers while it exists.
@@ -283,6 +346,91 @@ mod tests {
     fn abandons_a_stalled_connection_setup_well_inside_a_request_timeout() {
         let config = client_config(&sample_connection());
         assert_eq!(config.get("socket.connection.setup.timeout.ms"), Some("5000"));
+    }
+
+    /// Pins `APP_CLIENT_ID` before reading it.
+    ///
+    /// Tests in a binary share one process and run in parallel, so a test
+    /// that read `client_id()` while another was still calling
+    /// `set_app_version` could see the fallback once and the versioned id the
+    /// next time. Every client-id test calls this first, which drives the
+    /// `OnceLock` to its final value before any assertion depends on it —
+    /// whichever test wins the race, the value is stable from then on.
+    fn stable_client_id() -> &'static str {
+        set_app_version("9.9.9");
+        client_id()
+    }
+
+    /// Never librdkafka's default `rdkafka`, which merges this app's load
+    /// into every other rdkafka-based client on the cluster and leaves an
+    /// operator no client id to attach a quota to.
+    #[test]
+    fn identifies_itself_to_the_broker_rather_than_using_librdkafkas_default() {
+        stable_client_id();
+        let config = client_config(&sample_connection());
+        let client_id = config.get("client.id").expect("client.id must always be set");
+
+        assert!(
+            client_id.starts_with("kafkaoxide"),
+            "expected a kafkaoxide client id, got {client_id:?}"
+        );
+        assert_ne!(client_id, "rdkafka");
+    }
+
+    #[test]
+    fn identifies_unsaved_connections_the_same_way() {
+        // The modal's Test/ping buttons dial real brokers too, so they must
+        // be as attributable as a saved connection's requests are.
+        let expected = stable_client_id();
+        let config = build_client_config(
+            "localhost:9092",
+            SecurityProtocol::Plaintext,
+            None,
+            None,
+            None,
+            BrokerSslConfig::default(),
+        );
+
+        assert_eq!(config.get("client.id").as_deref(), Some(expected));
+    }
+
+    /// Sent to every cluster the user connects to, including ones they do not
+    /// control, so it must carry the app's identity and nothing of the
+    /// user's.
+    #[test]
+    fn does_not_leak_the_machine_or_user_identity_in_the_client_id() {
+        let id = stable_client_id();
+        assert!(!id.contains(char::is_whitespace), "client id must be a single token");
+
+        for leaked in [std::env::var("HOSTNAME"), std::env::var("USER")] {
+            if let Ok(value) = leaked {
+                if !value.is_empty() {
+                    assert!(!id.contains(&value), "client id must not carry {value:?}");
+                }
+            }
+        }
+    }
+
+    /// The crates in this workspace sit at 0.1.0 and are not bumped per
+    /// release, so a `CARGO_PKG_VERSION`-derived id would have reported
+    /// `kafkaoxide/0.1.0` forever — attributable, but useless for telling
+    /// which build a user is actually running.
+    #[test]
+    fn carries_the_app_version_once_the_app_supplies_it() {
+        // Asserts the shape rather than the exact version: `OnceLock` means
+        // whichever test set it first wins, and any of them supplies one.
+        let id = stable_client_id();
+
+        assert!(id.starts_with("kafkaoxide/"), "expected a versioned id, got {id:?}");
+        assert!(id.len() > "kafkaoxide/".len(), "expected a version after the prefix, got {id:?}");
+    }
+
+    #[test]
+    fn falls_back_to_an_unversioned_id_rather_than_an_empty_one() {
+        // A forgotten `set_app_version` must still leave the client
+        // attributable — degraded, not broken.
+        assert_eq!(FALLBACK_CLIENT_ID, "kafkaoxide");
+        assert!(!FALLBACK_CLIENT_ID.is_empty());
     }
 
     #[test]

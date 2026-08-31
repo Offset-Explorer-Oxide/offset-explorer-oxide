@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use error_stack::{Report, ResultExt};
 use kafkaoxide_core::AppError;
-use kafkaoxide_schema_registry::{SchemaRegistryAuth, SchemaRegistryClient};
+use kafkaoxide_schema_registry::SchemaRegistryAuth;
 use tauri::State;
 
 #[tauri::command]
@@ -90,7 +90,12 @@ pub async fn connection_decode_avro(
         keystore_location: connection.schema_registry_keystore_location.as_deref(),
         keystore_password: connection.schema_registry_keystore_password.as_deref(),
     };
-    let client = SchemaRegistryClient::new(endpoint, auth)?;
+    // Pooled per connection rather than built here: this command runs once
+    // per message the user opens in Avro mode, and a per-call client threw
+    // away both its HTTPS connection and its schema cache every time — so
+    // browsing one topic re-fetched the same schema id, over a fresh TLS
+    // handshake, for every single message. See `SchemaRegistryClients`.
+    let client = state.schema_registry.get_or_create(&id, endpoint, auth)?;
     let schema_text = client.fetch_schema_by_id(schema_id).await?;
 
     Ok(kafkaoxide_avro::decode(&bytes[5..], &schema_text)?)

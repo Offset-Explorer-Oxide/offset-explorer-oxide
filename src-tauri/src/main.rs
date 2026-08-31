@@ -66,6 +66,14 @@ fn main() {
                 let _ = window.set_title(&format!("Offset Explorer Oxide v{version}"));
             }
 
+            // Before any client is built, so every connection this app opens
+            // identifies itself as `kafkaoxide/<version>` rather than
+            // librdkafka's shared default of `rdkafka`. The version can only
+            // come from here: the workspace crates all sit at 0.1.0 and are
+            // not bumped per release, so `tauri.conf.json` (via
+            // `package_info()`) is the only true version of the app.
+            kafkaoxide_kafka::set_app_version(&handle.package_info().version.to_string());
+
             tauri::async_runtime::block_on(async move {
                 let data_dir = handle.path().app_data_dir().expect("app data dir");
                 std::fs::create_dir_all(&data_dir).expect("create app data dir");
@@ -81,9 +89,20 @@ fn main() {
                     zookeeper: Arc::new(kafkaoxide_kafka::TcpZookeeperClient),
                     connections: kafkaoxide_core::ConnectionRegistry::default(),
                     fetch_cancellations: kafkaoxide_core::FetchCancellations::default(),
+                    schema_registry: kafkaoxide_schema_registry::SchemaRegistryClients::default(),
                 });
 
                 logging::emit_log(&handle, "info", "Application started");
+
+                // Logged so the id is discoverable from the app itself: it is
+                // what an operator filters broker metrics and quotas by, and
+                // it is the line that makes a forgotten `set_app_version`
+                // visible (it would read "kafkaoxide" with no version).
+                logging::emit_log(
+                    &handle,
+                    "info",
+                    format!("Broker connections identify as client.id={}", kafkaoxide_kafka::broker_client_id()),
+                );
 
                 // Enumerating the OS trust store is the one fixed cost every
                 // TLS connection pays; doing it here means the user's first

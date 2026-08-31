@@ -44,8 +44,10 @@ interface ConnectionRowProps {
 
 function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
   const { id, name } = connection;
-  const { data: status } = useConnectionStatus(id);
   const { data: isConnected } = useConnectionConnected(id);
+  // A cluster the user is not connected to is polled far less often — see
+  // `IDLE_STATUS_POLL_MS`. Read before the status query so it can drive it.
+  const { data: status } = useConnectionStatus(id, isConnected ?? false);
   const { data: authBlockReason } = useConnectionAuthBlock(id);
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectConnection = useWorkspaceSelectionStore((s) => s.selectConnection);

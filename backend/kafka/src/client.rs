@@ -364,26 +364,46 @@ const ERROR_DRAIN_BUDGET: Duration = Duration::from_millis(250);
 struct ObservedClient {
     consumer: Arc<ObservedConsumer>,
     context: ClientErrorContext,
-    /// Serializes every request against a *pooled* client (see
-    /// `RdKafkaClient::metadata_client`).
+    /// Serializes ownership of the shared error slot — see [`Self::observed`].
     ///
     /// The tree fires brokers, topics and consumer groups concurrently the
-    /// moment a cluster connects, and all three share one pooled client —
+    /// moment a cluster connects, and all three share one pooled client:
     /// one `ClientErrorContext` and one underlying librdkafka consumer.
     /// Without this, their blocking tasks call `begin()`/`poll()` on that
-    /// shared state from different threads at the same time: one request's
+    /// shared state from different threads at the same time. One request's
     /// `begin()` can wipe the reason another just captured, or a slower
     /// request's `drain_error_events()` can read a reason a *different*
     /// concurrent request's failure produced — misattributing, say, a
-    /// consumer-group ACL rejection as the reason brokers/topics failed, or
-    /// vice versa. Holding this for the whole request (not just the reason
-    /// read) also avoids polling the same librdkafka client from multiple
-    /// threads at once, which librdkafka itself does not guarantee is safe.
+    /// consumer-group ACL rejection as the reason brokers/topics failed.
     ///
-    /// Cheap to hold: every pooled request here is one broker round trip,
-    /// so serializing the three tree requests costs at most a couple of
-    /// hundred milliseconds of queuing, never the request itself.
-    request_lock: Arc<tokio::sync::Mutex<()>>,
+    /// It also keeps `poll()` single-threaded per client, which is what
+    /// serves librdkafka's main event queue.
+    ///
+    /// **Scope is deliberately the `begin()`..`failure()` window, not the
+    /// whole request.** This used to be held for the entire request, on the
+    /// stated assumption that "every pooled request here is one broker round
+    /// trip". That was true of `list_brokers`/`list_topics`/
+    /// `list_consumer_groups` and false of the three that matter most:
+    /// `count_topic_messages`, `list_partitions` and
+    /// `fetch_consumer_group_lag` all walk every partition's watermarks,
+    /// which is seconds of work on a wide topic. Holding this across that
+    /// froze every other request on the connection for the duration — so
+    /// clicking a second topic during a consumer-group lag refresh looked
+    /// like the app had hung, and the freeze scaled with the size of someone
+    /// else's consumer group.
+    ///
+    /// The watermark walk needs no exclusive access: it reports failures
+    /// per-partition as plain strings and never reads or writes the error
+    /// slot (pinned by
+    /// `the_watermark_walk_does_not_touch_the_shared_error_slot`), and
+    /// `rd_kafka_query_watermark_offsets` uses its own reply queue rather
+    /// than the main one `poll()` serves. So it runs outside this lock.
+    ///
+    /// A `std::sync::Mutex` rather than an async one because every holder is
+    /// already inside `spawn_blocking`: the guard has to be taken and
+    /// released *within* the blocking closure to be this narrow, which an
+    /// async lock cannot do.
+    error_slot: Arc<Mutex<()>>,
 }
 
 impl ObservedClient {
@@ -393,7 +413,7 @@ impl ObservedClient {
             Ok(consumer) => Ok(ObservedClient {
                 consumer: Arc::new(consumer),
                 context,
-                request_lock: Arc::new(tokio::sync::Mutex::new(())),
+                error_slot: Arc::new(Mutex::new(())),
             }),
             Err(err) => {
                 // No client exists to drain, so the only reason available is
@@ -405,11 +425,38 @@ impl ObservedClient {
         }
     }
 
+    /// Runs one librdkafka call with exclusive ownership of the shared error
+    /// slot, so a failure is attributed to the request that caused it.
+    ///
+    /// This is the only correct way to make a call on a *pooled* client that
+    /// needs librdkafka's reason for failing. It bundles the three steps that
+    /// have to happen together — clear the slot, make the call, read the slot
+    /// back on failure — under one guard, so they cannot be interleaved with
+    /// another request's. Calling `begin()`/`failure()` by hand around a
+    /// pooled client is the bug this replaces.
+    ///
+    /// Deliberately narrow: see [`Self::error_slot`] for why anything slow
+    /// (the watermark walks) belongs *outside* this.
+    fn observed<T>(
+        &self,
+        what: &str,
+        call: impl FnOnce(&ObservedConsumer) -> std::result::Result<T, KafkaError>,
+    ) -> Result<T, AppError> {
+        // Poisoning only means some other request panicked mid-call; the slot
+        // holds one replaceable string, and `begin()` overwrites it anyway.
+        let _guard = self.error_slot.lock().unwrap_or_else(|err| err.into_inner());
+        self.begin();
+        call(&self.consumer).map_err(|err| self.failure(&err, what))
+    }
+
     /// Forgets any reason left over from an earlier request on this client.
     ///
     /// A pooled client outlives the request that created it, so without this
     /// a stale reason from a previous failure could be reported — and
     /// classified — as the current one's cause.
+    ///
+    /// Callers on a pooled client must hold [`Self::error_slot`] — use
+    /// [`Self::observed`], which does.
     fn begin(&self) {
         self.context.clear();
     }
@@ -483,12 +530,14 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Asks the broker for metadata, which is the cheapest request that can only
 /// succeed once the connection is fully established and authenticated.
+/// Goes through `observed` because Connect probes a *pooled* client, which
+/// the tree's brokers/topics/consumers requests may already be using: the
+/// reason a probe fails is what trips the connection's authentication circuit
+/// breaker, so misattributing another request's failure to it would block a
+/// connection whose credentials are fine.
 fn probe_with(client: &ObservedClient, timeout: Duration) -> Result<ConnectionStatus, AppError> {
-    client.begin();
-    match client.consumer.fetch_metadata(None, timeout) {
-        Ok(_) => Ok(ConnectionStatus::Reachable),
-        Err(err) => Err(client.failure(&err, "failed to reach the cluster")),
-    }
+    client.observed("failed to reach the cluster", |consumer| consumer.fetch_metadata(None, timeout))?;
+    Ok(ConnectionStatus::Reachable)
 }
 
 /// A client kept alive for reuse, with the version of the connection it was
@@ -523,6 +572,21 @@ struct PooledClient {
 #[derive(Default)]
 pub struct RdKafkaClient {
     metadata_clients: Mutex<HashMap<String, PooledClient>>,
+    /// The Config tab's admin clients, pooled for the same reason and on the
+    /// same terms as `metadata_clients`.
+    ///
+    /// A separate map because `AdminClient` is its own rdkafka type and
+    /// cannot come out of the consumer pool — which is why this one was
+    /// rebuilt per request, and why opening ten topics' Config tabs cost ten
+    /// handshakes.
+    admin_clients: Mutex<HashMap<String, PooledAdminClient>>,
+}
+
+/// A pooled admin client, versioned by the connection it was built from —
+/// see [`PooledClient`], whose contract this mirrors exactly.
+struct PooledAdminClient {
+    updated_at: String,
+    client: Arc<AdminClient<DefaultClientContext>>,
 }
 
 impl RdKafkaClient {
@@ -537,8 +601,9 @@ impl RdKafkaClient {
     /// the tree fires the moment a cluster connects would otherwise each
     /// build their own client for the same connection, which is the
     /// stampede this pool exists to prevent. This lock only covers *which*
-    /// client those three requests get — see `ObservedClient::request_lock`
-    /// for what stops them from then using it concurrently.
+    /// client those three requests get — see `ObservedClient::error_slot`
+    /// for what keeps their failure reasons from being mixed up once they
+    /// start using it concurrently.
     fn metadata_client(&self, connection: &Connection) -> Result<ObservedClient, AppError> {
         let mut pool = self.metadata_clients.lock().unwrap_or_else(|err| err.into_inner());
 
@@ -559,8 +624,49 @@ impl RdKafkaClient {
         Ok(client)
     }
 
+    /// This connection's pooled admin client, building and pooling one if
+    /// there isn't a current one.
+    ///
+    /// Same contract as `metadata_client`, for the same reasons: versioned by
+    /// `updated_at` so an edited connection never keeps talking to the broker
+    /// with the settings the user just replaced, and the pool lock is held
+    /// across creation so two Config tabs opened at once share one handshake
+    /// instead of racing to build their own.
+    fn admin_client(&self, connection: &Connection) -> Result<Arc<AdminClient<DefaultClientContext>>, AppError> {
+        let mut pool = self.admin_clients.lock().unwrap_or_else(|err| err.into_inner());
+
+        if let Some(pooled) = pool.get(&connection.id) {
+            if pooled.updated_at == connection.updated_at {
+                return Ok(Arc::clone(&pooled.client));
+            }
+        }
+
+        let client: Arc<AdminClient<DefaultClientContext>> = Arc::new(
+            client_config(connection)
+                .create()
+                .map_err(|err| failure_report(&err, &err.to_string(), "failed to create kafka admin client"))?,
+        );
+        pool.insert(
+            connection.id.clone(),
+            PooledAdminClient {
+                updated_at: connection.updated_at.clone(),
+                client: Arc::clone(&client),
+            },
+        );
+        Ok(client)
+    }
+
+    /// Retires *both* of a connection's pooled clients.
+    ///
+    /// Both, always: this runs when credentials are rejected as well as when
+    /// the connection is edited or deleted, and an admin client left behind
+    /// would keep the Config tab dialling a broker that has already said no.
     fn drop_pooled_client(&self, connection_id: &str) {
         self.metadata_clients
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(connection_id);
+        self.admin_clients
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(connection_id);
@@ -584,7 +690,8 @@ impl KafkaClient for RdKafkaClient {
             }
         };
 
-        let _guard = client.request_lock.clone().lock_owned().await;
+        // `probe_with` takes the error slot itself for exactly as long as the
+        // probe needs it.
         let result = tokio::task::spawn_blocking(move || probe_with(&client, PROBE_TIMEOUT))
             .await
             .change_context(AppError::Kafka)
@@ -631,13 +738,10 @@ impl KafkaClient for RdKafkaClient {
 
     async fn list_brokers(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<BrokerSummary>, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
-            client.begin();
-            let metadata = client
-                .consumer
-                .fetch_metadata(None, read_timeout)
-                .map_err(|err| client.failure(&err, "failed to fetch broker metadata"))?;
+            let metadata = client.observed("failed to fetch broker metadata", |consumer| {
+                consumer.fetch_metadata(None, read_timeout)
+            })?;
 
             Ok(metadata
                 .brokers()
@@ -656,13 +760,10 @@ impl KafkaClient for RdKafkaClient {
 
     async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
-            client.begin();
-            let metadata = client
-                .consumer
-                .fetch_metadata(None, read_timeout)
-                .map_err(|err| client.failure(&err, "failed to fetch topic metadata"))?;
+            let metadata = client.observed("failed to fetch topic metadata", |consumer| {
+                consumer.fetch_metadata(None, read_timeout)
+            })?;
 
             Ok(metadata
                 .topics()
@@ -684,13 +785,10 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<Vec<ConsumerGroupSummary>, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         tokio::task::spawn_blocking(move || {
-            client.begin();
-            let groups = client
-                .consumer
-                .fetch_group_list(None, read_timeout)
-                .map_err(|err| client.failure(&err, "failed to fetch consumer group list"))?;
+            let groups = client.observed("failed to fetch consumer group list", |consumer| {
+                consumer.fetch_group_list(None, read_timeout)
+            })?;
 
             Ok(groups
                 .groups()
@@ -708,13 +806,11 @@ impl KafkaClient for RdKafkaClient {
 
     async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
-            client.begin();
             let consumer = Arc::clone(&client.consumer);
-            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
+            let metadata = client.observed(&format!("failed to fetch metadata for topic {topic}"), |consumer| {
+                consumer.fetch_metadata(Some(&topic), read_timeout)
             })?;
             let topic_metadata = metadata
                 .topics()
@@ -723,6 +819,9 @@ impl KafkaClient for RdKafkaClient {
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
+            // Outside the `observed` section above: on a wide topic this is
+            // the seconds-long part, and it needs no exclusive access — see
+            // `ObservedClient::error_slot`.
             let partitions: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
             let watermarks = watermarks_for_partitions(consumer.as_ref(), &topic, &partitions, read_timeout)?;
 
@@ -1081,13 +1180,11 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<Vec<PartitionSummary>, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
-            client.begin();
             let consumer = Arc::clone(&client.consumer);
-            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
+            let metadata = client.observed(&format!("failed to fetch metadata for topic {topic}"), |consumer| {
+                consumer.fetch_metadata(Some(&topic), read_timeout)
             })?;
             let topic_metadata = metadata
                 .topics()
@@ -1096,6 +1193,7 @@ impl KafkaClient for RdKafkaClient {
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
                 .attach_printable_lazy(|| format!("topic {topic} not found"))?;
 
+            // Outside the `observed` section — see `count_topic_messages`.
             let partition_ids: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
             let watermarks = watermarks_for_partitions(consumer.as_ref(), &topic, &partition_ids, read_timeout)?;
 
@@ -1126,13 +1224,11 @@ impl KafkaClient for RdKafkaClient {
         topic: &str,
         read_timeout: Duration,
     ) -> Result<Vec<ConfigEntry>, AppError> {
-        let config = client_config(connection);
-        // The admin client is its own type, so it can't come from the
-        // consumer pool, and there is no queue for `drain_error_events` to
-        // serve — an admin failure is classified from its error code alone.
-        let admin: AdminClient<DefaultClientContext> = config
-            .create()
-            .map_err(|err| failure_report(&err, &err.to_string(), "failed to create kafka admin client"))?;
+        // Pooled in its own map rather than built here: the admin client is
+        // its own type, so it can't come from the consumer pool, and there is
+        // no queue for `drain_error_events` to serve — an admin failure is
+        // classified from its error code alone. See `admin_client`.
+        let admin = self.admin_client(connection)?;
 
         let specifier = ResourceSpecifier::Topic(topic);
         let options = AdminOptions::new().request_timeout(Some(read_timeout));
@@ -1163,14 +1259,12 @@ impl KafkaClient for RdKafkaClient {
         read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError> {
         let client = self.metadata_client(connection)?;
-        let _guard = client.request_lock.clone().lock_owned().await;
         let mut group_config = client_config(connection);
         let group_id = group_id.to_string();
         tokio::task::spawn_blocking(move || {
-            client.begin();
             let consumer = Arc::clone(&client.consumer);
-            let groups = consumer.fetch_group_list(Some(&group_id), read_timeout).map_err(|err| {
-                client.failure(&err, &format!("failed to fetch group list for {group_id}"))
+            let groups = client.observed(&format!("failed to fetch group list for {group_id}"), |consumer| {
+                consumer.fetch_group_list(Some(&group_id), read_timeout)
             })?;
             let group = groups
                 .groups()
@@ -1236,6 +1330,10 @@ impl KafkaClient for RdKafkaClient {
             // than one blocking round trip per committed partition as the
             // loop below walks them — a group consuming a 100-partition topic
             // spent seconds here for a lag table.
+            //
+            // Outside the `observed` section, so those seconds no longer
+            // block every other request on this connection — see
+            // `ObservedClient::error_slot`.
             let mut partitions_by_topic: BTreeMap<String, Vec<i32>> = BTreeMap::new();
             for element in committed.elements() {
                 partitions_by_topic.entry(element.topic().to_string()).or_default().push(element.partition());
@@ -1435,41 +1533,46 @@ mod tests {
 
     /// Regression test for the pooled-client race: three tree requests
     /// (brokers/topics/consumer groups) share one `ObservedClient`, and
-    /// before `request_lock` existed, one request's `begin()` could clear a
-    /// reason another concurrent request was mid-read of, or vice versa —
-    /// misattributing one request's failure as another's.
-    #[tokio::test]
-    async fn request_lock_serializes_concurrent_users_of_the_same_pooled_client() {
+    /// before the error slot was serialized, one request's `begin()` could
+    /// clear a reason another concurrent request was mid-read of, or vice
+    /// versa — misattributing one request's failure as another's.
+    #[test]
+    fn a_second_request_waits_for_the_first_to_finish_with_the_error_slot() {
         let client = ObservedClient::create(&client_config(&pooled_test_connection())).expect("client");
-        let events: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let started = Arc::new(std::sync::Barrier::new(2));
 
-        let lock_a = client.request_lock.clone();
-        let events_a = Arc::clone(&events);
-        let task_a = tokio::spawn(async move {
-            let _guard = lock_a.lock_owned().await;
-            events_a.lock().unwrap().push("a-start");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            events_a.lock().unwrap().push("a-end");
+        std::thread::scope(|scope| {
+            let client_a = client.clone();
+            let events_a = Arc::clone(&events);
+            let started_a = Arc::clone(&started);
+            scope.spawn(move || {
+                let _: Result<(), AppError> = client_a.observed("a", |_| {
+                    events_a.lock().unwrap().push("a-start");
+                    // Only once A owns the slot is B released to contend for
+                    // it, so the assertion tests the lock rather than which
+                    // thread happened to start first.
+                    started_a.wait();
+                    std::thread::sleep(Duration::from_millis(20));
+                    events_a.lock().unwrap().push("a-end");
+                    Ok(())
+                });
+            });
+
+            let client_b = client.clone();
+            let events_b = Arc::clone(&events);
+            let started_b = Arc::clone(&started);
+            scope.spawn(move || {
+                started_b.wait();
+                let _: Result<(), AppError> = client_b.observed("b", |_| {
+                    events_b.lock().unwrap().push("b-start");
+                    Ok(())
+                });
+            });
         });
 
-        // Gives task_a a real chance to be the one that acquires the lock
-        // first, so the assertion below is meaningful rather than a race on
-        // the test itself.
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
-        let lock_b = client.request_lock.clone();
-        let events_b = Arc::clone(&events);
-        let task_b = tokio::spawn(async move {
-            let _guard = lock_b.lock_owned().await;
-            events_b.lock().unwrap().push("b-start");
-        });
-
-        task_a.await.unwrap();
-        task_b.await.unwrap();
-
-        // task_b's start must never land between task_a's start and end —
-        // that ordering is exactly the "read another request's mid-flight
-        // state" race this lock exists to prevent.
+        // b-start must never land between a-start and a-end — that ordering
+        // is exactly the "read another request's mid-flight state" race.
         assert_eq!(*events.lock().unwrap(), vec!["a-start", "a-end", "b-start"]);
     }
 
@@ -1500,6 +1603,131 @@ mod tests {
         let after = kafka.metadata_client(&connection).expect("client after release");
 
         assert!(!Arc::ptr_eq(&before.consumer, &after.consumer));
+    }
+
+    /// The Config tab used to pay a full TCP + TLS + SASL handshake every
+    /// time it was opened, because `describe_topic_config` built a fresh
+    /// `AdminClient` per call. Clicking through ten topics' Config tabs was
+    /// ten handshakes.
+    #[test]
+    fn an_admin_client_is_pooled_and_reused_across_config_requests() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+
+        let first = kafka.admin_client(&connection).expect("first admin client");
+        let second = kafka.admin_client(&connection).expect("second admin client");
+
+        assert!(Arc::ptr_eq(&first, &second), "expected the pooled admin client, not a rebuilt one");
+    }
+
+    #[test]
+    fn admin_clients_are_not_shared_between_connections() {
+        let kafka = RdKafkaClient::new();
+        let one = pooled_test_connection();
+        let mut two = pooled_test_connection();
+        two.id = "conn-2".into();
+
+        let first = kafka.admin_client(&one).expect("first admin client");
+        let second = kafka.admin_client(&two).expect("second admin client");
+
+        assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    /// Same contract as the metadata pool: an edited connection must never
+    /// keep talking to the broker with the settings the user just replaced.
+    #[test]
+    fn editing_a_connection_retires_its_pooled_admin_client() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+        let before = kafka.admin_client(&connection).expect("first admin client");
+
+        let mut edited = connection.clone();
+        edited.bootstrap_servers = "otherhost:9092".into();
+        edited.updated_at = "2026-08-27T01:00:00Z".into();
+        let after = kafka.admin_client(&edited).expect("admin client after the edit");
+
+        assert!(!Arc::ptr_eq(&before, &after));
+    }
+
+    /// `release` is called when credentials are rejected, so it has to drop
+    /// *both* pools — leaving a rejected admin client behind would keep the
+    /// Config tab dialling a broker that has already said no.
+    #[test]
+    fn releasing_a_connection_drops_its_admin_client_too() {
+        let kafka = RdKafkaClient::new();
+        let connection = pooled_test_connection();
+        let before = kafka.admin_client(&connection).expect("first admin client");
+
+        kafka.release(&connection.id);
+        let after = kafka.admin_client(&connection).expect("admin client after release");
+
+        assert!(!Arc::ptr_eq(&before, &after));
+    }
+
+    /// The reason `observed` exists: two requests sharing one pooled client
+    /// share one error slot, so one's `begin()` could wipe a reason the other
+    /// had just captured, and `drain_error_events` could report a reason
+    /// belonging to a different request entirely.
+    #[test]
+    fn observed_sections_never_overlap_on_one_pooled_client() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        let kafka = RdKafkaClient::new();
+        let client = kafka.metadata_client(&pooled_test_connection()).expect("client");
+        let inside = Arc::new(AtomicBool::new(false));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let client = client.clone();
+                let inside = Arc::clone(&inside);
+                let overlaps = Arc::clone(&overlaps);
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        let _: Result<(), AppError> = client.observed("test", |_| {
+                            if inside.swap(true, Ordering::SeqCst) {
+                                overlaps.fetch_add(1, Ordering::SeqCst);
+                            }
+                            std::thread::yield_now();
+                            inside.store(false, Ordering::SeqCst);
+                            Ok(())
+                        });
+                    }
+                });
+            }
+        });
+
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0, "two requests owned the error slot at once");
+    }
+
+    /// The invariant that makes narrowing the lock safe.
+    ///
+    /// The watermark walk is the seconds-long part of `count_topic_messages`,
+    /// `list_partitions` and consumer-group lag. It reports failures
+    /// per-partition as plain strings rather than through the shared error
+    /// slot, so it needs no exclusive access — which is why it can run
+    /// outside the `observed` section instead of blocking every other request
+    /// on the same connection for its whole duration.
+    ///
+    /// If someone ever routes it through `begin()`/`failure()`, this test
+    /// fails and says why that is not a free change.
+    #[test]
+    fn the_watermark_walk_does_not_touch_the_shared_error_slot() {
+        let kafka = RdKafkaClient::new();
+        let client = kafka.metadata_client(&pooled_test_connection()).expect("client");
+        client.context.error(KafkaError::Canceled, "a reason from another request");
+
+        // Empty partition list: returns without a broker round trip, but
+        // through the same function every real caller uses.
+        let found = watermarks_for_partitions(client.consumer.as_ref(), "topic", &[], TEST_READ_TIMEOUT)
+            .expect("an empty partition list needs no broker");
+
+        assert!(found.is_empty());
+        assert_eq!(
+            client.context.last_error().as_deref(),
+            Some("a reason from another request"),
+            "the watermark walk must not clear or overwrite another request's reason"
+        );
     }
 
     #[test]

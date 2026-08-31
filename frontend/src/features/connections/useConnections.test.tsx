@@ -4,8 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import {
+  CONNECTED_STATUS_POLL_MS,
+  IDLE_STATUS_POLL_MS,
+  statusPollInterval,
   useConnect,
   useConnectionConnected,
+  useConnectionStatus,
   useConnectionsQuery,
   useDeleteConnection,
   useDisconnect,
@@ -44,6 +48,48 @@ describe("useUpdateConnection", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(connectionUpdate).toHaveBeenCalledWith({ id: "1", newConnection });
+  });
+});
+
+describe("statusPollInterval", () => {
+  it("polls a connected cluster on the responsive cadence", () => {
+    expect(statusPollInterval(true)).toBe(CONNECTED_STATUS_POLL_MS);
+  });
+
+  // Every saved connection polls for as long as the app is open, connected or
+  // not. At the connected cadence a user with twenty saved production
+  // clusters generates ~170k TCP connect/teardowns a day against broker ports
+  // while actively using none of them.
+  it("backs off substantially for a cluster the user is not connected to", () => {
+    expect(statusPollInterval(false)).toBe(IDLE_STATUS_POLL_MS);
+    expect(IDLE_STATUS_POLL_MS).toBeGreaterThan(CONNECTED_STATUS_POLL_MS);
+  });
+
+  it("still checks an idle connection often enough to be useful", () => {
+    // A dot that only refreshes every few minutes stops meaning anything.
+    expect(IDLE_STATUS_POLL_MS).toBeLessThanOrEqual(60_000);
+  });
+});
+
+describe("useConnectionStatus", () => {
+  // Backing off the *interval* must not delay the first answer: the dot has
+  // to be right as soon as the tree renders, not a minute later.
+  it("checks status immediately on mount even for a disconnected cluster", async () => {
+    const checkStatus = vi.fn(() => "UNREACHABLE");
+    setInvokeHandlers({ connection_check_status: checkStatus });
+
+    const { result } = renderHook(() => useConnectionStatus("1", false), { wrapper: createWrapper() });
+
+    await waitFor(() => expect(result.current.data).toBe("UNREACHABLE"));
+    expect(checkStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports UNKNOWN before the first check resolves", () => {
+    setInvokeHandlers({ connection_check_status: () => "REACHABLE" });
+
+    const { result } = renderHook(() => useConnectionStatus("1", true), { wrapper: createWrapper() });
+
+    expect(result.current.data).toBe("UNKNOWN");
   });
 });
 
