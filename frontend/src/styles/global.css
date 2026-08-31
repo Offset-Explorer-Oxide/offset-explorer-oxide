@@ -769,6 +769,12 @@ body {
   font-size: 12px;
   color: var(--color-fg-muted);
 }
+/* Mirrors the backend's own "warn"-level log for the same event (see
+   `emit_log` in the fetch_messages command) — surfaced here too since a
+   fetch stopping short of the filter is easy to miss in the log panel. */
+.data-tab-search-notice--warning {
+  color: var(--color-status-amber);
+}
 .settings-panel__hint {
   margin: 4px 0 0;
   font-size: 12px;

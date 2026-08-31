@@ -174,6 +174,12 @@ pub async fn connection_update(
     state.connections.clear_auth_failures(&id);
     // The pooled client was built from the settings that just changed.
     state.kafka.release(&id);
+    // Same reasoning for the Schema Registry client: its endpoint and
+    // credentials come from this connection, and its cache is keyed by schema
+    // id — which means nothing once the registry it points at may have
+    // changed. `get_or_create` would notice via its fingerprint anyway; this
+    // makes it immediate and keeps the two pools behaving identically.
+    state.schema_registry.release(&id);
     crate::logging::emit_log(&app, "info", format!("Updated connection \"{}\"", connection.name));
     Ok(connection)
 }
@@ -189,6 +195,9 @@ pub async fn connection_delete(
     state.connections.mark_disconnected(&id);
     state.connections.clear_auth_failures(&id);
     state.kafka.release(&id);
+    // Nothing will ever ask for this connection's schemas again, and the
+    // client holds an open HTTPS connection to the registry.
+    state.schema_registry.release(&id);
     crate::logging::emit_log(&app, "info", format!("Deleted connection {id}"));
     Ok(())
 }

@@ -55,11 +55,42 @@ export function useImportConnections() {
   });
 }
 
-export function useConnectionStatus(id: string) {
+/**
+ * How often a *connected* cluster's reachability dot is refreshed. This is
+ * the dot doing its job — the user is working against this cluster and wants
+ * to know promptly if it goes away.
+ */
+export const CONNECTED_STATUS_POLL_MS = 10_000;
+
+/**
+ * How often an idle (not connected) cluster's dot is refreshed.
+ *
+ * Every saved connection polls, connected or not, for as long as the app is
+ * open. At the connected cadence that is ~8,600 TCP connect/teardowns per
+ * saved cluster per day against production broker ports — and a user with
+ * twenty saved clusters is generating that against all twenty while actively
+ * using none of them. Connection-rate metrics and firewall/load-balancer
+ * connection logs both notice, even though nothing is authenticated.
+ *
+ * For a cluster the user is not connected to, the dot only answers "is
+ * something listening", which does not change minute to minute. Backing off
+ * costs nothing that matters and cuts the idle footprint six-fold.
+ *
+ * The *first* check still runs immediately on mount — React Query fetches on
+ * mount regardless of interval — so the dot is correct as soon as the tree
+ * renders. Only the refresh cadence changes.
+ */
+export const IDLE_STATUS_POLL_MS = 60_000;
+
+export function statusPollInterval(isConnected: boolean): number {
+  return isConnected ? CONNECTED_STATUS_POLL_MS : IDLE_STATUS_POLL_MS;
+}
+
+export function useConnectionStatus(id: string, isConnected: boolean) {
   return useQuery({
     queryKey: ["connection-status", id],
     queryFn: () => api.checkConnectionStatus(id),
-    refetchInterval: 10_000,
+    refetchInterval: statusPollInterval(isConnected),
     initialData: "UNKNOWN" as const,
   });
 }
@@ -97,7 +128,12 @@ export function useConnectionAuthBlock(id: string) {
   return useQuery({
     queryKey: ["connection-auth-block", id],
     queryFn: () => api.connectionAuthBlockReason(id),
-    refetchInterval: 10_000,
+    refetchInterval: CONNECTED_STATUS_POLL_MS,
+    // Reads in-process state in the backend and never touches the network, so
+    // the app-wide `shouldRetry` had nothing to ride out here — a failure
+    // means the IPC call itself failed, which retrying twice with backoff
+    // does not fix.
+    retry: false,
     initialData: null,
   });
 }

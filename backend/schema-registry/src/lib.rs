@@ -1,7 +1,9 @@
 use error_stack::{Report, Result, ResultExt};
 use kafkaoxide_core::AppError;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 /// Schema Registry TLS/auth material from a connection's Schema Registry
 /// fields + secrets — mirrors `kafkaoxide_kafka::BrokerSslConfig`'s split
@@ -125,11 +127,184 @@ impl SchemaRegistryClient {
     }
 }
 
+/// One live [`SchemaRegistryClient`] per connection, reused across requests.
+///
+/// A client was previously built inside every `connection_decode_avro` call.
+/// That made the client's own schema cache dead on arrival — it was dropped
+/// at the end of the call that filled it — and made decoding one message
+/// cost a fresh `reqwest::Client` (with an empty connection pool, so a fresh
+/// TLS handshake), plus reading and parsing the truststore and keystore off
+/// disk. Viewing 50 Avro messages meant 50 registry round trips and 50 TLS
+/// handshakes for what is nearly always the same schema id.
+///
+/// Schema Registry is typically one shared, rate-limited service, so it
+/// absorbs that far less comfortably than a broker cluster would.
+///
+/// Keyed by connection id and versioned by a fingerprint of the endpoint and
+/// auth material, mirroring how `RdKafkaClient` pools its metadata clients
+/// against `Connection::updated_at`: editing a connection's registry
+/// credentials changes the fingerprint, so the next request builds a new
+/// client instead of silently reusing one holding the old credentials.
+///
+/// Known limit: the fingerprint covers the keystore/truststore *paths*, not
+/// their contents. Replacing a certificate file in place, without touching
+/// the connection, keeps the pooled client until the connection is edited or
+/// released. Rebuilding on every decode used to pick that up, at the cost
+/// documented above; re-saving the connection is the deliberate way to force
+/// it now.
+#[derive(Default)]
+pub struct SchemaRegistryClients {
+    clients: Mutex<HashMap<String, PooledRegistryClient>>,
+}
+
+struct PooledRegistryClient {
+    /// Hash of the endpoint and every auth field this client was built from.
+    ///
+    /// A hash rather than the values themselves so a long-lived map does not
+    /// hold a second plaintext copy of the keystore password. It only ever
+    /// decides "same settings or not", never authenticates anything, so a
+    /// non-cryptographic hash is the right tool.
+    fingerprint: u64,
+    client: Arc<SchemaRegistryClient>,
+}
+
+fn fingerprint_of(endpoint: &str, auth: &SchemaRegistryAuth<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    endpoint.hash(&mut hasher);
+    auth.basic_auth_credentials.hash(&mut hasher);
+    auth.trust_store_location.hash(&mut hasher);
+    auth.keystore_location.hash(&mut hasher);
+    auth.keystore_password.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl SchemaRegistryClients {
+    /// This connection's registry client, building one if there isn't a
+    /// current one. Cheap on every call after the first: an `Arc` clone.
+    pub fn get_or_create(
+        &self,
+        connection_id: &str,
+        endpoint: &str,
+        auth: SchemaRegistryAuth<'_>,
+    ) -> Result<Arc<SchemaRegistryClient>, AppError> {
+        let fingerprint = fingerprint_of(endpoint, &auth);
+        let mut clients = self.clients.lock().unwrap_or_else(|err| err.into_inner());
+
+        if let Some(pooled) = clients.get(connection_id) {
+            if pooled.fingerprint == fingerprint {
+                return Ok(Arc::clone(&pooled.client));
+            }
+        }
+
+        let client = Arc::new(SchemaRegistryClient::new(endpoint, auth)?);
+        clients.insert(
+            connection_id.to_string(),
+            PooledRegistryClient { fingerprint, client: Arc::clone(&client) },
+        );
+        Ok(client)
+    }
+
+    /// Forgets a connection's client — called when the connection is edited
+    /// or deleted, so nothing keeps serving cached schemas for a registry the
+    /// connection no longer points at.
+    pub fn release(&self, connection_id: &str) {
+        self.clients.lock().unwrap_or_else(|err| err.into_inner()).remove(connection_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    const ENDPOINT: &str = "http://localhost:1";
+
+    #[test]
+    fn reuses_one_client_per_connection_so_its_schema_cache_survives() {
+        // The whole point: a client rebuilt per decode drops the cache that
+        // makes the second view of a topic free.
+        let clients = SchemaRegistryClients::default();
+
+        let first = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+        let second = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second), "expected the pooled client, not a rebuilt one");
+    }
+
+    #[test]
+    fn keeps_connections_separate() {
+        let clients = SchemaRegistryClients::default();
+
+        let one = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+        let two = clients.get_or_create("conn-2", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+
+        assert!(!Arc::ptr_eq(&one, &two));
+    }
+
+    #[test]
+    fn rebuilds_when_the_endpoint_changes() {
+        let clients = SchemaRegistryClients::default();
+
+        let first = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+        let second = clients.get_or_create("conn-1", "http://localhost:2", SchemaRegistryAuth::default()).unwrap();
+
+        assert!(!Arc::ptr_eq(&first, &second), "a client must not outlive the endpoint it was built for");
+    }
+
+    /// Reusing a client built from credentials the user has since replaced
+    /// would keep authenticating as the old ones — the registry equivalent of
+    /// serving a request from a Kafka client the broker has already rejected.
+    #[test]
+    fn rebuilds_when_any_auth_field_changes() {
+        let changed: [SchemaRegistryAuth<'_>; 4] = [
+            SchemaRegistryAuth { basic_auth_credentials: Some("user:pass"), ..Default::default() },
+            SchemaRegistryAuth { trust_store_location: Some("/tmp/truststore.pem"), ..Default::default() },
+            SchemaRegistryAuth { keystore_location: Some("/tmp/keystore.p12"), ..Default::default() },
+            SchemaRegistryAuth { keystore_password: Some("hunter2"), ..Default::default() },
+        ];
+
+        for auth in changed {
+            let clients = SchemaRegistryClients::default();
+            let before = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+            // Only builds a client when the material is loadable; a keystore
+            // path alone never is, so tolerate that and assert on the rest.
+            if let Ok(after) = clients.get_or_create("conn-1", ENDPOINT, auth) {
+                assert!(!Arc::ptr_eq(&before, &after), "changed auth must not reuse the old client");
+            }
+        }
+    }
+
+    #[test]
+    fn releasing_a_connection_drops_its_client() {
+        let clients = SchemaRegistryClients::default();
+
+        let before = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+        clients.release("conn-1");
+        let after = clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).unwrap();
+
+        assert!(!Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn releasing_an_unknown_connection_is_a_no_op() {
+        let clients = SchemaRegistryClients::default();
+        clients.release("never-seen");
+    }
+
+    /// A malformed credential must not poison the pool: the next request has
+    /// to be free to build a client once the user fixes it.
+    #[test]
+    fn a_failed_build_leaves_nothing_pooled() {
+        let clients = SchemaRegistryClients::default();
+        let bad = SchemaRegistryAuth {
+            basic_auth_credentials: Some("not-user-colon-pass"),
+            ..Default::default()
+        };
+
+        assert!(clients.get_or_create("conn-1", ENDPOINT, bad).is_err());
+        assert!(clients.get_or_create("conn-1", ENDPOINT, SchemaRegistryAuth::default()).is_ok());
+    }
 
     /// Starts a one-shot HTTP server that replies to the first request it
     /// receives, then shuts down. Returns the base URL to hit and a handle

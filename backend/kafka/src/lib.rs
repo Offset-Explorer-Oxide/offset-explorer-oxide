@@ -7,5 +7,5 @@ pub mod messages;
 pub mod zookeeper;
 
 pub use client::{KafkaClient, RdKafkaClient};
-pub use config::{warm_native_ca_bundle, BrokerSslConfig};
+pub use config::{broker_client_id, set_app_version, warm_native_ca_bundle, BrokerSslConfig};
 pub use zookeeper::{TcpZookeeperClient, ZookeeperClient};

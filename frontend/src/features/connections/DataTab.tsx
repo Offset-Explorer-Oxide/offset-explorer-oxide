@@ -158,6 +158,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   /** Set when the last Fetch stopped on the byte budget rather than on the filter — see `MessageFetchResult.stoppedAtByteBudget`. Local rather than cached per tab: it describes the fetch that just ran, and a re-fetch always re-decides it. */
   const [byteBudgetBytesRead, setByteBudgetBytesRead] = useState<number | null>(null);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
+  const clearTabMessages = useTabDataStore((s) => s.clearTabMessages);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
   const totalMatching = useTabDataStore((s) => s.totalMatchingByTab[tabKey]);
@@ -269,7 +270,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     discardBufferedStream();
     const requestId = crypto.randomUUID();
     activeRequestIdRef.current = requestId;
-    setTabMessages(tabKey, []);
+    // Clears the previous fetch's total-matching count along with its rows —
+    // `setTabMessages(tabKey, [])` alone would leave a stale "matching" total
+    // from an earlier, unrelated fetch on screen next to the new one's rows
+    // until (if) this fetch resolves successfully.
+    clearTabMessages(tabKey);
     setByteBudgetBytesRead(null);
     // The grid is about to go blank/loading for a new result set, so a
     // right panel left open from the previous fetch would be showing a row
@@ -471,7 +476,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         // records the fetch stops on size long before it stops on the
         // message counts in the form, and without saying so a short result
         // reads as "that's all there is".
-        <p role="status" className="data-tab-search-notice">
+        <p role="status" className="data-tab-search-notice data-tab-search-notice--warning">
           Stopped after reading {Math.round(byteBudgetBytesRead / (1024 * 1024)).toLocaleString()} MB of messages.
           Narrow the filter, or raise Max total fetch size in Settings → General, to load more.
         </p>
