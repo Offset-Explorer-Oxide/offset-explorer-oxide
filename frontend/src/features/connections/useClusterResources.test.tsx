@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import { retryDelay, RETRY_DELAY_CAP_MS, shouldRetry } from "../../lib/queryRetry";
-import { useBrokers, useConsumerGroups, useTopics } from "./useClusterResources";
+import { useBrokers, useConsumerGroups, useFullPayload, useTopics } from "./useClusterResources";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -162,5 +162,86 @@ describe("cluster resource queries", () => {
     refetchTopics();
 
     await waitFor(() => expect(listTopics).toHaveBeenCalledTimes(2));
+  });
+  /**
+   * The one path that deliberately asks for a whole, untruncated payload —
+   * and therefore the one that has to give it up promptly.
+   *
+   * Its cache key includes the offset, so before `gcTime: 0` every message
+   * opened was its own entry surviving React Query's five-minute default:
+   * ten 50 MB messages read inside that window meant ~500 MB retained, held
+   * by nothing the app's own memory ceiling could see.
+   */
+  it("drops a viewed message's whole payload as soon as nothing is viewing it", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [
+          {
+            partition: 0,
+            offset: 7,
+            timestampMs: null,
+            keyBase64: null,
+            payloadBase64: btoa("a".repeat(5_000)),
+            payloadSizeBytes: 5_000,
+            headers: [],
+          },
+        ],
+        totalMatching: 1,
+      }),
+    });
+    const client = newClient();
+    function Viewer({ offset }: { offset: number }) {
+      const { data } = useFullPayload("1", "orders", 0, offset, true);
+      return <div>payload: {data?.messages.length ?? "…"}</div>;
+    }
+
+    const { unmount } = renderWith(client, <Viewer offset={7} />);
+    await waitFor(() => expect(screen.getByText("payload: 1")).toBeInTheDocument());
+    expect(client.getQueryData(["full-payload", "1", "orders", 0, 7])).toBeDefined();
+
+    unmount();
+
+    // Gone immediately, not in five minutes.
+    await waitFor(() => expect(client.getQueryData(["full-payload", "1", "orders", 0, 7])).toBeUndefined());
+  });
+
+  it("holds only the message currently open, not every message visited", async () => {
+    setInvokeHandlers({
+      connection_fetch_messages: (args: { filter: { offset: number } }) => ({
+        messages: [
+          {
+            partition: 0,
+            offset: args.filter.offset,
+            timestampMs: null,
+            keyBase64: null,
+            payloadBase64: btoa("a".repeat(5_000)),
+            payloadSizeBytes: 5_000,
+            headers: [],
+          },
+        ],
+        totalMatching: 1,
+      }),
+    });
+    const client = newClient();
+    function Viewer({ offset }: { offset: number }) {
+      const { data } = useFullPayload("1", "orders", 0, offset, true);
+      return <div>payload: {data?.messages[0]?.offset ?? "…"}</div>;
+    }
+
+    const { rerender } = renderWith(client, <Viewer offset={1} />);
+    await waitFor(() => expect(screen.getByText("payload: 1")).toBeInTheDocument());
+    rerender(
+      <QueryClientProvider client={client}>
+        <Viewer offset={2} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("payload: 2")).toBeInTheDocument());
+
+    const held = client
+      .getQueryCache()
+      .getAll()
+      .filter((query) => query.queryKey[0] === "full-payload");
+    expect(held).toHaveLength(1);
+    expect(held[0].queryKey).toEqual(["full-payload", "1", "orders", 0, 2]);
   });
 });

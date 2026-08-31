@@ -51,3 +51,13 @@ rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored", "zstd"]
 
 [target.'cfg(not(windows))'.dependencies]
 rdkafka = { version = "0.36", features = ["ssl-vendored", "zstd"] }
+
+[dev-dependencies]
+# `tests/live_schema_registry.rs` follows one Avro message the whole way: off
+# a real broker through this crate's fetch, into the registry client for its
+# schema, and out of the decoder as JSON — the chain `connection_decode_avro`
+# performs, which cannot be tested where it lives because `src-tauri` needs a
+# desktop toolchain.
+kafkaoxide-schema-registry = { workspace = true }
+kafkaoxide-avro = { workspace = true }
+serde_json = { workspace = true }

@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
 import { MessageFilter } from "../../lib/tauri";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { useTabDataStore } from "../workspace/useTabDataStore";
+import { useTabsStore } from "../tabs/useTabsStore";
+import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
+import { useDataTabGridStateStore } from "./useDataTabGridStateStore";
 import { MAX_INLINE_PAYLOAD_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 import { DataTab } from "./DataTab";
 
@@ -34,7 +37,7 @@ interface MockColDef {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getQuickFilterText?: (params: any) => string;
 }
-let lastGridProps: {
+interface MockGridProps {
   rowData: unknown[];
   onRowClicked: (event: { data: unknown; event?: { target: unknown } }) => void;
   quickFilterText?: string;
@@ -43,22 +46,66 @@ let lastGridProps: {
   loading?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   context?: any;
-} | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getRowId?: (params: any) => string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rowSelection?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onGridReady?: (event: { api: any }) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onSortChanged?: (event: { api: any }) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onFilterChanged?: (event: { api: any }) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onRowDataUpdated?: (event: { api: any }) => void;
+}
+let lastGridProps: MockGridProps | null = null;
 vi.mock("ag-grid-react", () => ({
-  AgGridReact: (props: {
-    rowData: unknown[];
-    onRowClicked: (event: { data: unknown; event?: { target: unknown } }) => void;
-    quickFilterText?: string;
-    overlayNoRowsTemplate?: string;
-    columnDefs: MockColDef[];
-    loading?: boolean;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    context?: any;
-  }) => {
+  AgGridReact: (props: MockGridProps) => {
     lastGridProps = props;
     return null;
   },
 }));
+
+interface MockRowNode {
+  id: string;
+  selected: boolean;
+  isSelected: () => boolean;
+  setSelected: (selected: boolean) => void;
+}
+
+/**
+ * Just enough of AG Grid's `GridApi` for DataTab's selection and
+ * sort/filter-restore code paths — the real grid can't run under jsdom (it
+ * needs layout measurement), and these tests are about what DataTab asks the
+ * grid to do, not about the grid doing it.
+ */
+function createMockGridApi(rowIds: string[] = []) {
+  const nodes = new Map<string, MockRowNode>();
+  for (const id of rowIds) {
+    const node: MockRowNode = {
+      id,
+      selected: false,
+      isSelected: () => node.selected,
+      setSelected: (selected: boolean) => {
+        node.selected = selected;
+      },
+    };
+    nodes.set(id, node);
+  }
+  return {
+    nodes,
+    getRowNode: (id: string) => nodes.get(id),
+    getSelectedNodes: () => [...nodes.values()].filter((node) => node.selected),
+    selectedIds: () =>
+      [...nodes.values()].filter((node) => node.selected).map((node) => node.id),
+    applyColumnState: vi.fn(),
+    setFilterModel: vi.fn(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getColumnState: vi.fn((): any[] => []),
+    getFilterModel: vi.fn(() => ({})),
+  };
+}
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -76,9 +123,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetLastGridProps();
   capturedMessagesBatchHandler = null;
-  useMessageViewerStore.setState({ message: null, connectionId: null, topic: null });
-  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
+  useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, byTab: {} });
+  useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
+  useGeneralSettingsStore.setState({ maxTotalFetchBytes: 536_870_912 });
   useDataTabFiltersStore.setState({ formByTab: {} });
+  useDataTabGridStateStore.setState({ stateByTab: {} });
 });
 
 describe("DataTab", () => {
@@ -141,9 +191,12 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Search messages")).toHaveValue("");
     // A brand new topic's form starts at the default cap, not blank.
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("100");
+    // ...and its search box starts empty rather than inheriting the previous
+    // topic's, which would silently hide rows the new topic did return.
+    expect(screen.getByLabelText("Search messages")).toHaveValue("");
   });
 
-  it("keeps a topic's filter form intact when switching away to a different topic and back, even though the search text does not persist", async () => {
+  it("keeps a topic's filter form and search text intact when switching away to a different topic and back", async () => {
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const { rerender } = render(
@@ -163,6 +216,9 @@ describe("DataTab", () => {
     );
     // A brand new topic's form starts at the default cap, not blank.
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("100");
+    // ...and its search box starts empty rather than inheriting the previous
+    // topic's, which would silently hide rows the new topic did return.
+    expect(screen.getByLabelText("Search messages")).toHaveValue("");
 
     rerender(
       <QueryClientProvider client={client}>
@@ -172,9 +228,9 @@ describe("DataTab", () => {
 
     expect(screen.getByLabelText("Max messages per partition")).toHaveValue("5");
     expect(screen.getByLabelText("Offset")).toHaveValue("100");
-    // The quick-filter search box is deliberately NOT persisted per topic —
-    // only the fetch filter form is.
-    expect(screen.getByLabelText("Search messages")).toHaveValue("");
+    // Keyed per topic like the fetch form, so coming back to a topic you'd
+    // searched restores the search rather than silently widening it.
+    expect(screen.getByLabelText("Search messages")).toHaveValue("some-old-order-id");
   });
 
   it("passes the current partitionId to viewMessage when a row is clicked, so the viewer can tell a topic-wide Data tab apart from one of its partitions'", () => {
@@ -718,7 +774,7 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    expect(await screen.findByText(/Search examines only the first 4 KB/)).toBeInTheDocument();
+    expect(await screen.findByText(/Search matches only the first 4 KB/)).toBeInTheDocument();
   });
 
   it("does not warn about bounded search when every loaded message fits within the searched prefix", async () => {
@@ -730,7 +786,69 @@ describe("DataTab", () => {
     await user.click(screen.getByRole("button", { name: "Fetch" }));
     await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeInTheDocument());
 
-    expect(screen.queryByText(/Search examines only/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
+  });
+
+  // The reported bug. "Fetch message payload" off still returns each row's
+  // real size (the grid shows it, and the per-row Fetch payload button is
+  // priced off it) but no bytes at all — so a notice keyed on size alone
+  // announced a bounded search over values that had not been fetched, beside
+  // a blank Value column where the search could match nothing whatsoever.
+  it("does not warn about bounded search when the fetch pulled no payloads, however large the messages are", async () => {
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: 5_000_000, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: 9_000_000, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+
+    expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
+  });
+
+  // ...but the same rows do warn once their payloads are actually pulled in,
+  // one at a time, by the Value column's per-row button.
+  it("starts warning about bounded search once a large payload is lazily fetched into a row", async () => {
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: 5_000_000, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeInTheDocument());
+    expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [
+          { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("a".repeat(5000)), payloadSizeBytes: 5_000_000, headers: [] },
+        ],
+        totalMatching: 1,
+      }),
+    });
+    await lastGridProps?.context.fetchPayload(messages[0]);
+
+    expect(await screen.findByText(/Search matches only the first 4 KB/)).toBeInTheDocument();
+  });
+
+  it("does not warn when every loaded payload sits inside the searched prefix", async () => {
+    const body = btoa("a".repeat(1000));
+    const messages = [
+      { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: body, payloadSizeBytes: 1000, headers: [] },
+      { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: body, payloadSizeBytes: 4000, headers: [] },
+    ];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: messages.length }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+
+    expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
   });
 
   it("shows nothing loaded before any fetch has run", () => {
@@ -946,7 +1064,7 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    expect(await screen.findByText(/Search examines only the first/)).toBeInTheDocument();
+    expect(await screen.findByText(/Search matches only the first/)).toBeInTheDocument();
   });
 
   it("clears the viewed message when Fetch runs again, so the right panel doesn't keep showing a row from a superseded fetch", async () => {
@@ -1019,5 +1137,540 @@ describe("DataTab", () => {
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
       initial[1],
     ]);
+  });
+  // --- Selected-row highlight ---------------------------------------------
+  //
+  // The grid's highlight is driven from the message viewer store rather than
+  // from AG Grid's own click-to-select, so that the highlighted row and the
+  // payload on the right can never disagree — including in the cases no
+  // click produced: reopening a top-level tab, and the viewer's Close
+  // button.
+
+  it("gives the grid a row id built from partition and offset, so a selected row survives rowData being replaced", () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(lastGridProps?.getRowId?.({ data: { partition: 3, offset: 42 } })).toBe("3:42");
+  });
+
+  it("configures single-row selection with AG Grid's own click-selection off, leaving the store to decide what's selected", () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(lastGridProps?.rowSelection).toEqual({
+      mode: "singleRow",
+      checkboxes: false,
+      enableClickSelection: false,
+    });
+  });
+
+  it("highlights the row whose payload the right pane is showing when a row is clicked", async () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi(["0:1", "0:2"]);
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    lastGridProps?.onRowClicked({
+      data: { partition: 0, offset: 2, timestampMs: null, keyBase64: null, payloadBase64: "eA==" },
+    });
+
+    await waitFor(() => expect(gridApi.selectedIds()).toEqual(["0:2"]));
+  });
+
+  it("moves the highlight rather than accumulating it when a second row is clicked", async () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi(["0:1", "0:2"]);
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    lastGridProps?.onRowClicked({ data: { partition: 0, offset: 1, payloadBase64: "eA==" } });
+    await waitFor(() => expect(gridApi.selectedIds()).toEqual(["0:1"]));
+    lastGridProps?.onRowClicked({ data: { partition: 0, offset: 2, payloadBase64: "eA==" } });
+
+    await waitFor(() => expect(gridApi.selectedIds()).toEqual(["0:2"]));
+  });
+
+  it("clears the highlight when the right pane is closed, so no row is marked as being shown", async () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi(["0:1"]);
+    lastGridProps?.onGridReady?.({ api: gridApi });
+    lastGridProps?.onRowClicked({ data: { partition: 0, offset: 1, payloadBase64: "eA==" } });
+    await waitFor(() => expect(gridApi.selectedIds()).toEqual(["0:1"]));
+
+    act(() => useMessageViewerStore.getState().clear());
+
+    await waitFor(() => expect(gridApi.selectedIds()).toEqual([]));
+  });
+
+  // Reopening a top-level tab remounts the grid with the tab's cached rows
+  // and its cached viewed message. Without this, the right pane came back
+  // showing a payload while the grid below it showed nothing selected.
+  it("re-highlights the viewed message's row when a grid is created with one already open in the right pane", () => {
+    useMessageViewerStore.setState({
+      message: { partition: 0, offset: 7, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: 1, headers: [] },
+      connectionId: "1",
+      topic: "orders",
+      partitionId: undefined,
+    });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi(["0:7"]);
+
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    expect(gridApi.selectedIds()).toEqual(["0:7"]);
+  });
+
+  // Rows stream in over the course of a fetch, so the row the right pane is
+  // showing frequently doesn't exist yet at the moment the grid is created.
+  it("highlights the viewed message's row once it arrives, not only if it was already there", () => {
+    useMessageViewerStore.setState({
+      message: { partition: 1, offset: 9, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: 1, headers: [] },
+      connectionId: "1",
+      topic: "orders",
+      partitionId: undefined,
+    });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi();
+    lastGridProps?.onGridReady?.({ api: gridApi });
+    expect(gridApi.selectedIds()).toEqual([]);
+
+    const arrived = createMockGridApi(["1:9"]);
+    lastGridProps?.onRowDataUpdated?.({ api: arrived });
+
+    expect(arrived.selectedIds()).toEqual(["1:9"]);
+  });
+
+  // The right pane is shared across topics within a tab, and App.tsx clears
+  // it on a topic switch — but the clear lands a render later. Until it does,
+  // this grid must not highlight one of its own rows just because the offsets
+  // happen to line up with a message from a different topic.
+  it("highlights nothing when the right pane's message came from a different topic", () => {
+    useMessageViewerStore.setState({
+      message: { partition: 0, offset: 7, timestampMs: null, keyBase64: null, payloadBase64: "eA==", payloadSizeBytes: 1, headers: [] },
+      connectionId: "1",
+      topic: "order-created",
+      partitionId: undefined,
+    });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi(["0:7"]);
+
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    expect(gridApi.selectedIds()).toEqual([]);
+  });
+
+  // --- Sort and column filters across a top-level tab switch ---------------
+
+  it("saves the grid's sort order, in sort priority order, when the user sorts a column", () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi();
+    gridApi.getColumnState.mockReturnValue([
+      { colId: "partition", sort: "asc", sortIndex: 1 },
+      { colId: "offset", sort: null, sortIndex: null },
+      { colId: "timestampMs", sort: "desc", sortIndex: 0 },
+    ]);
+
+    lastGridProps?.onSortChanged?.({ api: gridApi });
+
+    expect(useDataTabGridStateStore.getState().stateByTab["tab-1:1:orders:all"]?.sortModel).toEqual([
+      { colId: "timestampMs", sort: "desc" },
+      { colId: "partition", sort: "asc" },
+    ]);
+  });
+
+  it("saves the grid's column filters when the user filters a column", () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi();
+    gridApi.getFilterModel.mockReturnValue({ partition: { filterType: "number", type: "equals", filter: 2 } });
+
+    lastGridProps?.onFilterChanged?.({ api: gridApi });
+
+    expect(useDataTabGridStateStore.getState().stateByTab["tab-1:1:orders:all"]?.filterModel).toEqual({
+      partition: { filterType: "number", type: "equals", filter: 2 },
+    });
+  });
+
+  // Switching top-level tabs unmounts the middle pane outright (App.tsx keys
+  // it by the active tab), so the grid that comes back is a brand new one —
+  // it has to be told the arrangement the old one had.
+  it("re-applies the saved sort and column filters to a grid created after a top-level tab switch", () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useDataTabGridStateStore.setState({
+      stateByTab: {
+        "tab-1:1:orders:all": {
+          sortModel: [{ colId: "offset", sort: "desc" }],
+          filterModel: { partition: { filterType: "number", type: "equals", filter: 2 } },
+          searchText: "",
+        },
+      },
+    });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi();
+
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    expect(gridApi.applyColumnState).toHaveBeenCalledWith({
+      state: [{ colId: "offset", sort: "desc", sortIndex: 0 }],
+      defaultState: { sort: null },
+    });
+    expect(gridApi.setFilterModel).toHaveBeenCalledWith({
+      partition: { filterType: "number", type: "equals", filter: 2 },
+    });
+  });
+
+  // Restoring an arrangement makes the grid emit the same sort/filter events
+  // a user would — writing those back would be harmless here but pointless
+  // churn, and it's the guard that keeps a restore from being able to
+  // rewrite the thing it is restoring from.
+  it("does not write the arrangement it is restoring back to the store as if the user had made it", () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useDataTabGridStateStore.setState({
+      stateByTab: {
+        "tab-1:1:orders:all": {
+          sortModel: [{ colId: "offset", sort: "desc" }],
+          filterModel: {},
+          searchText: "",
+        },
+      },
+    });
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const gridApi = createMockGridApi();
+    // A grid mid-restore hasn't taken the new sort on yet, so asking it
+    // reports the old (empty) one — exactly the value that would wipe the
+    // saved sort if it were written back.
+    gridApi.applyColumnState.mockImplementation(() => lastGridProps?.onSortChanged?.({ api: gridApi }));
+
+    lastGridProps?.onGridReady?.({ api: gridApi });
+
+    expect(useDataTabGridStateStore.getState().stateByTab["tab-1:1:orders:all"]?.sortModel).toEqual([
+      { colId: "offset", sort: "desc" },
+    ]);
+  });
+
+  // Switching topic within a tab keeps the same grid alive, so onGridReady
+  // never fires again — the arrangement has to be swapped over explicitly.
+  it("swaps the arrangement over when the tab switches to a different topic without recreating the grid", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useDataTabGridStateStore.setState({
+      stateByTab: {
+        "tab-1:1:order-created:all": {
+          sortModel: [{ colId: "partition", sort: "asc" }],
+          filterModel: {},
+          searchText: "",
+        },
+      },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="orders" />
+      </QueryClientProvider>,
+    );
+    const gridApi = createMockGridApi();
+    lastGridProps?.onGridReady?.({ api: gridApi });
+    gridApi.applyColumnState.mockClear();
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <DataTab connectionId="1" topicName="order-created" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(gridApi.applyColumnState).toHaveBeenCalledWith({
+        state: [{ colId: "partition", sort: "asc", sortIndex: 0 }],
+        defaultState: { sort: null },
+      }),
+    );
+  });
+  // --- Max total fetch size accounting -------------------------------------
+  //
+  // The ceiling is app-wide (every tab shares one webview process) and is
+  // enforced by evicting the coldest views, not by refusing new work —
+  // refusing stops growth but frees nothing already held elsewhere. What is
+  // counted is bytes *retained*, which on a large-message topic is orders of
+  // magnitude below the bytes read.
+
+  const TAB_KEY = "tab-1:1:orders:all";
+  /** A row holding `retained` bytes of payload, from a message of `size` bytes on the broker. */
+  const row = (size: number, retained: number | null) => ({
+    partition: 0,
+    offset: 1,
+    timestampMs: null,
+    keyBase64: null,
+    payloadBase64: retained === null ? null : btoa("a".repeat(retained)),
+    payloadSizeBytes: size,
+    headers: [],
+  });
+  const held = (key = TAB_KEY) => useTabDataStore.getState().payloadBytesByTab[key];
+
+  it("charges the tab nothing when a Fetch ran with the payload checkbox off", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(4_000_000, null)],
+        totalMatching: 1,
+        payloadBytesRead: 0,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(held()).toBe(0));
+  });
+
+  // The heart of the change: a browse of 4 MB records keeps only a bounded
+  // slice of each, so charging it the 4 MB it read off the broker massively
+  // over-counted what the webview was actually holding.
+  it("charges what the rows retain, not what the fetch read off the broker", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(4_000_000, 4_096), row(4_000_000, 4_096)],
+        totalMatching: 2,
+        // What the old accounting used, and what the backend still reports.
+        payloadBytesRead: 8_000_000,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByLabelText("Fetch message payload"));
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(held()).toBe(8_192));
+  });
+
+  it("adds only the bytes a lazily fetched row actually keeps", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [row(3_000_000, null)], totalMatching: 1, payloadBytesRead: 0 }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(held()).toBe(0));
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(3_000_000, 2_048)],
+        totalMatching: 1,
+        payloadBytesRead: 3_000_000,
+      }),
+    });
+    await lastGridProps?.context.fetchPayload(row(3_000_000, null));
+
+    expect(held()).toBe(2_048);
+  });
+
+  it("keeps adding across repeated per-row fetches rather than replacing the total", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [row(1_000_000, null)], totalMatching: 1, payloadBytesRead: 0 }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(1_000_000, 1_024)],
+        totalMatching: 1,
+        payloadBytesRead: 1_000_000,
+      }),
+    });
+    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
+    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
+    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
+
+    expect(held()).toBe(3_072);
+  });
+
+  // Eviction, not refusal. The click is one message; refusing it while the
+  // app holds megabytes of colder rows in other tabs protects the wrong
+  // thing, and frees nothing.
+  it("evicts a colder view's rows rather than refusing a per-row payload fetch", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    const COLD = "tab-2:1:archive:all";
+    useTabDataStore.setState({
+      messagesByTab: { [COLD]: [row(9_000, 9_000)] },
+      payloadBytesByTab: { [COLD]: 9_000 },
+      lastUsedByTab: { [COLD]: 1 },
+      totalMatchingByTab: {},
+      evictedTabs: {},
+    });
+    useGeneralSettingsStore.setState({ maxTotalFetchBytes: 10_000 });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [row(5_000, null)], totalMatching: 1, payloadBytesRead: 0 }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
+
+    const perRowFetch = vi.fn(() => ({
+      messages: [row(5_000, 5_000)],
+      totalMatching: 1,
+      payloadBytesRead: 5_000,
+    }));
+    setInvokeHandlers({ connection_fetch_messages: perRowFetch });
+    await lastGridProps?.context.fetchPayload(row(5_000, null));
+
+    // The click went through...
+    expect(perRowFetch).toHaveBeenCalledTimes(1);
+    expect(held()).toBe(5_000);
+    // ...and the cold view in the other tab gave up its rows to fit.
+    expect(held(COLD)).toBeUndefined();
+    expect(useTabDataStore.getState().messagesByTab[COLD]).toBeUndefined();
+    expect(useTabDataStore.getState().evictedTabs[COLD]).toBe(true);
+  });
+
+  it("never evicts the view being fetched into", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useGeneralSettingsStore.setState({ maxTotalFetchBytes: 1_000 });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(9_000, 9_000)],
+        totalMatching: 1,
+        payloadBytesRead: 9_000,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByLabelText("Fetch message payload"));
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    // Over the limit with nothing else to drop: the fetch keeps its own rows
+    // rather than discarding the results it just went and got.
+    await waitFor(() => expect(held()).toBe(9_000));
+    expect(lastGridProps?.rowData).toHaveLength(1);
+  });
+
+  it("says so when this view alone is over the whole limit", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useGeneralSettingsStore.setState({ maxTotalFetchBytes: 1_048_576 });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(4_194_304, 4_194_304)],
+        totalMatching: 1,
+        payloadBytesRead: 4_194_304,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByLabelText("Fetch message payload"));
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    expect(await screen.findByText(/This view alone is holding/i)).toBeInTheDocument();
+  });
+
+  // Rows disappearing with the filters still set reads as a broken fetch
+  // unless the tab says what happened.
+  it("tells a view whose rows were evicted while the user was working elsewhere", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useTabDataStore.setState({ evictedTabs: { [TAB_KEY]: true } });
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages: [], totalMatching: 0 }) });
+
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(screen.getByText(/cleared while you were working elsewhere/i)).toBeInTheDocument();
+  });
+
+  it("drops the eviction notice once the view is fetched again", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useTabDataStore.setState({ evictedTabs: { [TAB_KEY]: true } });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [row(100, 100)], totalMatching: 1, payloadBytesRead: 100 }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(screen.queryByText(/cleared while you were working elsewhere/i)).not.toBeInTheDocument());
+  });
+
+  // The gap this closes: `handlePlay` only records the authoritative total on
+  // success, so rows that had already streamed into the grid weighed nothing
+  // as far as the ceiling was concerned if the fetch was Stopped or failed.
+  // On a large fetch stopped near the end that was hundreds of megabytes the
+  // app was holding and not counting.
+  it("counts streamed rows as they arrive, so a Stopped fetch's rows are not held for free", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    let resolveFetch: (result: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: row(4_000, 4_000) } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: row(4_000, 4_000) } });
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(2));
+
+    // Still mid-fetch, and already counted.
+    expect(held()).toBe(8_000);
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    // The rows are still on the grid, so they must still be on the books.
+    expect(lastGridProps?.rowData).toHaveLength(2);
+    expect(held()).toBe(8_000);
+    resolveFetch({ messages: [], totalMatching: 0 });
+  });
+
+  it("replaces the streamed running total with the finished fetch's own count, rather than doubling it", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    let resolveFetch: (result: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+    const streamed = row(4_000, 4_000);
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    await waitFor(() => expect(held()).toBe(4_000));
+
+    resolveFetch({ messages: [streamed], totalMatching: 1, payloadBytesRead: 4_000 });
+
+    // The same single row, counted once — not 8,000.
+    await waitFor(() => expect(held()).toBe(4_000));
+  });
+
+  it("starts the view's total over when Fetch is run again", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(3_000, 3_000)],
+        totalMatching: 1,
+        payloadBytesRead: 3_000,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByLabelText("Fetch message payload"));
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(held()).toBe(3_000));
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({ messages: [row(3_000, null)], totalMatching: 1, payloadBytesRead: 0 }),
+    });
+    await user.click(screen.getByLabelText("Fetch message payload"));
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(held()).toBe(0));
   });
 });

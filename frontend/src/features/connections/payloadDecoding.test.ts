@@ -6,7 +6,8 @@ import {
   decodeValuePreview,
   detectConfluentAvro,
   base64DecodedLength,
-  exceedsValuePreview,
+  searchSeesPartialValue,
+  VALUE_PREVIEW_DECODED_BYTES,
   isPayloadTruncated,
   formatXmlNode,
   tryParseJson,
@@ -169,26 +170,54 @@ describe("decodeValuePreview", () => {
   });
 });
 
-describe("exceedsValuePreview", () => {
+describe("searchSeesPartialValue", () => {
+  const row = (payloadBase64: string | null, payloadSizeBytes: number | null) => ({
+    payloadBase64,
+    payloadSizeBytes,
+  });
+
   it("is false when the payload's size is unknown", () => {
-    expect(exceedsValuePreview(null)).toBe(false);
+    expect(searchSeesPartialValue(row("eA==", null))).toBe(false);
   });
 
   it("is false for a payload the preview covers in full", () => {
-    expect(exceedsValuePreview(VALUE_PREVIEW_BYTES)).toBe(false);
+    expect(searchSeesPartialValue(row("eA==", VALUE_PREVIEW_BYTES))).toBe(false);
   });
 
   it("is true for a payload longer than the preview", () => {
-    expect(exceedsValuePreview(VALUE_PREVIEW_BYTES + 1)).toBe(true);
+    expect(searchSeesPartialValue(row("eA==", VALUE_PREVIEW_DECODED_BYTES + 1))).toBe(true);
   });
 
-  // The size now comes from the backend rather than being inferred from the
-  // base64 it sent: since the backend truncates payloads to the preview
-  // bound, a payload cut to exactly that size is byte-for-byte
-  // indistinguishable from one that was genuinely that long, and measuring
-  // the base64 would call every large message "not oversized".
-  it("reads the real size even for a payload whose base64 was truncated to the preview bound", () => {
-    expect(exceedsValuePreview(3_145_728)).toBe(true);
+  // The size comes from the backend rather than being inferred from the
+  // base64 it sent: since the backend truncates payloads for transport, a
+  // payload cut to exactly that size is byte-for-byte indistinguishable from
+  // one that was genuinely that long, and measuring the base64 would call
+  // every large message fully searched.
+  it("reads the real size even for a payload whose base64 was truncated for transport", () => {
+    expect(searchSeesPartialValue(row("eA==", 3_145_728))).toBe(true);
+  });
+
+  // The reported bug. "Fetch message payload" off sends every row's real
+  // size and no bytes, so a size-only test announced that search was reading
+  // the first 4 KB of values that had not been fetched at all — next to a
+  // blank Value column, on a grid where search could match nothing.
+  it("is false for a row that carries no payload, however large the message is", () => {
+    expect(searchSeesPartialValue(row(null, 50_000_000))).toBe(false);
+  });
+
+  // The preview cuts the base64 on a 4-character boundary, so it decodes a
+  // whole 3-byte group past the nominal bound. Those two bytes were reported
+  // as unsearched when the search had in fact read them.
+  it("is false at the preview's real decoded length, not the nominal bound it rounds up from", () => {
+    expect(VALUE_PREVIEW_DECODED_BYTES).toBeGreaterThan(VALUE_PREVIEW_BYTES);
+    expect(searchSeesPartialValue(row("eA==", VALUE_PREVIEW_BYTES + 1))).toBe(false);
+    expect(searchSeesPartialValue(row("eA==", VALUE_PREVIEW_DECODED_BYTES))).toBe(false);
+  });
+
+  // A tombstone fetched with payloads on: the backend sends an empty
+  // payload_base64 and no size at all.
+  it("is false for a tombstone", () => {
+    expect(searchSeesPartialValue(row("", null))).toBe(false);
   });
 });
 

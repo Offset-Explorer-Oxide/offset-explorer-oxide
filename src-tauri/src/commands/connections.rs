@@ -354,13 +354,31 @@ pub async fn connection_connect(
 
 /// Backs the cluster detail panel's "Disconnect" button.
 #[tauri::command]
-pub async fn connection_disconnect(state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
+pub async fn connection_disconnect(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
     state.connections.mark_disconnected(&id);
+    // A fetch already inside its poll loop holds its own consumer, so
+    // releasing the pool below stops new requests but not that one — it would
+    // keep pulling messages from a cluster the user has just disconnected
+    // from, streaming them at a Data tab that has already been cleared.
+    let cancelled = state.fetch_cancellations.cancel_all_for_connection(&id);
+    if !cancelled.is_empty() {
+        crate::logging::emit_log(
+            &app,
+            "info",
+            format!("Stopped {} in-flight fetch(es) on disconnect", cancelled.len()),
+        );
+    }
     // Disconnect means disconnect: drop the pooled client so the socket
     // actually closes, rather than leaving an idle connection open against
     // the cluster. This is also what the 120-minute idle auto-disconnect
     // ends up calling.
     state.kafka.release(&id);
+    // The Schema Registry client is per connection too, and holds an open
+    // HTTPS connection plus a cache of schemas read from this cluster's
+    // registry. Left behind, disconnecting closed the broker socket and left
+    // the registry one open, and a later reconnect went on serving schemas
+    // fetched before the disconnect.
+    state.schema_registry.release(&id);
     Ok(())
 }
 
@@ -475,6 +493,12 @@ const PROGRESS_LOG_INTERVAL: usize = 25;
 /// (the Data tab sends the few KB its grid can actually display), it is what
 /// keeps a large fetch from moving gigabytes of base64 into the webview and
 /// killing it.
+///
+/// It charges only for payloads the fetch keeps, so a metadata-only browse
+/// (`include_payload` off) is never stopped by it. The Data tab spends the
+/// same budget across its own per-row "Fetch payload" clicks, which retain
+/// bytes into the same cached rows this call's result does — see
+/// `payloadBytesByTab` in `useTabDataStore`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn connection_fetch_messages(
@@ -495,7 +519,9 @@ pub async fn connection_fetch_messages(
     // still unknown. `FetchCancellations::cancel` now records such a cancel
     // regardless, so this ordering is belt to that braces rather than the
     // whole fix.
-    let cancelled = state.fetch_cancellations.begin(&request_id);
+    // Registered against this connection, so disconnecting the cluster can
+    // stop it — see `FetchCancellations::cancel_all_for_connection`.
+    let cancelled = state.fetch_cancellations.begin_for_connection(&request_id, &id);
     let connection = match connection_for_request(&state, &id).await {
         Ok(connection) => connection,
         Err(err) => {

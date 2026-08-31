@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { FilterFormState } from "./dataFilters";
+import { dataTabKeyBelongsTo } from "../workspace/useTabDataStore";
 
 /**
  * The Data tab's filter form (Max messages per partition, Partition filter,
@@ -13,9 +14,17 @@ import { FilterFormState } from "./dataFilters";
 interface DataTabFiltersState {
   formByTab: Record<string, FilterFormState>;
   setForm: (key: string, form: FilterFormState) => void;
+  /** Forgets every filter form belonging to one connection, in every tab — see `useTabDataStore`'s `clearForConnection`. */
+  clearForConnection: (connectionId: string) => void;
 }
 
 export const useDataTabFiltersStore = create<DataTabFiltersState>((set) => ({
   formByTab: {},
   setForm: (key, form) => set((state) => ({ formByTab: { ...state.formByTab, [key]: form } })),
+  clearForConnection: (connectionId) =>
+    set((state) => ({
+      formByTab: Object.fromEntries(
+        Object.entries(state.formByTab).filter(([key]) => !dataTabKeyBelongsTo(key, connectionId)),
+      ),
+    })),
 }));

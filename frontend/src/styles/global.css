@@ -192,6 +192,11 @@ body {
   font-size: 12px;
   color: var(--color-fg-muted);
 }
+/* The app-wide payload total, once it is close enough to the ceiling that
+   the next fetch is likely to start evicting other tabs' rows. */
+.bottom-panel-memory-label--warning {
+  color: var(--color-status-amber);
+}
 .bottom-panel-memory button {
   background: none;
   border: 1px solid var(--color-border);
@@ -1204,5 +1209,15 @@ body {
   border-left: 2px solid var(--color-status-red);
   font-size: 12px;
   line-height: 1.4;
+  color: var(--color-fg-muted);
+}
+
+/* An explanatory note under a group of connection-modal fields — e.g. the
+   Schema Registry TLS fields, where the accepted file formats decide whether
+   the neighbouring passwords mean anything at all. */
+.connection-modal-field-note {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  font-size: 12px;
   color: var(--color-fg-muted);
 }

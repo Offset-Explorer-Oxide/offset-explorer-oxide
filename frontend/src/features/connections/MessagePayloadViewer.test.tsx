@@ -8,6 +8,7 @@ import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useTabOrderStore } from "../tabs/useTabOrderStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
+import { useMessageViewerPrefsStore } from "../workspace/useMessageViewerPrefsStore";
 import { MessagePayloadViewer, TEXT_PREVIEW_CHARS } from "./MessagePayloadViewer";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -22,6 +23,7 @@ beforeEach(() => {
   useJsonViewerTabsStore.setState({ tabs: [] });
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useTabOrderStore.setState({ anchors: {} });
+  useMessageViewerPrefsStore.setState({ prefsByTab: {} });
 });
 
 describe("MessagePayloadViewer", () => {
@@ -635,5 +637,88 @@ describe("MessagePayloadViewer", () => {
 
     expect(await screen.findByRole("button", { name: /expand events/i })).toBeInTheDocument();
     expect(screen.queryByText('"event-0"')).not.toBeInTheDocument();
+  });
+  // --- The chosen view survives a top-level tab switch ---------------------
+  //
+  // App.tsx renders this component `key={activeTabId}`, so leaving a tab and
+  // coming back destroys and rebuilds it. Held in `useState`, the mode you
+  // had chosen died with it and you landed back on raw Text.
+
+  it("comes back in the JSON view after the top-level tab was switched away from and back", async () => {
+    const user = userEvent.setup();
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(JSON.stringify({ id: "order-42" })),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    const { unmount } = renderWithClient(<MessagePayloadViewer />);
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+    expect(screen.getByText('"order-42"')).toBeInTheDocument();
+
+    // Leaving the tab tears the viewer down; coming back builds a new one.
+    unmount();
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByText('"order-42"')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "JSON" })).toHaveClass("message-payload-toggle-button--active");
+  });
+
+  it("comes back on the Headers panel tab after the top-level tab was switched away from and back", async () => {
+    const user = userEvent.setup();
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("hello"),
+        payloadSizeBytes: null,
+        headers: [{ key: "trace-id", valueBase64: btoa("abc") }],
+      },
+    });
+    const { unmount } = renderWithClient(<MessagePayloadViewer />);
+    await user.click(screen.getByRole("tab", { name: "Headers" }));
+    expect(screen.getByText("trace-id")).toBeInTheDocument();
+
+    unmount();
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByText("trace-id")).toBeInTheDocument();
+  });
+
+  // Each top-level tab's right pane holds its own message
+  // (`useMessageViewerStore.byTab`), so the view mode is per tab too — a
+  // second tab opens on the Text default rather than inheriting the first's.
+  it("does not carry one tab's chosen view mode over to a different tab", async () => {
+    const user = userEvent.setup();
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(JSON.stringify({ id: "order-42" })),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    const { unmount } = renderWithClient(<MessagePayloadViewer />);
+    await user.click(screen.getByRole("button", { name: "JSON" }));
+    unmount();
+
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-2", error: null });
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByRole("button", { name: "Text" })).toHaveClass("message-payload-toggle-button--active");
+    expect(screen.queryByText('"order-42"')).not.toBeInTheDocument();
   });
 });

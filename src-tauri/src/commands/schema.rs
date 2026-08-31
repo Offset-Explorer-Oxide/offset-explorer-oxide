@@ -41,15 +41,19 @@ pub async fn topic_schema_delete(
     Ok(kafkaoxide_db::topic_schemas::delete(&state.pool, &connection_id, &topic, &format).await?)
 }
 
-/// Backs the payload viewer's "Avro" mode. Decode precedence: if the
-/// payload is itself an Avro Object Container File (schema embedded in the
-/// message), decode it directly — a manual or registry schema would never
-/// match its framing anyway, so this check wins outright. Otherwise a
-/// manual per-topic schema wins when set (decoding the whole payload — no
-/// wire-format header to strip); otherwise, if the payload carries the
-/// Confluent wire-format header and this connection has a Schema Registry
-/// configured, fetch the schema by the embedded id and decode the bytes
-/// after the 5-byte header.
+/// Backs the payload viewer's "Avro" mode.
+///
+/// The decode *precedence* — container file, then a manual per-topic schema,
+/// then the Confluent header — lives in
+/// `kafkaoxide_avro::decide_decode_strategy`, where it is unit-tested. It used
+/// to be spelled out inline here, and this crate needs a desktop toolchain to
+/// build, so the rule most likely to surprise a user (a pasted schema silently
+/// overriding their registry) had no test anywhere. This function now only
+/// gathers the inputs and carries out the decision.
+///
+/// Both inputs are local SQLite reads, so they are fetched up front rather
+/// than lazily per branch: it costs one extra cheap read on the container-file
+/// path and buys a single, testable rule instead of an order of `if`s.
 #[tauri::command]
 pub async fn connection_decode_avro(
     state: State<'_, AppState>,
@@ -62,27 +66,26 @@ pub async fn connection_decode_avro(
         .change_context(AppError::Decode)
         .attach_printable("payload isn't valid base64")?;
 
-    if kafkaoxide_avro::detect_container_file(&bytes) {
-        return Ok(kafkaoxide_avro::decode_container(&bytes)?);
-    }
-
-    if let Some(manual_schema) = kafkaoxide_db::topic_schemas::get(&state.pool, &id, &topic, "avro").await? {
-        return Ok(kafkaoxide_avro::decode(&bytes, &manual_schema)?);
-    }
-
+    let manual_schema = kafkaoxide_db::topic_schemas::get(&state.pool, &id, &topic, "avro").await?;
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
+    let endpoint = connection.schema_registry_endpoint.as_deref();
 
-    let schema_id = kafkaoxide_avro::detect_wire_format(&bytes).ok_or_else(|| {
-        CommandError::from(Report::new(AppError::Decode).attach_printable(
-            "payload has no Confluent Avro wire-format header and no manual schema is set for this topic",
-        ))
-    })?;
+    let strategy = kafkaoxide_avro::decide_decode_strategy(&bytes, manual_schema.is_some(), endpoint.is_some())
+        .map_err(|refusal| {
+            CommandError::from(Report::new(AppError::Decode).attach_printable(refusal.message()))
+        })?;
 
-    let endpoint = connection.schema_registry_endpoint.as_deref().ok_or_else(|| {
-        CommandError::from(Report::new(AppError::Decode).attach_printable(
-            "no manual schema is set for this topic and this connection has no Schema Registry configured",
-        ))
-    })?;
+    let schema_id = match strategy {
+        kafkaoxide_avro::AvroDecodeStrategy::ContainerFile => {
+            return Ok(kafkaoxide_avro::decode_container(&bytes)?);
+        }
+        kafkaoxide_avro::AvroDecodeStrategy::ManualSchema => {
+            let schema = manual_schema.expect("the strategy is only chosen when a manual schema exists");
+            return Ok(kafkaoxide_avro::decode(&bytes, &schema)?);
+        }
+        kafkaoxide_avro::AvroDecodeStrategy::SchemaRegistry { schema_id } => schema_id,
+    };
+    let endpoint = endpoint.expect("the strategy is only chosen when an endpoint is configured");
 
     let auth = SchemaRegistryAuth {
         basic_auth_credentials: connection.schema_registry_basic_auth_credentials.as_deref(),

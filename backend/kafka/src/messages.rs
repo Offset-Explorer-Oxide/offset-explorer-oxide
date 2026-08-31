@@ -183,6 +183,28 @@ pub fn byte_budget_reached(bytes_read: u64, budget: Option<u64>) -> bool {
     budget.is_some_and(|budget| bytes_read >= budget)
 }
 
+/// What a polled message charges against the byte budget.
+///
+/// The budget bounds what a fetch *keeps*, not what it reads past. With
+/// `include_payload` off nothing of the payload survives the poll loop — the
+/// row carries partition/offset/timestamp/key and a size, and the bytes are
+/// dropped — so such a browse costs the webview nothing to hold and is
+/// charged nothing. Charging it capped a metadata-only browse of a
+/// multi-megabyte topic at a few hundred rows, and reported that as a size
+/// limit against a result containing no payloads at all.
+///
+/// When payloads *are* kept this is the full payload length rather than the
+/// truncated preview's: the preview bound is a per-message cap, and pairing
+/// it with a budget charged only for what survived truncation would let an
+/// unbounded number of large messages through.
+pub fn budgeted_payload_bytes(payload_len: usize, include_payload: bool) -> u64 {
+    if include_payload {
+        payload_len as u64
+    } else {
+        0
+    }
+}
+
 pub fn combined_start_offset(explicit_offset: Option<i64>, from_timestamp_offset: Option<i64>) -> Option<i64> {
     match (explicit_offset, from_timestamp_offset) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -403,5 +425,42 @@ mod tests {
     fn a_single_message_over_the_whole_budget_is_still_returned_before_stopping() {
         let one_huge_message = 500_000_000u64;
         assert!(byte_budget_reached(one_huge_message, Some(1_024)));
+    }
+
+    /// A metadata-only browse keeps none of the payload, so it costs the
+    /// webview nothing to hold and must not be charged for it — otherwise
+    /// browsing a multi-megabyte topic stopped after a few hundred rows on a
+    /// size limit, against a result carrying no payloads at all.
+    #[test]
+    fn a_metadata_only_fetch_is_charged_nothing_for_the_payloads_it_drops() {
+        assert_eq!(budgeted_payload_bytes(4 * 1024 * 1024, false), 0);
+        assert_eq!(budgeted_payload_bytes(0, false), 0);
+    }
+
+    #[test]
+    fn a_fetch_that_keeps_payloads_is_charged_for_them() {
+        assert_eq!(budgeted_payload_bytes(4 * 1024 * 1024, true), 4 * 1024 * 1024);
+        assert_eq!(budgeted_payload_bytes(0, true), 0);
+    }
+
+    /// However many messages a metadata-only browse reads, its running total
+    /// stays at zero, so `byte_budget_reached` can never end it.
+    #[test]
+    fn no_number_of_dropped_payloads_ever_reaches_the_budget() {
+        let mut bytes_read = 0u64;
+        for _ in 0..10_000 {
+            bytes_read += budgeted_payload_bytes(8 * 1024 * 1024, false);
+        }
+        assert_eq!(bytes_read, 0);
+        assert!(!byte_budget_reached(bytes_read, Some(1_024)));
+    }
+
+    /// The same browse with payloads kept trips the budget almost at once —
+    /// the guard is still there, it is just charged to the mode that retains
+    /// the bytes.
+    #[test]
+    fn the_same_fetch_with_payloads_kept_still_stops_on_the_budget() {
+        let bytes_read = budgeted_payload_bytes(8 * 1024 * 1024, true);
+        assert!(byte_budget_reached(bytes_read, Some(1_024 * 1_024)));
     }
 }

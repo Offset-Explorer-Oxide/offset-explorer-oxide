@@ -25,7 +25,7 @@ use tokio::time::timeout;
 use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, BrokerSslConfig};
 use crate::messages::{
-    byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
+    budgeted_payload_bytes, byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
     effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
     payload_preview_slice,
 };
@@ -237,8 +237,9 @@ pub trait KafkaClient: Send + Sync {
     /// `kafkaoxide_core::FetchCancellations`.
     ///
     /// `max_total_payload_bytes` bounds the fetch by size rather than by
-    /// message count — see `byte_budget_reached`. `None` leaves it unbounded,
-    /// which only the single-message payload fetch should ever ask for.
+    /// message count — see `byte_budget_reached`. `None` leaves it unbounded.
+    /// It counts only payloads the fetch keeps, so a `filter` with
+    /// `include_payload` off is never bounded by it.
     #[allow(clippy::too_many_arguments)]
     async fn fetch_messages(
         &self,
@@ -1090,11 +1091,8 @@ impl KafkaClient for RdKafkaClient {
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
             let mut idle_elapsed = Duration::ZERO;
             let mut last_poll_error: Option<String> = None;
-            // Counted over every message this fetch takes off the broker,
-            // whether or not its bytes are kept: the read itself is what
-            // costs the time, and a metadata-only browse of a multi-megabyte
-            // topic pulls exactly as much over the wire as one that keeps the
-            // payloads.
+            // Counted only over payloads this fetch actually keeps — see the
+            // `include_payload` guard below.
             let mut payload_bytes_read: u64 = 0;
             let mut stopped_at_byte_budget = false;
 
@@ -1120,7 +1118,7 @@ impl KafkaClient for RdKafkaClient {
                             continue;
                         }
                         let payload = borrowed.payload().unwrap_or(&[]);
-                        payload_bytes_read += payload.len() as u64;
+                        payload_bytes_read += budgeted_payload_bytes(payload.len(), filter.include_payload);
                         let message = TopicMessage {
                             partition,
                             offset: borrowed.offset(),

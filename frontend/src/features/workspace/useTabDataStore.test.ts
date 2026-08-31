@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { dataTabCacheKey, tabDataKey, tabDataPrefix, UNASSIGNED_TAB_KEY, useTabDataStore } from "./useTabDataStore";
+import {
+  dataTabCacheKey,
+  tabDataKey,
+  tabDataPrefix,
+  totalRetainedPayloadBytes,
+  UNASSIGNED_TAB_KEY,
+  useTabDataStore,
+} from "./useTabDataStore";
 
 const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
 
 beforeEach(() => {
-  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
 });
 
 describe("tabDataKey", () => {
@@ -163,5 +170,160 @@ describe("tabDataPrefix", () => {
   it("does not match a different tab's keys", () => {
     const prefix = tabDataPrefix("tab-1");
     expect(dataTabCacheKey("tab-2", "1", "orders").startsWith(prefix)).toBe(false);
+  });
+  // --- Max total fetch size accounting -------------------------------------
+
+  it("starts a tab that has never fetched with no payload bytes charged", () => {
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBeUndefined();
+  });
+
+  it("replaces the total on a completed Fetch and adds on each per-row payload fetch", () => {
+    const { setTabPayloadBytes, addTabPayloadBytes } = useTabDataStore.getState();
+
+    setTabPayloadBytes("tab-1:1:orders:all", 5_000);
+    addTabPayloadBytes("tab-1:1:orders:all", 1_000);
+    addTabPayloadBytes("tab-1:1:orders:all", 1_000);
+
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBe(7_000);
+
+    // A new Fetch supersedes rather than accumulates — its rows replace the
+    // ones the earlier bytes were charged for.
+    setTabPayloadBytes("tab-1:1:orders:all", 200);
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBe(200);
+  });
+
+  it("adds onto a tab with no total yet, treating it as zero", () => {
+    useTabDataStore.getState().addTabPayloadBytes("tab-1:1:orders:all", 900);
+
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBe(900);
+  });
+
+  // The total describes the rows being dropped, so clearing them must clear
+  // it — otherwise a re-Fetch would start against a budget already spent by
+  // the fetch it replaced.
+  it("drops a tab's payload-byte total along with its rows", () => {
+    const { setTabPayloadBytes, setTabMessages, clearTabMessages } = useTabDataStore.getState();
+    setTabMessages("tab-1:1:orders:all", []);
+    setTabPayloadBytes("tab-1:1:orders:all", 9_000);
+
+    clearTabMessages("tab-1:1:orders:all");
+
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBeUndefined();
+  });
+
+  it("drops every topic's payload-byte total when a whole tab's memory is cleared", () => {
+    const { setTabPayloadBytes, clearAllMessagesForTab } = useTabDataStore.getState();
+    setTabPayloadBytes("tab-1:1:orders:all", 9_000);
+    setTabPayloadBytes("tab-1:1:shipments:all", 4_000);
+    setTabPayloadBytes("tab-2:1:orders:all", 7_000);
+
+    clearAllMessagesForTab("tab-1");
+
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:orders:all"]).toBeUndefined();
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-1:1:shipments:all"]).toBeUndefined();
+    // Another tab's budget is its own.
+    expect(useTabDataStore.getState().payloadBytesByTab["tab-2:1:orders:all"]).toBe(7_000);
+  });
+
+  // --- The app-wide retention ceiling --------------------------------------
+  //
+  // Every tab shares one webview process, so the number that decides whether
+  // the app survives is the total across all of them — and it is restored by
+  // evicting the coldest views, since refusing new work frees nothing already
+  // held elsewhere.
+
+  function seed(bytesByKey: Record<string, number>, lastUsed: Record<string, number>) {
+    useTabDataStore.setState({
+      payloadBytesByTab: bytesByKey,
+      messagesByTab: Object.fromEntries(Object.keys(bytesByKey).map((k) => [k, []])),
+      totalMatchingByTab: Object.fromEntries(Object.keys(bytesByKey).map((k) => [k, 1])),
+      lastUsedByTab: lastUsed,
+      evictedTabs: {},
+    });
+  }
+
+  it("totals retained payload bytes across every tab", () => {
+    seed({ a: 100, b: 250, c: 50 }, {});
+    expect(totalRetainedPayloadBytes(useTabDataStore.getState().payloadBytesByTab)).toBe(400);
+  });
+
+  it("totals zero when nothing is cached", () => {
+    expect(totalRetainedPayloadBytes({})).toBe(0);
+  });
+
+  it("does nothing while the total already fits", () => {
+    seed({ a: 100, b: 100 }, { a: 1, b: 2 });
+
+    expect(useTabDataStore.getState().evictToFit(1_000, "a")).toEqual([]);
+    expect(useTabDataStore.getState().payloadBytesByTab).toEqual({ a: 100, b: 100 });
+  });
+
+  it("evicts least-recently-used first, and stops as soon as it fits", () => {
+    seed({ oldest: 100, middle: 100, newest: 100 }, { oldest: 1, middle: 2, newest: 3 });
+
+    const evicted = useTabDataStore.getState().evictToFit(250, "newest");
+
+    expect(evicted).toEqual(["oldest"]);
+    expect(Object.keys(useTabDataStore.getState().payloadBytesByTab).sort()).toEqual(["middle", "newest"]);
+  });
+
+  it("keeps evicting until the total fits", () => {
+    seed({ a: 100, b: 100, c: 100 }, { a: 1, b: 2, c: 3 });
+
+    const evicted = useTabDataStore.getState().evictToFit(100, "c");
+
+    expect(evicted).toEqual(["a", "b"]);
+    expect(useTabDataStore.getState().payloadBytesByTab).toEqual({ c: 100 });
+  });
+
+  // A fetch must never discard the results it just went and got.
+  it("never evicts the protected view, even when it alone is over the limit", () => {
+    seed({ huge: 10_000 }, { huge: 1 });
+
+    const evicted = useTabDataStore.getState().evictToFit(1_000, "huge");
+
+    expect(evicted).toEqual([]);
+    expect(useTabDataStore.getState().payloadBytesByTab).toEqual({ huge: 10_000 });
+  });
+
+  // Views holding nothing free nothing; without skipping them the loop would
+  // "evict" them forever without the total ever moving.
+  it("terminates when the only evictable views hold nothing", () => {
+    seed({ empty: 0, protectedView: 10_000 }, { empty: 1, protectedView: 2 });
+
+    const evicted = useTabDataStore.getState().evictToFit(1_000, "protectedView");
+
+    expect(evicted).toEqual([]);
+  });
+
+  it("drops an evicted view's rows and totals, and marks it so the tab can explain itself", () => {
+    seed({ cold: 500, hot: 100 }, { cold: 1, hot: 2 });
+
+    useTabDataStore.getState().evictToFit(100, "hot");
+
+    expect(useTabDataStore.getState().messagesByTab.cold).toBeUndefined();
+    expect(useTabDataStore.getState().totalMatchingByTab.cold).toBeUndefined();
+    expect(useTabDataStore.getState().evictedTabs.cold).toBe(true);
+    expect(useTabDataStore.getState().evictedTabs.hot).toBeUndefined();
+  });
+
+  it("marks a view used when it is touched, so it stops being the eviction candidate", () => {
+    seed({ a: 100, b: 100 }, { a: 1, b: 2 });
+
+    useTabDataStore.getState().touchTab("a");
+    const evicted = useTabDataStore.getState().evictToFit(100, "protected-none");
+
+    // "a" was the coldest until it was touched; now "b" is.
+    expect(evicted).toEqual(["b"]);
+  });
+
+  it("clears the eviction marker when the view is fetched into again", () => {
+    seed({ cold: 500, hot: 100 }, { cold: 1, hot: 2 });
+    useTabDataStore.getState().evictToFit(100, "hot");
+    expect(useTabDataStore.getState().evictedTabs.cold).toBe(true);
+
+    useTabDataStore.getState().clearTabMessages("cold");
+
+    expect(useTabDataStore.getState().evictedTabs.cold).toBeUndefined();
   });
 });
