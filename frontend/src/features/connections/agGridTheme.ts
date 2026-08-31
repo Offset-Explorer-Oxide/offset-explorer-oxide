@@ -15,6 +15,13 @@ export const APP_GRID_THEME = themeQuartz.withParams({
   headerTextColor: "var(--color-fg-muted)",
   rowHoverColor: "var(--color-bg-elevated)",
   accentColor: "var(--color-accent)",
+  // Marks the row whose payload is open in the right pane. Mixed from the
+  // theme's own accent rather than picked per theme, so it reads as a
+  // highlight against both the light and the dark palettes in themes.css —
+  // and kept translucent enough that the row's text stays legible on top of
+  // it. AG Grid's Quartz default derives this from `accentColor` too, but at
+  // a tint so faint it was indistinguishable from an unselected row.
+  selectedRowBackgroundColor: "color-mix(in srgb, var(--color-accent) 28%, transparent)",
   spacing: 4,
   fontSize: 12,
   headerFontSize: 12,

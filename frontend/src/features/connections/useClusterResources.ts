@@ -116,6 +116,22 @@ export function useFetchMessages() {
  * rows: the row cache lives as long as the tab does, so writing full payloads
  * into it would rebuild the retention problem one opened message at a time,
  * whereas these are evicted once nothing is viewing them.
+ *
+ * `gcTime: 0` is what makes "evicted once nothing is viewing them" true
+ * immediately rather than five minutes later (React Query's default), and it
+ * is the whole of this hook's memory safety. Every other path into the
+ * webview is bounded — the grid truncates each row to
+ * `maxPayloadPreviewBytes`, and the tab caches are held under an app-wide
+ * ceiling — but this one deliberately asks for the *whole* message, and its
+ * cache key includes the offset, so each message opened was its own entry.
+ * Ten 50 MB messages opened inside the default window meant ~500 MB retained,
+ * counted by nothing. Bounded to one payload at a time, the worst case is the
+ * single message on screen, which is the one the user is asking to see.
+ *
+ * The cost is that clicking back to a message just viewed re-fetches it. That
+ * is one bounded single-message round trip, against holding every message
+ * visited in the last five minutes — and it is the same trade the Data tab's
+ * own row eviction makes.
  */
 export function useFullPayload(
   connectionId: string | null,
@@ -144,7 +160,10 @@ export function useFullPayload(
         crypto.randomUUID(),
       ),
     enabled: enabled && connectionId !== null && topic !== null && partition !== undefined && offset !== undefined,
+    // Never refetched while it is on screen...
     staleTime: Infinity,
+    // ...and dropped the moment it is not. See the note above.
+    gcTime: 0,
   });
 }
 

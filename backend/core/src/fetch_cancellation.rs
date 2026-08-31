@@ -18,6 +18,12 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct FetchCancellations {
     flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Which connection each registered fetch is reading from, so
+    /// disconnecting a cluster can stop the fetches still running against it
+    /// — see [`Self::cancel_all_for_connection`]. Separate from `flags`
+    /// because a cancel may be recorded for a request id the backend has not
+    /// registered yet, and such a fetch has no known connection.
+    owners: Mutex<HashMap<String, String>>,
 }
 
 impl FetchCancellations {
@@ -40,6 +46,39 @@ impl FetchCancellations {
         )
     }
 
+    /// [`Self::begin`], recording which connection the fetch reads from so
+    /// [`Self::cancel_all_for_connection`] can find it later.
+    pub fn begin_for_connection(&self, request_id: &str, connection_id: &str) -> Arc<AtomicBool> {
+        self.owners
+            .lock()
+            .unwrap()
+            .insert(request_id.to_string(), connection_id.to_string());
+        self.begin(request_id)
+    }
+
+    /// Signals every fetch currently reading from `connection_id` to stop.
+    ///
+    /// Disconnecting drops the pooled client so no *new* request can reach the
+    /// cluster, but a fetch already inside its poll loop holds its own
+    /// consumer and would keep pulling from a cluster the user has just
+    /// disconnected from — for as long as its filter takes to satisfy, with
+    /// the UI that started it already cleared away. Returns the ids it
+    /// cancelled, for logging.
+    pub fn cancel_all_for_connection(&self, connection_id: &str) -> Vec<String> {
+        let request_ids: Vec<String> = self
+            .owners
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, owner)| owner.as_str() == connection_id)
+            .map(|(request_id, _)| request_id.clone())
+            .collect();
+        for request_id in &request_ids {
+            self.cancel(request_id);
+        }
+        request_ids
+    }
+
     /// Signals the named fetch's poll loop to stop at its next check.
     ///
     /// Records the cancellation even when no fetch is registered under this
@@ -57,9 +96,10 @@ impl FetchCancellations {
             .store(true, Ordering::Relaxed);
     }
 
-    /// Forgets a finished fetch's flag.
+    /// Forgets a finished fetch's flag, and which connection it belonged to.
     pub fn finish(&self, request_id: &str) {
         self.flags.lock().unwrap().remove(request_id);
+        self.owners.lock().unwrap().remove(request_id);
     }
 }
 
@@ -95,6 +135,39 @@ mod tests {
     ///
     /// Cancellation is therefore recorded whether or not the fetch has
     /// registered yet, and `begin` inherits it.
+    #[test]
+    fn disconnecting_a_connection_cancels_every_fetch_running_against_it() {
+        let cancellations = FetchCancellations::default();
+        let mine_a = cancellations.begin_for_connection("req-a", "conn-1");
+        let mine_b = cancellations.begin_for_connection("req-b", "conn-1");
+        let other = cancellations.begin_for_connection("req-c", "conn-2");
+
+        let cancelled = cancellations.cancel_all_for_connection("conn-1");
+
+        assert!(mine_a.load(Ordering::Relaxed));
+        assert!(mine_b.load(Ordering::Relaxed));
+        assert!(
+            !other.load(Ordering::Relaxed),
+            "disconnecting one cluster must not stop another cluster's fetch"
+        );
+        assert_eq!(cancelled.len(), 2);
+    }
+
+    #[test]
+    fn a_finished_fetch_is_no_longer_cancellable_by_connection() {
+        let cancellations = FetchCancellations::default();
+        cancellations.begin_for_connection("req-a", "conn-1");
+        cancellations.finish("req-a");
+
+        assert!(cancellations.cancel_all_for_connection("conn-1").is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_connection_with_no_fetches_is_a_no_op() {
+        let cancellations = FetchCancellations::default();
+        assert!(cancellations.cancel_all_for_connection("conn-1").is_empty());
+    }
+
     #[test]
     fn a_cancel_that_arrives_before_the_fetch_registers_still_cancels_it() {
         let cancellations = FetchCancellations::default();

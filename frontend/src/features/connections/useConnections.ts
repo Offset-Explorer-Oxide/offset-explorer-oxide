@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ConnectionStatus, ImportSummary, NewConnection } from "../../lib/tauri";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
+import { clearConnectionState } from "./clearConnectionState";
 
 export function useConnectionsQuery() {
   return useQuery({ queryKey: ["connections"], queryFn: api.listConnections });
@@ -32,9 +33,10 @@ export function useDeleteConnection() {
       // A deleted connection's id can still be sitting in the middle pane's
       // selection or the right pane's viewed message (in this tab or any
       // other) — without this, those panes would keep referencing a
-      // connection that no longer exists.
-      useWorkspaceSelectionStore.getState().clearForConnection(id);
-      useMessageViewerStore.getState().clearForConnection(id);
+      // connection that no longer exists. Deletion clears at least as much
+      // as a disconnect does, so it shares the same routine rather than
+      // keeping its own shorter list that has to be remembered separately.
+      clearConnectionState(queryClient, id);
     },
   });
 }
@@ -143,6 +145,16 @@ export function useConnectionConnected(id: string) {
   return useQuery({
     queryKey: ["connection-connected", id],
     queryFn: () => api.isConnectionConnected(id),
+    // Polled, not just invalidated by whoever changed it. The backend drops a
+    // connection on its own when the auth circuit breaker trips
+    // (`record_auth_failure` marks it disconnected after two rejections), and
+    // nothing in the frontend invalidates this for that. Until it was polled,
+    // a cluster the backend had already given up on kept its tree expanded
+    // and its panes live until something else happened to refetch.
+    //
+    // Reads an in-process boolean over IPC — no network, no broker — so this
+    // is far cheaper than the reachability dot it rides alongside.
+    refetchInterval: CONNECTED_STATUS_POLL_MS,
     initialData: false,
   });
 }
@@ -186,7 +198,17 @@ export function useConnect(id: string) {
   });
 }
 
-/** Backs the cluster detail panel's "Disconnect" button. */
+/**
+ * Backs the cluster detail panel's and the tree's "Disconnect".
+ *
+ * The state cleanup is deliberately NOT done here. Disconnecting has four
+ * routes — this button, the 120-minute idle timer, the auth circuit breaker
+ * tripping in the backend, and the reachability poll finding the cluster gone
+ * — and only this one goes through this mutation. All four end with the
+ * backend reporting the connection as no longer connected, so the cleanup
+ * hangs off *that* transition instead (see `useClusterDisconnectCleanup`) and
+ * happens exactly once however the connection dropped.
+ */
 export function useDisconnect() {
   const queryClient = useQueryClient();
   return useMutation<void, Error, string>({

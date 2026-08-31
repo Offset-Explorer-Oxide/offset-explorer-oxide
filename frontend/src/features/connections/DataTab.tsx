@@ -1,11 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
-import { AllCommunityModule, ColDef, ModuleRegistry, ValueFormatterParams, ValueGetterParams } from "ag-grid-community";
+import {
+  AllCommunityModule,
+  ColDef,
+  FilterChangedEvent,
+  GetRowIdParams,
+  GridApi,
+  GridReadyEvent,
+  ModuleRegistry,
+  RowSelectionOptions,
+  SortChangedEvent,
+  ValueFormatterParams,
+  ValueGetterParams,
+} from "ag-grid-community";
 import { listen } from "@tauri-apps/api/event";
 import { MessagesBatchEvent, TopicMessage } from "../../lib/tauri";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
-import { dataTabCacheKey, EMPTY_TAB_MESSAGES, useTabDataStore } from "../workspace/useTabDataStore";
+import {
+  dataTabCacheKey,
+  EMPTY_TAB_MESSAGES,
+  totalRetainedPayloadBytes,
+  useTabDataStore,
+} from "../workspace/useTabDataStore";
 import { APP_GRID_THEME } from "./agGridTheme";
 import {
   emptyFilterForm,
@@ -16,14 +33,23 @@ import {
 } from "./dataFilters";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import {
+  DataTabGridState,
+  EMPTY_DATA_TAB_GRID_STATE,
+  useDataTabGridStateStore,
+} from "./useDataTabGridStateStore";
+import {
   base64ToDisplayText,
   decodeValuePreview,
-  exceedsValuePreview,
+  searchSeesPartialValue,
+  base64DecodedLength,
   MAX_INLINE_PAYLOAD_BYTES,
+  retainedPayloadBytes,
   VALUE_PREVIEW_BYTES,
 } from "./payloadDecoding";
 import { api } from "../../lib/tauri";
 import { useFetchMessages } from "./useClusterResources";
+import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
+import { useLogsStore } from "../bottom-panel/useLogsStore";
 import { ValueCell, ValueCellContext } from "./ValueCell";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -114,6 +140,61 @@ const DEFAULT_COL_DEF: ColDef<TopicMessage> = {
   resizable: true,
 };
 
+/**
+ * Single-row selection, purely so the row whose payload is open in the right
+ * pane is visibly marked in the grid.
+ *
+ * `enableClickSelection: false` deliberately takes AG Grid out of the
+ * business of deciding what's selected: the selection is driven from
+ * `useMessageViewerStore` instead (see `syncGridSelection`), which is the
+ * only way the highlight can't drift from what the right pane is actually
+ * showing. A click AG Grid would have selected on — the Value column's
+ * "Fetch payload" button — is one `onRowClicked` refuses to open, and a
+ * selection the store makes on its own — restoring the viewed message after
+ * a tab switch — is one no click produced.
+ */
+const ROW_SELECTION: RowSelectionOptions<TopicMessage> = {
+  mode: "singleRow",
+  checkboxes: false,
+  enableClickSelection: false,
+};
+
+/**
+ * A row's identity, stable across the re-renders that a streaming fetch and
+ * a single-row payload patch both cause. (partition, offset) is unique
+ * within a topic by definition.
+ *
+ * Giving AG Grid `getRowId` is what lets a selected row survive `rowData`
+ * being replaced — without it the grid throws away every row node (and the
+ * selection with it) each time the streaming flush hands it a new array.
+ */
+function messageRowId(message: TopicMessage): string {
+  return `${message.partition}:${message.offset}`;
+}
+
+function getRowId(params: GetRowIdParams<TopicMessage>): string {
+  return messageRowId(params.data);
+}
+
+/** Marks exactly `rowId` selected — walking the selected nodes rather than every row, so this stays O(selection) on a grid holding tens of thousands of rows. */
+function syncGridSelection(gridApi: GridApi<TopicMessage>, rowId: string | null): void {
+  for (const node of gridApi.getSelectedNodes()) {
+    if (node.id !== rowId) node.setSelected(false);
+  }
+  if (rowId === null) return;
+  const node = gridApi.getRowNode(rowId);
+  if (node && !node.isSelected()) node.setSelected(true);
+}
+
+/** Re-applies a saved sort/column-filter arrangement to a freshly created (or freshly re-keyed) grid. `defaultState` clears the sort on columns the saved model doesn't mention, so restoring "unsorted" actually unsorts. */
+function applyGridState(gridApi: GridApi<TopicMessage>, state: DataTabGridState): void {
+  gridApi.applyColumnState({
+    state: state.sortModel.map((item, index) => ({ colId: item.colId, sort: item.sort, sortIndex: index })),
+    defaultState: { sort: null },
+  });
+  gridApi.setFilterModel(state.filterModel);
+}
+
 export interface DataTabProps {
   connectionId: string;
   topicName: string;
@@ -131,7 +212,6 @@ export interface DataTabProps {
 export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [searchText, setSearchText] = useState("");
   const fetchMessages = useFetchMessages();
   const viewMessage = useMessageViewerStore((s) => s.viewMessage);
   const clearViewedMessage = useMessageViewerStore((s) => s.clear);
@@ -145,6 +225,17 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const defaultForm = partitionId === undefined ? emptyFilterForm() : { ...emptyFilterForm(), partitions: String(partitionId) };
   const form = useDataTabFiltersStore((s) => s.formByTab[tabKey]) ?? defaultForm;
   const setStoredForm = useDataTabFiltersStore((s) => s.setForm);
+  // How the grid is arranged (sort, column filters, the search box) is kept
+  // under the same key, for the same reason and one more: the middle pane is
+  // rendered `key={activeTabId}` in App.tsx, so every top-level tab switch
+  // destroys the grid. Held in AG Grid (or in `useState`, as the search box
+  // was), a sort and a filter were gone by the time the user came back.
+  const gridState = useDataTabGridStateStore((s) => s.stateByTab[tabKey]) ?? EMPTY_DATA_TAB_GRID_STATE;
+  const patchGridState = useDataTabGridStateStore((s) => s.patchState);
+  const searchText = gridState.searchText;
+  const gridApiRef = useRef<GridApi<TopicMessage> | null>(null);
+  /** Set while `applyGridState` is pushing a saved arrangement into the grid, so the sort/filter events that causes aren't written straight back to the store as if the user had made them. */
+  const isRestoringGridStateRef = useRef(false);
   const tabKeyRef = useRef(tabKey);
   tabKeyRef.current = tabKey;
   const messages = useTabDataStore((s) => s.messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES);
@@ -152,22 +243,90 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     () => (searchText ? messages.filter((m) => matchesSearch(m, searchText)).length : messages.length),
     [messages, searchText],
   );
-  // Only worth telling the user the search is bounded when the loaded rows
-  // actually reach that bound.
-  const hasOversizedValues = useMemo(() => messages.some((m) => exceedsValuePreview(m.payloadSizeBytes)), [messages]);
+  // Only worth telling the user the search is bounded when some loaded row
+  // actually has value text the search can't reach — which needs the row to
+  // carry a payload at all, not merely to report a large size. See
+  // `searchSeesPartialValue`.
+  const hasPartiallySearchedValues = useMemo(() => messages.some(searchSeesPartialValue), [messages]);
   /** Set when the last Fetch stopped on the byte budget rather than on the filter — see `MessageFetchResult.stoppedAtByteBudget`. Local rather than cached per tab: it describes the fetch that just ran, and a re-fetch always re-decides it. */
   const [byteBudgetBytesRead, setByteBudgetBytesRead] = useState<number | null>(null);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
   const clearTabMessages = useTabDataStore((s) => s.clearTabMessages);
+  const setTabPayloadBytes = useTabDataStore((s) => s.setTabPayloadBytes);
+  const addTabPayloadBytes = useTabDataStore((s) => s.addTabPayloadBytes);
+  /** Set when this view alone holds the whole Max Total Fetch Size, so eviction has nothing left it is allowed to drop — see `enforceRetentionLimit`. */
+  const [payloadBudgetSpent, setPayloadBudgetSpent] = useState(false);
+  /** Payload bytes this view is currently holding, across its last Fetch and every per-row "Fetch payload" click since. */
+  const payloadBytesHeld = useTabDataStore((s) => s.payloadBytesByTab[tabKey] ?? 0);
+  /** True when this view's rows were dropped to keep the app inside the ceiling while the user was working elsewhere. */
+  const wasEvicted = useTabDataStore((s) => s.evictedTabs[tabKey] ?? false);
+  const evictToFit = useTabDataStore((s) => s.evictToFit);
+  const touchTab = useTabDataStore((s) => s.touchTab);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
   const totalMatching = useTabDataStore((s) => s.totalMatchingByTab[tabKey]);
   const appendTabMessages = useTabDataStore((s) => s.appendTabMessages);
+  /**
+   * The stream listener below is subscribed once and must not re-subscribe,
+   * so the things it calls are reached through refs kept current on every
+   * render rather than through its own (stale) closure.
+   */
+  const addTabPayloadBytesRef = useRef(addTabPayloadBytes);
+  addTabPayloadBytesRef.current = addTabPayloadBytes;
+  // Wrapped rather than assigned directly: `enforceRetentionLimit` is
+  // declared further down, and the arrow defers reaching it until the
+  // listener actually fires.
+  const enforceRetentionLimitRef = useRef<() => void>(() => {});
+  enforceRetentionLimitRef.current = () => enforceRetentionLimit();
   /** Streamed messages waiting to be written to the store — see the listener below. */
   const streamBufferRef = useRef<TopicMessage[]>([]);
   const streamFlushHandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Tags the in-flight Fetch's `requestId` so the "messages-batch" listener below can tell its rows apart from a stale/superseded fetch's late-arriving events — see `MessagesBatchEvent`'s doc comment. */
   const activeRequestIdRef = useRef<string | null>(null);
+
+  // The row the right pane is showing, as a grid row id — or null when the
+  // pane is closed, or when what it holds came from a different
+  // topic/partition than this grid is displaying. Deriving the highlight
+  // from the viewer store (rather than from the click that usually causes
+  // it) is what keeps "highlighted row" and "payload on the right" the same
+  // row in every case, including the ones no click produced: reopening a
+  // top-level tab, and the Close button clearing the pane.
+  const viewedMessage = useMessageViewerStore((s) => s.message);
+  const viewedConnectionId = useMessageViewerStore((s) => s.connectionId);
+  const viewedTopic = useMessageViewerStore((s) => s.topic);
+  const viewedPartitionId = useMessageViewerStore((s) => s.partitionId);
+  const selectedRowId =
+    viewedMessage !== null &&
+    viewedConnectionId === connectionId &&
+    viewedTopic === topicName &&
+    viewedPartitionId === partitionId
+      ? messageRowId(viewedMessage)
+      : null;
+
+  // Rows the grid doesn't have yet can't be selected, so this also runs from
+  // `onGridReady` (the grid didn't exist when the effect first ran) and from
+  // `onRowDataUpdated` (the row arrived after it). `syncGridSelection` is
+  // idempotent, so running it from all three costs nothing.
+  useEffect(() => {
+    if (gridApiRef.current) syncGridSelection(gridApiRef.current, selectedRowId);
+  }, [selectedRowId, messages]);
+
+  // Looking at a view counts as using it, so eviction prefers the ones the
+  // user has left behind. Without this, opening a tab and reading it without
+  // re-fetching left it looking like the coldest thing in the app.
+  useEffect(() => {
+    touchTab(tabKey);
+  }, [tabKey, touchTab]);
+
+  // Restores the saved arrangement when this tab's grid is replaced by a
+  // different one. That happens two ways, and only one of them recreates the
+  // grid: a top-level tab switch remounts everything (handled by
+  // `onGridReady` below), while switching topic/partition within a tab keeps
+  // the same grid and only changes `tabKey` — which is what this covers.
+  useEffect(() => {
+    if (gridApiRef.current) restoreGridState(gridApiRef.current, tabKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabKey]);
 
   // Streams rows into the grid as connection_fetch_messages's backend task
   // polls them, instead of leaving the grid empty until the whole fetch
@@ -189,6 +348,19 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       if (buffered.length === 0) return;
       streamBufferRef.current = [];
       appendTabMessages(tabKeyRef.current, buffered);
+      // Counted as the rows land, not only when the fetch resolves.
+      // `handlePlay` sets the authoritative total from the final result, but
+      // it only does so on success — so a fetch the user Stops, or one that
+      // errors, used to leave every row it had already streamed into the grid
+      // sitting there weighing nothing at all as far as the ceiling was
+      // concerned. On a large fetch stopped near the end that was hundreds of
+      // megabytes the app was holding and not counting.
+      //
+      // Enforced here too, so a long-running fetch makes room as it grows
+      // rather than only once it finishes. The view being fetched into is
+      // protected, so this can only ever evict colder views elsewhere.
+      addTabPayloadBytesRef.current(tabKeyRef.current, retainedPayloadBytes(buffered));
+      enforceRetentionLimitRef.current();
     };
 
     const unlisten = listen<MessagesBatchEvent>("messages-batch", (event) => {
@@ -210,13 +382,15 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // partitions, or connections within the same top-level tab — neither
   // App.tsx's <TopicDetailPanel>/<PartitionDetailPanel> nor this component
   // are keyed by topic/partition, only by the top-level tab. The fetch
-  // filter form is keyed per-topic above so it doesn't need resetting here
-  // (and correctly persists if you come back to a topic you'd already set
-  // it on) — but the quick-filter search box and any leftover error from a
-  // previous fetch are deliberately NOT persisted per topic, so they still
-  // need an explicit reset: a leftover "Search messages" quick-filter
-  // carrying over to a completely different topic could silently hide/skew
-  // its results, making a successful Fetch look like it returned nothing.
+  // filter form and the grid's arrangement (sort, column filters, the
+  // "Search messages" box) are both keyed per-topic above, so they don't
+  // need resetting here: a different topic is a different key and therefore
+  // starts blank — which is what stops a leftover search from a previous
+  // topic silently hiding a new one's rows — while coming back to a topic
+  // you'd already arranged restores it exactly as you left it.
+  //
+  // A stale error from a previous fetch has no such key, so it still needs
+  // clearing explicitly.
   //
   // The right pane's viewed message needs a reset for the same underlying
   // reason, but is deliberately NOT handled here — this component isn't
@@ -228,8 +402,8 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   // (or component) happens to be mounted at the time.
   useEffect(() => {
     stopActiveFetch();
-    setSearchText("");
     setError(null);
+    setPayloadBudgetSpent(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, topicName, partitionId]);
 
@@ -251,6 +425,70 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
 
   function updateForm(patch: Partial<FilterFormState>) {
     setStoredForm(tabKey, { ...form, ...patch });
+  }
+
+  /** Pushes a key's saved sort/column filters into the grid, reading the store directly so it always applies the arrangement belonging to the key it's given rather than whichever one this render closed over. */
+  function restoreGridState(gridApi: GridApi<TopicMessage>, key: string) {
+    isRestoringGridStateRef.current = true;
+    try {
+      applyGridState(gridApi, useDataTabGridStateStore.getState().stateByTab[key] ?? EMPTY_DATA_TAB_GRID_STATE);
+    } finally {
+      isRestoringGridStateRef.current = false;
+    }
+  }
+
+  function handleGridReady(event: GridReadyEvent<TopicMessage>) {
+    gridApiRef.current = event.api;
+    restoreGridState(event.api, tabKeyRef.current);
+    syncGridSelection(event.api, selectedRowId);
+  }
+
+  function handleSortChanged(event: SortChangedEvent<TopicMessage>) {
+    if (isRestoringGridStateRef.current) return;
+    patchGridState(tabKeyRef.current, {
+      sortModel: event.api
+        .getColumnState()
+        .filter((column) => column.sort)
+        .sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
+        .map((column) => ({ colId: column.colId, sort: column.sort as "asc" | "desc" })),
+    });
+  }
+
+  function handleFilterChanged(event: FilterChangedEvent<TopicMessage>) {
+    // Also fires for the quick filter, which `getFilterModel` doesn't cover
+    // and which is already stored as `searchText` — saving the (unchanged)
+    // column filter model alongside it is harmless.
+    if (isRestoringGridStateRef.current) return;
+    patchGridState(tabKeyRef.current, { filterModel: event.api.getFilterModel() });
+  }
+
+  /**
+   * Brings the app-wide retained total back inside Max Total Fetch Size by
+   * dropping the coldest views' rows.
+   *
+   * Eviction rather than refusal, because refusing only stops *new* growth:
+   * by the time a fetch would be refused the app is already holding whatever
+   * other tabs accumulated earlier, and nothing frees it. Every evicted view
+   * is one Fetch away from coming back, so trading a round trip for staying
+   * inside the ceiling is nearly always the right way round — and it is the
+   * webview's own process that dies when it isn't.
+   *
+   * The view being fetched into is protected, so a fetch can never evict its
+   * own results. When that view alone is over the limit there is nothing
+   * left to drop, and the notice below says so instead.
+   */
+  function enforceRetentionLimit() {
+    const limit = useGeneralSettingsStore.getState().maxTotalFetchBytes;
+    const evicted = evictToFit(limit, tabKey);
+    if (evicted.length > 0) {
+      useLogsStore.getState().addEntry({
+        timestamp: new Date().toISOString(),
+        level: "info",
+        message: `Cleared ${evicted.length} cached message view(s) to stay within Max total fetch size`,
+      });
+    }
+    const remaining = totalRetainedPayloadBytes(useTabDataStore.getState().payloadBytesByTab);
+    setPayloadBudgetSpent(remaining > limit);
   }
 
   async function handlePlay() {
@@ -276,6 +514,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     // until (if) this fetch resolves successfully.
     clearTabMessages(tabKey);
     setByteBudgetBytesRead(null);
+    setPayloadBudgetSpent(false);
     // The grid is about to go blank/loading for a new result set, so a
     // right panel left open from the previous fetch would be showing a row
     // that may no longer exist in it.
@@ -290,7 +529,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       if (!stoppedRef.current) {
         setTabMessages(tabKey, result.messages);
         setTabTotalMatching(tabKey, result.totalMatching);
+        // What this view is now *holding*, measured off the rows themselves
+        // rather than taken from the fetch's `payloadBytesRead`. A fetch
+        // reads whole messages and keeps only a bounded slice of each, so
+        // the two differ by orders of magnitude on a large-message topic —
+        // and it is what is held, not what crossed the wire, that decides
+        // whether the webview survives. Zero when "Fetch message payload"
+        // was off, since those rows carry no payload at all.
+        setTabPayloadBytes(tabKey, retainedPayloadBytes(result.messages));
         setByteBudgetBytesRead(result.stoppedAtByteBudget ? (result.payloadBytesRead ?? 0) : null);
+        enforceRetentionLimit();
       }
     } catch (err) {
       if (!stoppedRef.current) {
@@ -341,7 +589,22 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     stopActiveFetch();
   }
 
-  /** Fetches just one row's payload (by its exact partition/offset) and patches it into the cached rows — reads the store directly so it always applies on top of the latest cached rows regardless of how long the fetch took. */
+  /**
+   * Fetches just one row's payload (by its exact partition/offset) and
+   * patches it into the cached rows — reads the store directly so it always
+   * applies on top of the latest cached rows regardless of how long the
+   * fetch took.
+   *
+   * Charged against the same app-wide Max Total Fetch Size a full Fetch is.
+   * These bytes land in exactly the same cached rows and cost the webview
+   * exactly the same memory; the only difference is that they arrive one
+   * click at a time, and each click is its own backend fetch.
+   *
+   * The click is always allowed — it is one message, and refusing it while
+   * the app holds megabytes of colder rows elsewhere would be protecting the
+   * wrong thing. The ceiling is restored afterwards by evicting those colder
+   * views instead (`enforceRetentionLimit`).
+   */
   async function fetchPayloadForRow(row: TopicMessage) {
     const result = await fetchMessages.mutateAsync({
       connectionId,
@@ -369,11 +632,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     });
     const updated = result.messages.find((m) => m.partition === row.partition && m.offset === row.offset);
     if (!updated) return;
+    // The bytes actually kept for this row — the payload is truncated to
+    // `MAX_INLINE_PAYLOAD_BYTES` on the way back, so the message's full size
+    // is not what lands in memory.
+    addTabPayloadBytes(tabKey, base64DecodedLength(updated.payloadBase64 ?? ""));
     const current = useTabDataStore.getState().messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES;
     setTabMessages(
       tabKey,
       current.map((m) => (m.partition === row.partition && m.offset === row.offset ? updated : m)),
     );
+    enforceRetentionLimit();
   }
 
   const gridContext: ValueCellContext = { fetchPayload: fetchPayloadForRow };
@@ -466,7 +734,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         Search messages
         <input
           value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
+          onChange={(e) => patchGridState(tabKey, { searchText: e.target.value })}
           placeholder="Search by key or value"
         />
       </label>
@@ -482,10 +750,36 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         </p>
       )}
 
-      {hasOversizedValues && (
+      {wasEvicted && (
+        // Rows vanishing with no explanation is worse than the memory
+        // pressure that caused it: the filters and sort are still here, so an
+        // empty grid reads as a broken fetch rather than a deliberate one.
+        <p role="status" className="data-tab-search-notice">
+          These messages were cleared while you were working elsewhere, to keep the app within Max total fetch size.
+          Your filters are unchanged — Fetch again to reload them.
+        </p>
+      )}
+
+      {payloadBudgetSpent && (
+        // Only reachable when this view alone is over the ceiling: everything
+        // else has already been evicted and there is nothing left to free.
+        <p role="status" className="data-tab-search-notice data-tab-search-notice--warning">
+          This view alone is holding {Math.round(payloadBytesHeld / (1024 * 1024)).toLocaleString()} MB of message
+          payloads — the whole Max total fetch size. Narrow the filter, or raise the limit in Settings → General.
+        </p>
+      )}
+
+      {hasPartiallySearchedValues && (
+        // Scoped to the search box, which is the only thing this bound
+        // affects. It used to end "open a message to view its full payload",
+        // implying the row held only part of the message — but a fetch
+        // carries up to 256 KB per row (`inlinePayloadBytesFor`), so for most
+        // messages past this 4 KB mark the whole payload is already there and
+        // opening one shows it without going anywhere.
         <p className="data-tab-search-notice">
-          Some messages exceed {VALUE_PREVIEW_BYTES / 1024} KB. Search examines only the first{" "}
-          {VALUE_PREVIEW_BYTES / 1024} KB of each message value; open a message to view its full payload.
+          Some loaded messages are larger than {VALUE_PREVIEW_BYTES / 1024} KB. Search matches only the first{" "}
+          {VALUE_PREVIEW_BYTES / 1024} KB of each message value, so it can miss text further in; open a message to
+          read its whole value.
         </p>
       )}
 
@@ -508,6 +802,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           defaultColDef={DEFAULT_COL_DEF}
           quickFilterText={searchText}
           context={gridContext}
+          getRowId={getRowId}
+          rowSelection={ROW_SELECTION}
+          onGridReady={handleGridReady}
+          onSortChanged={handleSortChanged}
+          onFilterChanged={handleFilterChanged}
+          // The grid can only select a row it already holds, and rows arrive
+          // after the effect that asks for the selection — a streamed fetch
+          // paints them in over seconds, and a reopened tab hands the grid
+          // its cached rows a beat after mounting.
+          onRowDataUpdated={(event) => syncGridSelection(event.api, selectedRowId)}
           // Only until the first row lands, not for the whole fetch. The
           // backend streams each message to the grid as it polls it (see the
           // "messages-batch" listener above), but AG Grid's loading overlay

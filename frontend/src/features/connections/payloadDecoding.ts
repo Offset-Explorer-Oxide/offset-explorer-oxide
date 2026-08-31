@@ -1,3 +1,5 @@
+import { TopicMessage } from "../../lib/tauri";
+
 /** Decodes a base64 string (as sent by the backend) into raw bytes. */
 export function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -141,19 +143,66 @@ export function base64DecodedLength(base64: string): number {
 }
 
 /**
- * Whether a payload is longer than the preview [`decodeValuePreview`] builds
- * — i.e. whether the grid's Value column, and the search over it, sees only
- * part of this message.
+ * The payload bytes a set of loaded rows is holding in the webview.
  *
- * Takes the size the backend reported (`TopicMessage.payloadSizeBytes`)
- * rather than measuring the base64 it sent. Since the backend now truncates
- * payloads to the grid's preview bound, that base64 is itself a preview: a
- * message cut to exactly the bound is indistinguishable from one that was
- * genuinely that long, so measuring it would report every large message as
- * fitting comfortably.
+ * Measures what is **retained**, not what was read off the broker. Those are
+ * very different numbers and only the first one can crash anything: a fetch
+ * reads whole messages but keeps at most `maxPayloadPreviewBytes` of each
+ * (see `inlinePayloadBytesFor`), so browsing a topic of 4 MB records can read
+ * gigabytes while holding tens of megabytes. Budgeting against bytes read
+ * therefore both over-counts a large-message fetch and under-counts a
+ * long-lived tab that has accumulated many small whole payloads — which is
+ * the case that actually fills memory.
+ *
+ * Counts decoded payload bytes. The base64 string each row really holds is
+ * about 4/3 of that in characters, so this is a consistent underestimate of
+ * the true JS footprint by a constant factor — fine for a budget the user
+ * sets in payload terms, and noted here so nobody reads it as an exact
+ * heap figure.
  */
-export function exceedsValuePreview(payloadSizeBytes: number | null): boolean {
-  return payloadSizeBytes !== null && payloadSizeBytes > VALUE_PREVIEW_BYTES;
+export function retainedPayloadBytes(messages: Pick<TopicMessage, "payloadBase64">[]): number {
+  return messages.reduce((total, m) => total + (m.payloadBase64 === null ? 0 : base64DecodedLength(m.payloadBase64)), 0);
+}
+
+/**
+ * How many payload bytes [`decodeValuePreview`] actually decodes.
+ *
+ * It cuts the base64 on a 4-character boundary, and 4 base64 characters
+ * carry 3 bytes, so the real preview rounds [`VALUE_PREVIEW_BYTES`] up to
+ * the next whole group. Comparing against the nominal 4096 instead reported
+ * a 4,097-byte message as partially searched when the search had in fact
+ * read all of it.
+ */
+export const VALUE_PREVIEW_DECODED_BYTES = Math.ceil(VALUE_PREVIEW_BYTES / 3) * 3;
+
+/**
+ * Whether the search box reads only part of this row's value.
+ *
+ * Two things have to be true, and checking only the second was the bug:
+ *
+ * 1. **The row carries a payload at all.** With "Fetch message payload"
+ *    unchecked the backend sends every row's real `payloadSizeBytes` but no
+ *    bytes — deliberately, so the grid can report each message's size. A
+ *    size-only test therefore fired on every large message of a browse that
+ *    had fetched nothing, announcing that search was reading the first 4 KB
+ *    of values that were not there: the Value column was blank, and the
+ *    search had nothing to match on for any row, large or small.
+ *
+ * 2. **The value is longer than the preview.** Against
+ *    [`VALUE_PREVIEW_DECODED_BYTES`], what the preview really decodes,
+ *    rather than the nominal bound it rounds up from.
+ *
+ * Takes the size the backend reported rather than measuring the base64 it
+ * sent: the backend truncates payloads for transport, so a message cut to
+ * exactly that bound is indistinguishable from one genuinely that long, and
+ * measuring the base64 would call every large message fully searched.
+ */
+export function searchSeesPartialValue(
+  message: Pick<TopicMessage, "payloadBase64" | "payloadSizeBytes">,
+): boolean {
+  if (message.payloadBase64 === null) return false;
+  if (message.payloadSizeBytes === null) return false;
+  return message.payloadSizeBytes > VALUE_PREVIEW_DECODED_BYTES;
 }
 
 /**

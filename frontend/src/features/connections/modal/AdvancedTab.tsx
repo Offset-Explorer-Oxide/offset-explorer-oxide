@@ -30,7 +30,7 @@ export function AdvancedTab({ draft, onChange, disabled = false }: ConnectionTab
             />
           </label>
           <label>
-            Trust store password
+            Trust store password (not used)
             <input
               type="password"
               value={draft.schemaRegistryTrustStorePassword}
@@ -53,13 +53,31 @@ export function AdvancedTab({ draft, onChange, disabled = false }: ConnectionTab
             />
           </label>
           <label>
-            Keystore private key password
+            Keystore private key password (not used)
             <input
               type="password"
               value={draft.schemaRegistryKeystoreKeyPassword}
               onChange={(e) => onChange({ schemaRegistryKeystoreKeyPassword: e.target.value })}
             />
           </label>
+          {/*
+            Both of those fields are saved and then ignored, and were doing so
+            silently — a user pointing at a password-protected trust store
+            had no way to tell the setting was going nowhere.
+
+            Neither is ignorable-by-oversight: the Schema Registry client
+            reads the trust store as a PEM certificate bundle, which is not
+            encrypted and so has no password, and unlocks the keystore as a
+            single-password PKCS#12 file, which has no separate key password.
+            They are kept rather than removed so an existing saved connection
+            does not lose data, and labelled so the UI stops implying they do
+            something.
+          */}
+          <p className="connection-modal-field-note">
+            The trust store must be a PEM certificate bundle (no password — the two fields above marked "not used"
+            are ignored), and the keystore a PKCS#12 file (.p12/.pfx) unlocked with "Keystore password". JKS files
+            are not supported.
+          </p>
         </section>
       </fieldset>
     </div>

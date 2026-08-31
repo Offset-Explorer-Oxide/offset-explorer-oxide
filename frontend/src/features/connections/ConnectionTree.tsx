@@ -18,6 +18,7 @@ import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { ClusterResourceTree } from "./ClusterResourceTree";
 import { treeKey, useTreeUiStore } from "./useTreeUiStore";
+import { useClusterDisconnectCleanup, useUnreachableDisconnect } from "./useClusterDisconnect";
 
 /**
  * Green requires both a reachable ping AND an explicit "connected" session
@@ -47,7 +48,14 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
   const { data: isConnected } = useConnectionConnected(id);
   // A cluster the user is not connected to is polled far less often — see
   // `IDLE_STATUS_POLL_MS`. Read before the status query so it can drive it.
-  const { data: status } = useConnectionStatus(id, isConnected ?? false);
+  const { data: status, dataUpdatedAt: statusUpdatedAt } = useConnectionStatus(id, isConnected ?? false);
+  // This row is the one component mounted for every saved connection for as
+  // long as the app runs — the sidebar is hidden rather than unmounted when a
+  // JSON viewer or Settings tab is active — which makes it the place a
+  // cluster's session can actually be watched. Both hooks are no-ops until
+  // something changes.
+  useUnreachableDisconnect(id, isConnected ?? false, status ?? "UNKNOWN", statusUpdatedAt, name);
+  useClusterDisconnectCleanup(id, isConnected ?? false);
   const { data: authBlockReason } = useConnectionAuthBlock(id);
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectConnection = useWorkspaceSelectionStore((s) => s.selectConnection);

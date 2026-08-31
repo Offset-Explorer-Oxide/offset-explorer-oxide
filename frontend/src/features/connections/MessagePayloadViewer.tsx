@@ -6,6 +6,13 @@ import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import {
+  DEFAULT_MESSAGE_VIEWER_PREFS,
+  PanelTabId,
+  useMessageViewerPrefsStore,
+  ValueMode,
+} from "../workspace/useMessageViewerPrefsStore";
+import { tabDataKey } from "../workspace/useTabDataStore";
+import {
   base64ToBytes,
   base64ToDisplayText,
   bytesToText,
@@ -13,9 +20,6 @@ import {
   tryParseJson,
   tryParseXml,
 } from "./payloadDecoding";
-
-type PanelTabId = "headers" | "value";
-type ValueMode = "text" | "json" | "avro" | "xml";
 
 /**
  * How much of a payload the raw Text view renders before offering the rest
@@ -63,8 +67,19 @@ export function MessagePayloadViewer() {
   const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const openJsonTab = useJsonViewerTabsStore((s) => s.openTab);
   const selectTab = useTabsStore((s) => s.selectTab);
-  const [activeTab, setActiveTab] = useState<PanelTabId>("value");
-  const [mode, setMode] = useState<ValueMode>("text");
+  // Which panel tab and Value view mode are showing is deliberately NOT
+  // component state: App.tsx renders this component `key={activeTabId}`, so
+  // switching top-level tabs unmounts it and `useState` would hand back the
+  // "value"/"text" defaults on the way back in — dropping the user out of
+  // the JSON (or Avro/XML) view they left open. See
+  // `useMessageViewerPrefsStore`.
+  const prefsKey = tabDataKey(useTabsStore((s) => s.activeTabId));
+  const { panelTab: activeTab, valueMode: mode } =
+    useMessageViewerPrefsStore((s) => s.prefsByTab[prefsKey]) ?? DEFAULT_MESSAGE_VIEWER_PREFS;
+  const setPanelTab = useMessageViewerPrefsStore((s) => s.setPanelTab);
+  const setValueMode = useMessageViewerPrefsStore((s) => s.setValueMode);
+  const setActiveTab = (tab: PanelTabId) => setPanelTab(prefsKey, tab);
+  const setMode = (valueMode: ValueMode) => setValueMode(prefsKey, valueMode);
   /**
    * Which payload the user asked to see in full, rather than a boolean.
    *

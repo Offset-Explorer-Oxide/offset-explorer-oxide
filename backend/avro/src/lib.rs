@@ -36,6 +36,78 @@ pub fn detect_container_file(bytes: &[u8]) -> bool {
     bytes.starts_with(&CONTAINER_FILE_MAGIC)
 }
 
+/// How one payload should be decoded — the whole precedence rule, decided
+/// before any I/O happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvroDecodeStrategy {
+    /// The payload carries its own schema; nothing else is consulted.
+    ContainerFile,
+    /// Decode the payload whole with the topic's manually-entered schema.
+    ManualSchema,
+    /// Confluent wire format: fetch this id from the registry and decode the
+    /// bytes *after* the 5-byte header.
+    SchemaRegistry { schema_id: u32 },
+}
+
+/// Why a payload cannot be decoded as Avro at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvroDecodeRefusal {
+    /// Not a container file, no manual schema, and no Confluent header —
+    /// there is simply nothing that says how to read these bytes.
+    NoSchemaAvailable,
+    /// A Confluent header names a schema id, but this connection has no
+    /// Schema Registry to resolve it against.
+    NoRegistryConfigured,
+}
+
+/// Decides how to decode a payload, given what the bytes say and what is
+/// configured. Pure, so the precedence can be pinned by tests — it used to
+/// live inline in the Tauri command, which needs a desktop toolchain to
+/// build and so could not be tested at all.
+///
+/// The order is deliberate and each step earns its place:
+///
+/// 1. **A container file wins outright.** Its schema is inside the payload,
+///    and its framing is incompatible with both of the others — a manual or
+///    registry schema applied to it would decode the file header as data.
+/// 2. **A manual schema beats the registry.** Pasting one into the Schema
+///    tab is an explicit override, and the reason to paste one is usually
+///    that registry lookup is not doing what you want. It also decodes the
+///    payload *whole*, with no header to strip.
+/// 3. **Otherwise the Confluent header decides**, and needs a registry to
+///    resolve against.
+pub fn decide_decode_strategy(
+    bytes: &[u8],
+    has_manual_schema: bool,
+    has_registry: bool,
+) -> std::result::Result<AvroDecodeStrategy, AvroDecodeRefusal> {
+    if detect_container_file(bytes) {
+        return Ok(AvroDecodeStrategy::ContainerFile);
+    }
+    if has_manual_schema {
+        return Ok(AvroDecodeStrategy::ManualSchema);
+    }
+    match detect_wire_format(bytes) {
+        Some(schema_id) if has_registry => Ok(AvroDecodeStrategy::SchemaRegistry { schema_id }),
+        Some(_) => Err(AvroDecodeRefusal::NoRegistryConfigured),
+        None => Err(AvroDecodeRefusal::NoSchemaAvailable),
+    }
+}
+
+impl AvroDecodeRefusal {
+    /// The message shown to the user, kept next to the rule that produces it.
+    pub fn message(self) -> &'static str {
+        match self {
+            AvroDecodeRefusal::NoSchemaAvailable => {
+                "payload has no Confluent Avro wire-format header and no manual schema is set for this topic"
+            }
+            AvroDecodeRefusal::NoRegistryConfigured => {
+                "no manual schema is set for this topic and this connection has no Schema Registry configured"
+            }
+        }
+    }
+}
+
 /// Decodes an Avro Object Container File: unlike `decode`, no external
 /// schema is needed — the writer schema is embedded in the file header, so
 /// `apache_avro::Reader` extracts and applies it itself. A single-record
@@ -173,6 +245,73 @@ mod tests {
     #[test]
     fn validate_schema_accepts_valid_avro_schema_json() {
         assert!(validate_schema(USER_SCHEMA).is_ok());
+    }
+
+    /// A container file's schema is inside the payload, and its framing is
+    /// incompatible with the other two — decoding it with a manual or
+    /// registry schema would read the file header as data.
+    #[test]
+    fn a_container_file_wins_over_everything_else() {
+        let container = [0x4f, 0x62, 0x6a, 0x01, 0xff];
+        assert_eq!(
+            decide_decode_strategy(&container, true, true),
+            Ok(AvroDecodeStrategy::ContainerFile)
+        );
+        assert_eq!(
+            decide_decode_strategy(&container, false, false),
+            Ok(AvroDecodeStrategy::ContainerFile)
+        );
+    }
+
+    /// Pasting a schema into the Schema tab is an explicit override, and the
+    /// usual reason to do it is that registry lookup is not doing what you
+    /// want — so it must beat a payload that also carries a registry header.
+    #[test]
+    fn a_manual_schema_beats_the_registry() {
+        let confluent = [0x00, 0x00, 0x00, 0x00, 0x07, 0xff];
+        assert_eq!(
+            decide_decode_strategy(&confluent, true, true),
+            Ok(AvroDecodeStrategy::ManualSchema)
+        );
+    }
+
+    #[test]
+    fn a_manual_schema_decodes_a_payload_with_no_framing_at_all() {
+        assert_eq!(decide_decode_strategy(&[1, 2, 3], true, false), Ok(AvroDecodeStrategy::ManualSchema));
+    }
+
+    #[test]
+    fn the_confluent_header_is_used_when_nothing_overrides_it() {
+        let confluent = [0x00, 0x00, 0x00, 0x00, 0x07, 0xff];
+        assert_eq!(
+            decide_decode_strategy(&confluent, false, true),
+            Ok(AvroDecodeStrategy::SchemaRegistry { schema_id: 7 })
+        );
+    }
+
+    /// The two refusals are distinct on purpose: one tells the user to
+    /// configure a registry, the other that nothing identifies these bytes.
+    #[test]
+    fn a_registry_payload_without_a_configured_registry_says_so() {
+        let confluent = [0x00, 0x00, 0x00, 0x00, 0x07, 0xff];
+        assert_eq!(
+            decide_decode_strategy(&confluent, false, false),
+            Err(AvroDecodeRefusal::NoRegistryConfigured)
+        );
+    }
+
+    #[test]
+    fn an_unidentifiable_payload_says_that_instead() {
+        assert_eq!(decide_decode_strategy(&[1, 2, 3], false, true), Err(AvroDecodeRefusal::NoSchemaAvailable));
+        assert_eq!(decide_decode_strategy(&[], false, true), Err(AvroDecodeRefusal::NoSchemaAvailable));
+    }
+
+    #[test]
+    fn each_refusal_has_its_own_message() {
+        assert_ne!(
+            AvroDecodeRefusal::NoSchemaAvailable.message(),
+            AvroDecodeRefusal::NoRegistryConfigured.message()
+        );
     }
 
     #[test]
