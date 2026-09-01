@@ -106,7 +106,60 @@ describe("ConnectionTree", () => {
     expect(screen.queryByText(/Authentication failed/)).not.toBeInTheDocument();
   });
 
-  it("renders a gray status dot when reachable but not yet connected", async () => {
+  // The question the colour alone provokes: a red dot on a local plaintext
+  // cluster says nothing about whether the broker is down or the credentials
+  // were rejected, and neither state clears by disconnecting.
+  it("explains a red dot on a live session, naming the address that stopped answering", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "UNREACHABLE",
+      connection_is_connected: () => true,
+      connection_auth_block_reason: () => null,
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    await waitFor(() => {
+      expect(screen.getByTestId("status-1")).toHaveAttribute("title", expect.stringContaining("stopped answering"));
+    });
+    expect(screen.getByTestId("status-1").getAttribute("title")).toContain("localhost:9092");
+  });
+
+  it("explains a red dot caused by rejected credentials, and how to clear it", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => "Invalid username or password",
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    await waitFor(() => {
+      const title = screen.getByTestId("status-1").getAttribute("title") ?? "";
+      expect(title).toContain("Invalid username or password");
+      expect(title).toContain("Reconnect");
+    });
+  });
+
+  it("tells a disconnected cluster's tooltip what to do next", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => null,
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    await waitFor(() => {
+      const title = screen.getByTestId("status-1").getAttribute("title") ?? "";
+      expect(title).toContain("Not connected to localhost:9092");
+      expect(title).toContain("Reconnect");
+    });
+  });
+
+  it("renders a gray status dot for a saved connection with no session", async () => {
     const checkStatus = vi.fn(() => "REACHABLE");
     const isConnected = vi.fn(() => false);
     setInvokeHandlers({
@@ -117,15 +170,19 @@ describe("ConnectionTree", () => {
     renderWithClient(<ConnectionTree />);
 
     await screen.findByText("Local Kafka");
-    await waitFor(() => expect(checkStatus).toHaveBeenCalled());
     await waitFor(() => expect(isConnected).toHaveBeenCalled());
     await waitFor(() => {
       expect(screen.getByTestId("status-1").className).toContain("status-dot--gray");
     });
     expect(screen.getByTestId("status-1").className).not.toContain("status-dot--green");
+    // …and it got there without asking the broker anything.
+    expect(checkStatus).not.toHaveBeenCalled();
   });
 
-  it("renders a red status dot for an unreachable connection, regardless of connected state", async () => {
+  // A live session that has stopped answering is the one reachability failure
+  // worth alarming about: something the user was in the middle of using has
+  // broken under them.
+  it("renders a red status dot for a connected cluster that has stopped answering", async () => {
     const checkStatus = vi.fn(() => "UNREACHABLE");
     setInvokeHandlers({
       connection_list: () => [sampleConnection({ id: "2", name: "Broken Kafka" })],
@@ -136,6 +193,51 @@ describe("ConnectionTree", () => {
 
     await screen.findByText("Broken Kafka");
     await waitFor(() => expect(checkStatus).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByTestId("status-2").className).toContain("status-dot--red");
+    });
+  });
+
+  // The report this rule came from: a local plaintext cluster sat red after
+  // being disconnected from, because the reachability poll runs whether or
+  // not there is a session. Not being connected is a deliberate state, not a
+  // fault, so it is gray — and disconnecting now actually changes the dot.
+  // The report this rule came from: a local plaintext cluster sat red after
+  // being disconnected from, because the reachability poll ran whether or not
+  // there was a session. Not being connected is a deliberate state, not a
+  // fault — so the dot is gray, and nothing is polled to decide that.
+  it("renders a gray status dot for a disconnected cluster without polling the broker", async () => {
+    const checkStatus = vi.fn(() => "UNREACHABLE");
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection({ id: "2", name: "Local Kafka" })],
+      connection_check_status: checkStatus,
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => null,
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Local Kafka");
+    await waitFor(() => {
+      expect(screen.getByTestId("status-2").className).toContain("status-dot--gray");
+    });
+    expect(screen.getByTestId("status-2").className).not.toContain("status-dot--red");
+    expect(checkStatus).not.toHaveBeenCalled();
+    // The tooltip claims nothing about reachability, because nothing checked.
+    expect(screen.getByTestId("status-2").getAttribute("title")).toContain("Not connected");
+  });
+
+  // Rejected credentials are not neutral: every request to the connection is
+  // refused until it is cleared, so this one stays red while disconnected.
+  it("keeps a red dot on an auth-blocked cluster even though it is not connected", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection({ id: "2", name: "Locked Out" })],
+      connection_check_status: () => "REACHABLE",
+      connection_is_connected: () => false,
+      connection_auth_block_reason: () => "Invalid username or password",
+    });
+    renderWithClient(<ConnectionTree />);
+
+    await screen.findByText("Locked Out");
     await waitFor(() => {
       expect(screen.getByTestId("status-2").className).toContain("status-dot--red");
     });

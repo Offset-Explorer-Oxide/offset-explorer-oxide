@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App, queryClient } from "./App";
 import { useJsonViewerTabsStore } from "./features/tabs/useJsonViewerTabsStore";
@@ -146,6 +146,67 @@ describe("App", () => {
 
     expect(await screen.findByText("Local Kafka")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
+  });
+
+  it("closes the modal as soon as the connection is saved, without waiting for the connect attempt", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const created = {
+      ...sampleNewConnection({ name: "Local Kafka", bootstrapServers: "localhost:9092" }),
+      id: "conn-1",
+      createdAt: "2026-08-22T00:00:00Z",
+      updatedAt: "2026-08-22T00:00:00Z",
+    };
+    let listedConnections: unknown[] = [];
+    // A connect that never settles — what a broker rejecting the typed
+    // credentials looks like from here for the ~10s the probe takes. The
+    // modal must not sit open (and unclosable) for the whole of it.
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "connection_list") return Promise.resolve(listedConnections);
+      if (command === "connection_create") {
+        listedConnections = [created];
+        return Promise.resolve(created);
+      }
+      if (command === "connection_connect") return new Promise(() => {});
+      if (command === "connection_check_status") return new Promise(() => {});
+      if (command === "connection_is_connected") return Promise.resolve(false);
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument());
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("connection_connect", { id: "conn-1" }));
+    expect(await screen.findByText("Local Kafka")).toBeInTheDocument();
+  });
+
+  it("keeps the modal open, with the failure shown, when saving the connection itself fails", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "tab_list") return Promise.resolve([]);
+      if (command === "connection_list") return Promise.resolve([]);
+      if (command === "connection_create") return Promise.reject(new Error("a connection named Local Kafka already exists"));
+      return Promise.reject(new Error(`unexpected command ${command}`));
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByText("No connections yet. Add one to get started.");
+
+    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New Connection" });
+    await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent("already exists"));
   });
 
   it("exports every connection when Export All is clicked", async () => {

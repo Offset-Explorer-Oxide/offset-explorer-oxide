@@ -18,3 +18,14 @@ describe("useLogsStore isExpanded", () => {
     expect(useLogsStore.getState().isExpanded).toBe(false);
   });
 });
+
+describe("useLogsStore entries", () => {
+  it("clears every entry", () => {
+    useLogsStore.getState().addEntry({ timestamp: "12:00:00", level: "info", message: "first" });
+    useLogsStore.getState().addEntry({ timestamp: "12:00:01", level: "warn", message: "second" });
+
+    useLogsStore.getState().clearEntries();
+
+    expect(useLogsStore.getState().entries).toEqual([]);
+  });
+});

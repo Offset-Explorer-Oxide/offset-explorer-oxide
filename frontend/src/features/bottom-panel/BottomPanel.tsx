@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { LogsPanel } from "./LogsPanel";
 import { useLogsListener } from "./useLogsListener";
+import { useLogsPanelHeight } from "./useLogsPanelHeight";
 import { useLogsStore } from "./useLogsStore";
 import { api } from "../../lib/tauri";
 import { useTabsStore } from "../tabs/useTabsStore";
@@ -21,6 +22,7 @@ export function BottomPanel() {
   useLogsListener();
   const isExpanded = useLogsStore((s) => s.isExpanded);
   const toggleExpanded = useLogsStore((s) => s.toggleExpanded);
+  const { height: logsHeight, startResizing, resetHeight, isResizing } = useLogsPanelHeight();
   const activeTabId = useTabsStore((s) => s.activeTabId);
 
   // "Tab memory" is everything the active top-level tab has cached — every
@@ -95,6 +97,17 @@ export function BottomPanel() {
 
   return (
     <div className="bottom-panel">
+      {isExpanded && (
+        <div
+          className={`bottom-panel-resizer${isResizing ? " bottom-panel-resizer--active" : ""}`}
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize logs panel"
+          title="Drag to resize the logs panel — double-click to reset"
+          onPointerDown={startResizing}
+          onDoubleClick={resetHeight}
+        />
+      )}
       <div className="bottom-panel-status-strip">
         <button
           type="button"
@@ -118,7 +131,11 @@ export function BottomPanel() {
           </button>
         </div>
       </div>
-      {isExpanded && <div className="bottom-panel-content">{<LogsPanel />}</div>}
+      {isExpanded && (
+        <div className="bottom-panel-content" style={{ height: logsHeight }} data-testid="logs-panel-content">
+          <LogsPanel />
+        </div>
+      )}
     </div>
   );
 }

@@ -21,20 +21,69 @@ import { treeKey, useTreeUiStore } from "./useTreeUiStore";
 import { useClusterDisconnectCleanup, useUnreachableDisconnect } from "./useClusterDisconnect";
 
 /**
- * Green requires both a reachable ping AND an explicit "connected" session
- * (see Reconnect/Disconnect) — a cluster that's merely network-reachable
- * but never connected shows gray, matching the cluster detail panel's
- * connect-state-gated field disabling and the tree's Brokers/Topics/
- * Consumers expansion, which key off the same "connected" flag.
+ * The dot answers "what is my session with this cluster", and warns only
+ * about states the user has to act on.
+ *
+ * * **Green** — connected and answering.
+ * * **Red** — something needs attention: a live session that has stopped
+ *   answering, or credentials the broker rejected.
+ * * **Gray** — not connected. A deliberate state, and not a problem.
+ *
+ * Reachability used to paint the dot red whether or not there was a session,
+ * so a cluster you had deliberately disconnected from — or had simply never
+ * connected to, on a laptop away from its network — sat there looking broken,
+ * and disconnecting could not clear it because the reachability poll runs
+ * regardless of connection state. An idle cluster being unreachable is not a
+ * fault; it is only worth knowing at the moment you try to use it, which is
+ * what Reconnect and the modal's Test button are for. The tooltip
+ * (`statusTitle`) still reports reachability in words for anyone who wants
+ * it.
+ *
+ * Rejected credentials stay red even while disconnected, because that state
+ * is not neutral: until it is cleared, every request to this connection is
+ * refused up front (see `connection_for_request`), and the row below the name
+ * says so.
  */
 function statusClass(status: ConnectionStatus, isConnected: boolean, isAuthBlocked: boolean): string {
-  // Rejected credentials outrank the reachability poll: that poll is a plain
-  // TCP check, so a cluster whose password is wrong answers it perfectly
-  // happily and would otherwise sit there looking fine.
   if (isAuthBlocked) return "status-dot status-dot--red";
+  if (!isConnected) return "status-dot status-dot--gray";
   if (status === "UNREACHABLE") return "status-dot status-dot--red";
-  if (status === "REACHABLE" && isConnected) return "status-dot status-dot--green";
+  if (status === "REACHABLE") return "status-dot status-dot--green";
   return "status-dot status-dot--gray";
+}
+
+/**
+ * What the dot means, in words, on hover.
+ *
+ * The colour alone cannot answer the question it prompts. Red covers two
+ * unrelated states — a cluster nothing is listening on, and one whose
+ * credentials the broker rejected — and neither of them clears by
+ * disconnecting, because reachability is polled whether or not there is a
+ * session and the auth breaker deliberately survives one (only editing the
+ * connection or Reconnect clears it). A user looking at a red dot on a local
+ * plaintext cluster they have just disconnected from has no way to tell which
+ * of those they are in, or what to do about it.
+ */
+function statusTitle(
+  status: ConnectionStatus,
+  isConnected: boolean,
+  authBlockReason: string | null,
+  bootstrapServers: string,
+): string {
+  if (authBlockReason) {
+    return `Authentication failed: ${authBlockReason}. Requests are paused — edit the connection's credentials and save, or use Reconnect, to try again.`;
+  }
+  // Says nothing about reachability while disconnected, because nothing is
+  // checking it: the poll behind `status` only runs for a live session (see
+  // `useConnectionStatus`), so any value left over from the last one is a
+  // fact about the past, not about now.
+  if (!isConnected) {
+    return `Not connected to ${bootstrapServers}. Use Reconnect to open a session.`;
+  }
+  if (status === "UNREACHABLE") {
+    return `Connected, but ${bootstrapServers} has stopped answering. The session ends if it stays unreachable.`;
+  }
+  return `Connected to ${bootstrapServers}.`;
 }
 
 interface ConnectionRowProps {
@@ -89,8 +138,13 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
   }
 
   return (
-    <>
-      <li
+    // One <li> per connection, wrapping the row *and* everything under it.
+    // The row is `position: sticky` so the cluster name stays visible while
+    // its topics scroll past, and a sticky element is bounded by its parent
+    // box — as flat siblings, one cluster's row would have stuck over the
+    // next cluster's rows all the way down the list.
+    <li className="connection-node">
+      <div
         className={`connection-row${isSelected ? " connection-row--selected" : ""}`}
         data-testid={`connection-row-${id}`}
         onClick={() => selectConnection(id, name)}
@@ -115,15 +169,18 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
         <span
           className={statusClass(status ?? "UNKNOWN", connected, Boolean(authBlockReason))}
           data-testid={`status-${id}`}
+          role="img"
+          aria-label={statusTitle(status ?? "UNKNOWN", connected, authBlockReason ?? null, connection.bootstrapServers)}
+          title={statusTitle(status ?? "UNKNOWN", connected, authBlockReason ?? null, connection.bootstrapServers)}
         />
         <span>{name}</span>
         {isConnecting && <span className="spinner" role="status" aria-label="Connecting" />}
-      </li>
+      </div>
       {authBlockReason && (
-        <li className="connection-row-auth-block" data-testid={`auth-block-${id}`}>
+        <p className="connection-row-auth-block" data-testid={`auth-block-${id}`}>
           Authentication failed: {authBlockReason}. Requests to this cluster are paused. Edit the connection's
           credentials and save to try again.
-        </li>
+        </p>
       )}
       {menuPosition && (
         <ContextMenu
@@ -140,11 +197,11 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
         />
       )}
       {connected && (
-        <li className="connection-row-children" style={expanded ? undefined : { display: "none" }}>
+        <div className="connection-row-children" style={expanded ? undefined : { display: "none" }}>
           <ClusterResourceTree connectionId={id} />
-        </li>
+        </div>
       )}
-    </>
+    </li>
   );
 }
 

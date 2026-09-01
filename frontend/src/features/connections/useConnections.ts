@@ -88,10 +88,29 @@ export function statusPollInterval(isConnected: boolean): number {
   return isConnected ? CONNECTED_STATUS_POLL_MS : IDLE_STATUS_POLL_MS;
 }
 
+/**
+ * The reachability poll behind a connected cluster's status dot.
+ *
+ * **Only runs while there is a session.** It used to run for every saved
+ * connection for as long as the app was open, which meant a TCP
+ * connect/teardown against production broker ports every minute, per saved
+ * cluster, forever — and once the dot stopped colouring itself from
+ * reachability while disconnected (a cluster you are not using being
+ * unreachable is not a fault), the only thing that traffic still fed was the
+ * wording of a tooltip. Nothing else consumed it: the auto-disconnect below
+ * only acts on a live session, and the tree's contents are gated on being
+ * connected.
+ *
+ * So a disconnected cluster is now genuinely silent — no sockets at rest, and
+ * none at startup either, since nothing is connected when the app opens.
+ * Reachability is answered on demand instead, by the things that already do
+ * it: Reconnect, and the New Connection modal's Test and Ping buttons.
+ */
 export function useConnectionStatus(id: string, isConnected: boolean) {
   return useQuery({
     queryKey: ["connection-status", id],
     queryFn: () => api.checkConnectionStatus(id),
+    enabled: isConnected,
     refetchInterval: statusPollInterval(isConnected),
     initialData: "UNKNOWN" as const,
   });

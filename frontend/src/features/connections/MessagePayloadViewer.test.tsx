@@ -32,6 +32,33 @@ describe("MessagePayloadViewer", () => {
     expect(screen.getByText(/select a message/i)).toBeInTheDocument();
   });
 
+  it("keeps the header, panel tabs and mode buttons outside the scrolling payload region", async () => {
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("hello world"),
+        payloadSizeBytes: null,
+        headers: [{ key: "trace-id", valueBase64: btoa("abc") }],
+      },
+    });
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    // Only the decoded payload lives in the scroll region…
+    expect(screen.getByText("hello world").closest(".message-payload-scroll")).not.toBeNull();
+    // …the chrome the user needs while reading it does not.
+    expect(container.querySelector(".message-payload-header")?.closest(".message-payload-scroll")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Value" }).closest(".message-payload-scroll")).toBeNull();
+    expect(screen.getByRole("button", { name: "JSON" }).closest(".message-payload-scroll")).toBeNull();
+
+    // The Headers tab scrolls its rows the same way.
+    await user.click(screen.getByRole("tab", { name: "Headers" }));
+    expect(screen.getByText("trace-id").closest(".message-payload-scroll")).not.toBeNull();
+  });
+
   it("shows the payload as text by default", () => {
     useMessageViewerStore.setState({
       message: { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: btoa("hello world"), payloadSizeBytes: null, headers: [] },

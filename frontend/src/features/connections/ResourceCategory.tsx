@@ -1,15 +1,12 @@
-import { CSSProperties, useState } from "react";
+import { CSSProperties, useRef, useState } from "react";
 import { FixedSizeList } from "react-window";
 import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { ContextMenu, ContextMenuItem } from "../../components/ContextMenu";
+import { ROW_HEIGHT_PX, useTreeListRows } from "./useTreeListHeight";
 import { useTreeUiStore } from "./useTreeUiStore";
 
 /** Below this many (post-filter) items, the plain unvirtualized `<ul>` is cheap enough to just render outright — avoids giving small lists an arbitrary fixed-height scroll box for no benefit. */
 const VIRTUALIZE_THRESHOLD = 50;
-/** Must match `.resource-item`'s actual rendered height (padding included, via the global `box-sizing: border-box` reset) — react-window positions each row by this fixed pixel amount rather than measuring the DOM. */
-const ROW_HEIGHT_PX = 32;
-/** How many rows the virtualized viewport shows at once before scrolling — independent of how many items actually exist. */
-const VISIBLE_ROWS = 10;
 
 export interface ResourceCategoryProps<T> {
   label: string;
@@ -66,6 +63,8 @@ export function ResourceCategory<T>({
   const query = useTreeUiStore((s) => s.searchText[key] ?? "");
   const setSearchText = useTreeUiStore((s) => s.setSearchText);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const visibleRows = useTreeListRows(bodyRef, expanded);
 
   function toggle() {
     // Every time the category is opened, not just the first time. The
@@ -121,21 +120,26 @@ export function ResourceCategory<T>({
         <ContextMenu x={menuPosition.x} y={menuPosition.y} items={contextMenuItems} onClose={() => setMenuPosition(null)} />
       )}
       {expanded && (
-        <div className="resource-category-body">
-          <input
-            className="resource-category-search"
-            aria-label={`Search ${label}`}
-            placeholder={`Search ${label.toLowerCase()}…`}
-            value={query}
-            onChange={(e) => setSearchText(key, e.target.value)}
-          />
+        <div className="resource-category-body" ref={bodyRef}>
+          {/* Sticky, like the category header and cluster row above it: with
+              a few hundred topics the search box is the one control the user
+              needs *while* scrolling the list it filters. */}
+          <div className="resource-category-search-row">
+            <input
+              className="resource-category-search"
+              aria-label={`Search ${label}`}
+              placeholder={`Search ${label.toLowerCase()}…`}
+              value={query}
+              onChange={(e) => setSearchText(key, e.target.value)}
+            />
+          </div>
           {error && <CategoryLoadWarning label={label} error={error} />}
           {isLoading && <p>Loading…</p>}
           {filtered.length > VIRTUALIZE_THRESHOLD ? (
             <FixedSizeList
               className="resource-item-list"
               innerElementType="ul"
-              height={Math.min(filtered.length, VISIBLE_ROWS) * ROW_HEIGHT_PX}
+              height={Math.min(filtered.length, visibleRows) * ROW_HEIGHT_PX}
               width="100%"
               itemCount={filtered.length}
               itemSize={ROW_HEIGHT_PX}

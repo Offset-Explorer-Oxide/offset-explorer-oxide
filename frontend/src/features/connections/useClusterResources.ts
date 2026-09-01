@@ -94,10 +94,17 @@ export function useFetchMessages() {
   return useMutation<
     MessageFetchResult,
     Error,
-    { connectionId: string; topic: string; filter: MessageFilter; requestId: string }
+    {
+      connectionId: string;
+      topic: string;
+      filter: MessageFilter;
+      requestId: string;
+      /** See `api.fetchMessages` — true for the Data tab's Fetch, false for a single-row fetch nothing is listening for. */
+      streamUpdates: boolean;
+    }
   >({
-    mutationFn: ({ connectionId, topic, filter, requestId }) =>
-      api.fetchMessages(connectionId, topic, filter, requestId),
+    mutationFn: ({ connectionId, topic, filter, requestId, streamUpdates }) =>
+      api.fetchMessages(connectionId, topic, filter, requestId, streamUpdates),
   });
 }
 
@@ -158,6 +165,11 @@ export function useFullPayload(
           maxPayloadPreviewBytes: null,
         },
         crypto.randomUUID(),
+        // Deliberately not streamed. This is the one fetch that carries whole,
+        // untruncated payloads, and its events would be emitted — megabytes at
+        // a time — only for the Data tab's listener to discard them for not
+        // matching its request id.
+        false,
       ),
     enabled: enabled && connectionId !== null && topic !== null && partition !== undefined && offset !== undefined,
     // Never refetched while it is on screen...

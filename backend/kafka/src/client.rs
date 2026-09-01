@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::assignment::decode_consumer_protocol_assignment;
@@ -32,6 +33,15 @@ use crate::messages::{
 };
 
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long the first bootstrap server gets to answer a reachability probe
+/// before the others are tried as well — see `ping_bootstrap`.
+///
+/// Short enough that a dead first broker barely delays the answer, long
+/// enough that a live one is always home first: a broker on the same machine
+/// answers in well under a millisecond, and one across a 50ms link in a tenth
+/// of this.
+const PING_FANOUT_DELAY: Duration = Duration::from_millis(250);
 
 /// How many partitions' watermarks to ask for at once.
 ///
@@ -698,6 +708,29 @@ impl RdKafkaClient {
     }
 }
 
+/// The `host:port` part of one bootstrap entry, with any `PROTOCOL://`
+/// prefix removed.
+///
+/// Kafka's own configuration files and `docker-compose` advertise listeners
+/// as `PLAINTEXT://localhost:9092`, and librdkafka accepts that form in
+/// `bootstrap.servers` — so a connection written that way connects, browses
+/// and fetches perfectly well. The reachability ping, though, hands the
+/// string to `TcpStream::connect`, which parses `host:port` and nothing else:
+/// it read the host as `PLAINTEXT://localhost`, failed to resolve it, and
+/// reported the cluster **unreachable**.
+///
+/// That was not a cosmetic red dot. `useUnreachableDisconnect` ends the
+/// session of a connected cluster after two consecutive unreachable polls, so
+/// a healthy local broker addressed this way was disconnected out from under
+/// the user roughly every twenty seconds, and its dot stayed red afterwards
+/// because reachability is polled whether or not anything is connected.
+fn host_port(entry: &str) -> &str {
+    match entry.split_once("://") {
+        Some((_scheme, host_port)) => host_port,
+        None => entry,
+    }
+}
+
 #[async_trait]
 impl KafkaClient for RdKafkaClient {
     async fn check_status(&self, connection: &Connection) -> Result<ConnectionStatus, AppError> {
@@ -732,12 +765,59 @@ impl KafkaClient for RdKafkaClient {
         self.drop_pooled_client(connection_id);
     }
 
+/// Probes every bootstrap server **at once** and answers with the first
+    /// one that connects.
+    ///
+    /// One at a time — which this used to do — meant a list was only as fast
+    /// as the dead entries in front of the live one: each unreachable address
+    /// costs the full `TCP_PING_TIMEOUT` before the next is tried, so a
+    /// three-broker bootstrap list whose first two are down took 6 seconds to
+    /// report a cluster that is up. This runs on the sidebar's per-connection
+    /// status poll for every saved connection, so that delay was paid over
+    /// and over.
+    ///
+    /// The race is *staggered*, which is what keeps it from costing more than
+    /// it saves. The first entry is probed immediately and the rest only if it
+    /// has not answered within [`PING_FANOUT_DELAY`], so the ordinary case —
+    /// a healthy cluster whose first broker answers at once — opens exactly
+    /// one socket, the same as the sequential version did. Firing all of them
+    /// unconditionally (which this briefly did) tripled the sockets a
+    /// three-broker cluster's status poll opened, every poll, for every saved
+    /// connection: the sort of connection churn brokers meter and firewalls
+    /// log, spent on an answer the first socket had already produced.
     async fn ping_bootstrap(&self, bootstrap_servers: &str) -> Result<ConnectionStatus, AppError> {
-        for addr in bootstrap_servers.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            if let Ok(Ok(_)) = timeout(TCP_PING_TIMEOUT, TcpStream::connect(addr)).await {
+        let mut attempts = JoinSet::new();
+        for (index, addr) in bootstrap_servers
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|entry| host_port(entry).to_string())
+            .enumerate()
+        {
+            attempts.spawn(async move {
+                // Everything after the first waits to see whether it is needed
+                // at all. A cluster that answers is answered by one socket; a
+                // first broker that is down costs this delay once, not one
+                // whole TCP_PING_TIMEOUT per dead entry ahead of a live one.
+                if index > 0 {
+                    tokio::time::sleep(PING_FANOUT_DELAY).await;
+                }
+                matches!(timeout(TCP_PING_TIMEOUT, TcpStream::connect(&addr)).await, Ok(Ok(_)))
+            });
+        }
+
+        while let Some(joined) = attempts.join_next().await {
+            // `Err` is a panicked or aborted probe task, which is not a
+            // reachable broker — it joins the failures rather than ending the
+            // race, exactly as a refused connection does.
+            if matches!(joined, Ok(true)) {
+                attempts.abort_all();
                 return Ok(ConnectionStatus::Reachable);
             }
         }
+
+        // Also the answer for a bootstrap string with no addresses in it at
+        // all: nothing to probe, so nothing was reached.
         Ok(ConnectionStatus::Unreachable)
     }
 
@@ -1903,6 +1983,189 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status, ConnectionStatus::Reachable);
+    }
+
+    /// The point of probing concurrently: dead entries in front of the live
+    /// one must not each cost their own `TCP_PING_TIMEOUT` before it is
+    /// tried. The addresses below are TEST-NET-3 (RFC 5737) — reserved for
+    /// documentation and routed nowhere — so on a networked machine each one
+    /// hangs for the full timeout. Probed one at a time, as this used to be,
+    /// reaching the live listener behind them takes 3 x TCP_PING_TIMEOUT;
+    /// probed together it takes one.
+    #[tokio::test]
+    async fn ping_bootstrap_answers_without_waiting_out_every_dead_server_in_turn() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let client = RdKafkaClient::new();
+        let servers =
+            format!("203.0.113.1:9092,203.0.113.2:9092,203.0.113.3:9092,127.0.0.1:{port}");
+
+        let started = std::time::Instant::now();
+        let status = client.ping_bootstrap(&servers).await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(status, ConnectionStatus::Reachable);
+        assert!(
+            elapsed < TCP_PING_TIMEOUT * 2,
+            "took {elapsed:?}, which means the dead servers were probed one after another"
+        );
+    }
+
+    /// Every probe failing is the only way to `Unreachable` — and the loop
+    /// has to end rather than hang once they all have.
+    #[tokio::test]
+    async fn ping_bootstrap_reports_unreachable_when_every_server_is_closed() {
+        let client = RdKafkaClient::new();
+        let status = client
+            .ping_bootstrap("127.0.0.1:1,127.0.0.1:2,127.0.0.1:3")
+            .await
+            .unwrap();
+        assert_eq!(status, ConnectionStatus::Unreachable);
+    }
+
+    /// A bootstrap string with nothing probeable in it (empty, or just
+    /// separators) must answer rather than fall through to something else.
+    #[tokio::test]
+    async fn ping_bootstrap_reports_unreachable_for_a_bootstrap_list_with_no_addresses() {
+        let client = RdKafkaClient::new();
+        assert_eq!(client.ping_bootstrap("").await.unwrap(), ConnectionStatus::Unreachable);
+        assert_eq!(client.ping_bootstrap(" , ,").await.unwrap(), ConnectionStatus::Unreachable);
+    }
+
+    #[test]
+    fn host_port_strips_the_protocol_prefix_kafka_configs_are_written_with() {
+        assert_eq!(host_port("PLAINTEXT://localhost:9092"), "localhost:9092");
+        assert_eq!(host_port("SASL_SSL://broker.example.com:9093"), "broker.example.com:9093");
+        // Lowercase and unknown schemes alike: anything before "://" is the
+        // scheme, because a host name cannot contain it.
+        assert_eq!(host_port("ssl://10.0.0.1:9094"), "10.0.0.1:9094");
+    }
+
+    #[test]
+    fn host_port_leaves_a_plain_host_port_alone() {
+        assert_eq!(host_port("localhost:9092"), "localhost:9092");
+        assert_eq!(host_port("10.0.0.1:9092"), "10.0.0.1:9092");
+        // An IPv6 literal carries no scheme and must survive untouched.
+        assert_eq!(host_port("[::1]:9092"), "[::1]:9092");
+    }
+
+    /// The bug this fixes: a local broker addressed the way Kafka's own
+    /// configs and docker-compose files write it was reported unreachable
+    /// even while it was listening — which showed as a red dot on a healthy
+    /// cluster and, worse, had `useUnreachableDisconnect` end the session
+    /// after two polls.
+    #[tokio::test]
+    async fn ping_bootstrap_reaches_a_server_written_with_a_protocol_prefix() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let client = RdKafkaClient::new();
+        let status = client
+            .ping_bootstrap(&format!("PLAINTEXT://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        assert_eq!(status, ConnectionStatus::Reachable);
+    }
+
+    /// A mixed list is the realistic case for a cluster copied out of a
+    /// broker config: some entries carry the prefix, some do not.
+    #[tokio::test]
+    async fn ping_bootstrap_handles_a_list_mixing_prefixed_and_bare_servers() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let client = RdKafkaClient::new();
+        let status = client
+            .ping_bootstrap(&format!("PLAINTEXT://127.0.0.1:1,127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        assert_eq!(status, ConnectionStatus::Reachable);
+    }
+
+    /// Binds `count` listeners that count what they accept, for the socket
+    /// footprint tests below.
+    async fn counting_listeners(count: usize) -> (Vec<String>, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        use tokio::net::TcpListener;
+
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut addresses = Vec::new();
+        for _ in 0..count {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addresses.push(listener.local_addr().unwrap().to_string());
+            let accepted = Arc::clone(&accepted);
+            tokio::spawn(async move {
+                while listener.accept().await.is_ok() {
+                    accepted.fetch_add(1, AtomicOrdering::Relaxed);
+                }
+            });
+        }
+        (addresses, accepted)
+    }
+
+    /// The status poll runs for every saved connection, every 10s connected
+    /// and every 60s idle, forever. Probing every bootstrap entry when the
+    /// first one answers multiplies that by the size of the list — connection
+    /// churn brokers meter and firewalls log, for an answer already in hand.
+    #[tokio::test]
+    async fn a_reachable_cluster_costs_exactly_one_socket_per_poll() {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+
+        let (addresses, accepted) = counting_listeners(3).await;
+        let client = RdKafkaClient::new();
+
+        let status = client.ping_bootstrap(&addresses.join(",")).await.unwrap();
+        // Long enough for any un-staggered fan-out to have landed.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        assert_eq!(status, ConnectionStatus::Reachable);
+        assert_eq!(
+            accepted.load(AtomicOrdering::Relaxed),
+            1,
+            "a healthy cluster's poll must open one socket, not one per bootstrap entry"
+        );
+    }
+
+    /// The other half of the trade: when the first entry is *not* answering,
+    /// the rest still get tried — quickly — rather than each waiting out its
+    /// own timeout in turn.
+    #[tokio::test]
+    async fn a_dead_first_broker_still_answers_from_the_others_promptly() {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+
+        let (addresses, accepted) = counting_listeners(1).await;
+        let client = RdKafkaClient::new();
+        // Two entries that hang (TEST-NET-3, routed nowhere) ahead of the live one.
+        let servers = format!("203.0.113.1:9092,203.0.113.2:9092,{}", addresses[0]);
+
+        let started = std::time::Instant::now();
+        let status = client.ping_bootstrap(&servers).await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(status, ConnectionStatus::Reachable);
+        assert_eq!(accepted.load(AtomicOrdering::Relaxed), 1);
+        assert!(
+            elapsed < TCP_PING_TIMEOUT,
+            "took {elapsed:?} — the dead entries were waited out rather than overlapped"
+        );
     }
 
     #[tokio::test]

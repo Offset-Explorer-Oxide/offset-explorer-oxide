@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { useLogsStore } from "./useLogsStore";
@@ -271,5 +271,93 @@ describe("BottomPanel tab memory", () => {
     );
 
     expect(screen.getByText(/Payloads \(all tabs\): 2\.00 MB/)).toBeInTheDocument();
+  });
+});
+
+describe("BottomPanel logs panel sizing", () => {
+  function pointerEventAt(type: string, clientY: number): Event {
+    const event = new Event(type, { bubbles: true });
+    Object.defineProperty(event, "clientY", { value: clientY });
+    return event;
+  }
+
+  it("has no resize handle while the panel is collapsed", () => {
+    renderPanel();
+    expect(screen.queryByLabelText("Resize logs panel")).not.toBeInTheDocument();
+  });
+
+  it("grows the logs panel when its top edge is dragged upwards", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByLabelText("Toggle logs panel"));
+
+    const handle = screen.getByLabelText("Resize logs panel");
+    act(() => {
+      handle.dispatchEvent(pointerEventAt("pointerdown", 500));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEventAt("pointermove", 400));
+    });
+
+    expect(screen.getByTestId("logs-panel-content")).toHaveStyle({ height: "260px" });
+  });
+
+  it("restores the default height on a double-click of the handle", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByLabelText("Toggle logs panel"));
+
+    const handle = screen.getByLabelText("Resize logs panel");
+    act(() => {
+      handle.dispatchEvent(pointerEventAt("pointerdown", 500));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEventAt("pointermove", 400));
+    });
+    await user.dblClick(handle);
+
+    expect(screen.getByTestId("logs-panel-content")).toHaveStyle({ height: "160px" });
+  });
+});
+
+describe("BottomPanel logs context menu", () => {
+  it("clears every log entry from the right-click menu", async () => {
+    const user = userEvent.setup();
+    useLogsStore.setState({
+      entries: [{ timestamp: "12:00:00", level: "info", message: "Connecting finished" }],
+      isExpanded: true,
+    });
+    renderPanel();
+    expect(screen.getByText("Connecting finished")).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByText("Connecting finished"));
+    await user.click(screen.getByRole("menuitem", { name: "Clear logs" }));
+
+    expect(screen.queryByText("Connecting finished")).not.toBeInTheDocument();
+    expect(screen.getByText("No log entries yet.")).toBeInTheDocument();
+  });
+
+  it("opens the same menu from the panel's empty area, with Clear logs disabled when there is nothing to clear", async () => {
+    useLogsStore.setState({ entries: [], isExpanded: true });
+    renderPanel();
+
+    fireEvent.contextMenu(screen.getByText("No log entries yet."));
+
+    expect(screen.getByRole("menuitem", { name: "Clear logs" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("closes the menu without clearing when Escape is pressed", async () => {
+    const user = userEvent.setup();
+    useLogsStore.setState({
+      entries: [{ timestamp: "12:00:00", level: "info", message: "Connecting finished" }],
+      isExpanded: true,
+    });
+    renderPanel();
+
+    fireEvent.contextMenu(screen.getByText("Connecting finished"));
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("menuitem", { name: "Clear logs" })).not.toBeInTheDocument();
+    expect(screen.getByText("Connecting finished")).toBeInTheDocument();
   });
 });

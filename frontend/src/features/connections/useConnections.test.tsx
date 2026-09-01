@@ -72,16 +72,34 @@ describe("statusPollInterval", () => {
 });
 
 describe("useConnectionStatus", () => {
-  // Backing off the *interval* must not delay the first answer: the dot has
-  // to be right as soon as the tree renders, not a minute later.
-  it("checks status immediately on mount even for a disconnected cluster", async () => {
+  // The first answer must not be delayed by the backed-off interval: a
+  // connected cluster's dot has to be right as soon as the tree renders.
+  it("checks a connected cluster's status immediately on mount", async () => {
+    const checkStatus = vi.fn(() => "REACHABLE");
+    setInvokeHandlers({ connection_check_status: checkStatus });
+
+    const { result } = renderHook(() => useConnectionStatus("1", true), { wrapper: createWrapper() });
+
+    await waitFor(() => expect(result.current.data).toBe("REACHABLE"));
+    expect(checkStatus).toHaveBeenCalledTimes(1);
+  });
+
+  // A saved connection with no session is silent: no socket on mount and none
+  // on an interval. This poll used to run for every saved cluster for as long
+  // as the app was open — a TCP connect/teardown against production broker
+  // ports every minute each — and once the dot stopped colouring itself from
+  // reachability while disconnected, the only thing left consuming it was a
+  // tooltip's wording.
+  it("does not touch the broker at all for a disconnected cluster", async () => {
     const checkStatus = vi.fn(() => "UNREACHABLE");
     setInvokeHandlers({ connection_check_status: checkStatus });
 
     const { result } = renderHook(() => useConnectionStatus("1", false), { wrapper: createWrapper() });
 
-    await waitFor(() => expect(result.current.data).toBe("UNREACHABLE"));
-    expect(checkStatus).toHaveBeenCalledTimes(1);
+    // Long enough for a mount fetch to have happened if one were going to.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(checkStatus).not.toHaveBeenCalled();
+    expect(result.current.data).toBe("UNKNOWN");
   });
 
   it("reports UNKNOWN before the first check resolves", () => {

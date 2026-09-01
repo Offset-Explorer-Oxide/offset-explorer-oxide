@@ -184,21 +184,33 @@ function AppShell() {
                   initialDraft={cloneDraft ?? undefined}
                   onAdd={async (connection) => {
                     const created = await createConnection.mutateAsync(connection);
+                    // Saving is the part the Add button promises, and it has
+                    // now happened — so the modal goes immediately, before the
+                    // connect attempt rather than after it.
+                    //
+                    // Awaiting the connect first (which this used to do) meant
+                    // that against a cluster that rejects the credentials, or
+                    // one that simply isn't there, Add left the modal sitting
+                    // open and inert for as long as the broker probe takes —
+                    // up to PROBE_TIMEOUT, 10 seconds, on top of the TLS/SASL
+                    // handshake attempts inside it. From the user's side that
+                    // is indistinguishable from a modal that refuses to close.
+                    closeModal();
                     // A saved connection sitting gray in the sidebar until the
                     // user manually hits Reconnect is a pointless extra step —
-                    // connect it right away. A failed connect (unreachable
-                    // broker, bad credentials) shouldn't block the modal from
-                    // closing: the connection is already saved and listed, and
-                    // the user can retry via the tree's own Reconnect button.
-                    try {
-                      await api.connectConnection(created.id);
-                    } catch {
-                      // Swallowed deliberately — see comment above.
-                    } finally {
-                      queryClient.invalidateQueries({ queryKey: ["connection-connected", created.id] });
-                      queryClient.invalidateQueries({ queryKey: ["connection-status", created.id] });
-                    }
-                    closeModal();
+                    // connect it right away, in the background. Its outcome
+                    // belongs to the tree (status dot, Reconnect button) and
+                    // the logs panel, not to a modal that is already gone.
+                    void (async () => {
+                      try {
+                        await api.connectConnection(created.id);
+                      } catch {
+                        // Swallowed deliberately — see comment above.
+                      } finally {
+                        queryClient.invalidateQueries({ queryKey: ["connection-connected", created.id] });
+                        queryClient.invalidateQueries({ queryKey: ["connection-status", created.id] });
+                      }
+                    })();
                   }}
                   onCancel={closeModal}
                 />
