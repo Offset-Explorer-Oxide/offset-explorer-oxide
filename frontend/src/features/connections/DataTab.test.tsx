@@ -1650,6 +1650,44 @@ describe("DataTab", () => {
     await waitFor(() => expect(held()).toBe(4_000));
   });
 
+  // The ordering the "rather than doubling it" test above does NOT cover: the
+  // stream buffer flushes on a 100ms timer, so when the fetch's own result
+  // lands inside that window the flush runs *after* `setTabMessages` has
+  // already written the authoritative rows — and appends the same messages a
+  // second time, on top of the result that already contained them. That is
+  // the ordering the real backend produces: it emits its last
+  // "messages-batch" events immediately before the command returns.
+  it("does not re-append streamed rows that the finished fetch's own result already carried", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    let resolveFetch: (result: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    const streamed = row(4_000, 4_000);
+    // Streamed and resolved inside the same flush window, so the buffer is
+    // still pending when the authoritative result is written.
+    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    resolveFetch({ messages: [streamed], totalMatching: 1, payloadBytesRead: 4_000 });
+
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
+    // Long enough for a flush timer left running to have fired.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+
+    expect(lastGridProps?.rowData).toHaveLength(1);
+    expect(held()).toBe(4_000);
+    expect(screen.getByText("1 loaded of 1 matching")).toBeTruthy();
+  });
+
   it("starts the view's total over when Fetch is run again", async () => {
     useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
     setInvokeHandlers({

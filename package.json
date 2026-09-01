@@ -4,6 +4,7 @@
   "scripts": {
     "tauri": "npx --prefix frontend tauri",
     "dev": "npx --prefix frontend tauri dev",
-    "build": "npx --prefix frontend tauri build"
+    "build": "npx --prefix frontend tauri build",
+    "coverage": "./scripts/coverage.sh"
   }
 }

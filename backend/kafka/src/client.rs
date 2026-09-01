@@ -11,6 +11,7 @@ use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
 use rdkafka::client::{ClientContext, DefaultClientContext};
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::groups::{GroupInfo, GroupMemberInfo};
 use rdkafka::message::{BorrowedMessage, Headers};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
@@ -283,6 +284,29 @@ pub trait KafkaClient: Send + Sync {
         group_id: &str,
         read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError>;
+}
+
+/// The members of a consumer group, safely.
+///
+/// librdkafka leaves a group's `members` array NULL when it has none, and
+/// rdkafka's `GroupInfo::members()` hands that straight to
+/// `slice::from_raw_parts` without checking it — which is undefined
+/// behaviour, however zero the length is. A release build gets away with it
+/// (nothing is ever read through the pointer), but any build with debug
+/// assertions on aborts the process outright on the precondition check, with
+/// no unwind and no chance to report anything to the user.
+///
+/// A group in `Empty` or `Dead` has no members by definition, so there is
+/// nothing to ask rdkafka for; in every other state librdkafka has allocated
+/// the array and the pointer is real. This matters well beyond the tests: an
+/// idle group — one with committed offsets and no consumer currently running
+/// — is `Empty`, which is the ordinary resting state of most groups the
+/// Consumers panel lists.
+fn group_members(group: &GroupInfo) -> &[GroupMemberInfo] {
+    match group.state() {
+        "Empty" | "Dead" => &[],
+        _ => group.members(),
+    }
 }
 
 /// Collects a message's Kafka headers. Values are base64-encoded, not
@@ -1274,7 +1298,7 @@ impl KafkaClient for RdKafkaClient {
             let mut owners: HashMap<(String, i32), (String, String)> = HashMap::new();
             let mut decode_failures = 0usize;
             let mut decode_attempts = 0usize;
-            for member in group.members() {
+            for member in group_members(group) {
                 if group.protocol_type() != "consumer" {
                     continue;
                 }
