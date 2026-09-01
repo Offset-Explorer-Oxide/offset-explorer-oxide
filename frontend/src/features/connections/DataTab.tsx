@@ -519,6 +519,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     // right panel left open from the previous fetch would be showing a row
     // that may no longer exist in it.
     clearViewedMessage();
+    // The success path retires the request id as soon as it has the
+    // authoritative result, so `finally` can no longer tell "I am still the
+    // current fetch" from "I was superseded" by looking at the ref alone.
+    // This remembers which of the two it was.
+    let retiredHere = false;
     try {
       const result = await fetchMessages.mutateAsync({
         connectionId,
@@ -526,7 +531,19 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         filter: toMessageFilter(form),
         requestId,
       });
-      if (!stoppedRef.current) {
+      if (!stoppedRef.current && activeRequestIdRef.current === requestId) {
+        // The result is authoritative and already contains every message the
+        // stream delivered, so anything still sitting in the buffer is a
+        // duplicate of a row about to be written below. Dropping it here (and
+        // retiring the request id, so a "messages-batch" event that overtakes
+        // the response is ignored too) is what stops the last flush window
+        // from appending the tail of the fetch a second time — which showed
+        // up as "200 loaded of 100 matching", doubled payload byte totals,
+        // and duplicate `getRowId`s that cost AG Grid the selected row on the
+        // next tab switch.
+        discardBufferedStream();
+        activeRequestIdRef.current = null;
+        retiredHere = true;
         setTabMessages(tabKey, result.messages);
         setTabTotalMatching(tabKey, result.totalMatching);
         // What this view is now *holding*, measured off the rows themselves
@@ -541,11 +558,20 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         enforceRetentionLimit();
       }
     } catch (err) {
-      if (!stoppedRef.current) {
+      if (!stoppedRef.current && activeRequestIdRef.current === requestId) {
         setError(err instanceof Error ? err.message : "Failed to fetch messages");
       }
     } finally {
-      setIsPlaying(false);
+      // Only when this fetch is still the current one. Stop re-enables the
+      // Fetch button while this promise is still pending, so a second fetch
+      // can already be in flight by the time this settles — and it must not
+      // have its buffer discarded, its request id retired, or its spinner
+      // turned off by the request it replaced.
+      if (retiredHere || activeRequestIdRef.current === requestId) {
+        discardBufferedStream();
+        activeRequestIdRef.current = null;
+        setIsPlaying(false);
+      }
     }
   }
 
