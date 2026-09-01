@@ -197,32 +197,34 @@ export function MessagePayloadViewer() {
       </div>
 
       {activeTab === "headers" && (
-        <div role="tabpanel" aria-label="Headers">
+        <div role="tabpanel" aria-label="Headers" className="message-payload-panel">
           {message.headers.length === 0 ? (
             <p className="resizable-pane-placeholder">No headers.</p>
           ) : (
-            <table className="topic-detail-table">
-              <thead>
-                <tr>
-                  <th>Key</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {message.headers.map((header, index) => (
-                  <tr key={index}>
-                    <td>{header.key}</td>
-                    <td>{base64ToDisplayText(header.valueBase64) ?? <em>null</em>}</td>
+            <div className="message-payload-scroll">
+              <table className="topic-detail-table message-payload-headers-table">
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>Value</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {message.headers.map((header, index) => (
+                    <tr key={index}>
+                      <td>{header.key}</td>
+                      <td>{base64ToDisplayText(header.valueBase64) ?? <em>null</em>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
 
       {activeTab === "value" && (
-        <div role="tabpanel" aria-label="Value">
+        <div role="tabpanel" aria-label="Value" className="message-payload-panel">
           {text === null ? (
             <p className="resizable-pane-placeholder">
               Payload wasn't loaded for this fetch — check "Fetch message payload" below Fetch, then Fetch again.
@@ -266,75 +268,84 @@ export function MessagePayloadViewer() {
                   XML
                 </button>
               </div>
-              {mode === "text" && (
-                <>
-                  <pre className="message-payload-body">{displayText}</pre>
-                  {isTextTruncated && (
-                    <p className="message-payload-truncation">
-                      Showing the first {Math.round(TEXT_PREVIEW_CHARS / 1024)} KB of{" "}
-                      {Math.round((text?.length ?? 0) / 1024).toLocaleString()} KB.{" "}
-                      <button type="button" className="link-button" onClick={() => setExpandedPayload(payloadBase64)}>
-                        Show the whole payload
-                      </button>
-                    </p>
-                  )}
-                </>
-              )}
-              {mode === "json" &&
-                (isLoadingFullPayload ? (
-                  <PayloadLoadingSpinner />
-                ) : json !== undefined ? (
-                  // Keyed by payload so every message gets a fresh tree.
-                  // `JsonNode` decides whether to start expanded in a
-                  // `useState` initialiser, which React runs once per mounted
-                  // instance — and nodes reconcile by position and property
-                  // name, so without this an `events` node expanded on a
-                  // message with three entries stays expanded on the next
-                  // message where it holds three thousand, rendering all of
-                  // them in one pass.
-                  <JsonTreeView
-                    key={payloadBase64}
-                    value={json}
-                    onOpenInNewTab={() => {
-                      const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                      selectTab(openJsonTab(title, json));
-                    }}
-                  />
-                ) : (
-                  <p role="alert">Payload is not valid JSON.</p>
-                ))}
-              {mode === "avro" && isLoadingFullPayload && <PayloadLoadingSpinner />}
-              {mode === "avro" && !isLoadingFullPayload && (
-                <>
-                  {decodeAvro.isPending && <p>Decoding…</p>}
-                  {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
-                  {decodeAvro.isSuccess && (
-                    // Same reason as the JSON view above.
+              {/* Everything above this — the partition/offset line, the
+                  Headers/Value tabs, the preview notice and the mode buttons
+                  — stays put; only the decoded payload itself scrolls. With
+                  the whole pane as one scroll box, a multi-megabyte JSON or
+                  Avro document pushed those controls off the top, so
+                  switching mode or closing the message meant paging all the
+                  way back up. */}
+              <div className="message-payload-scroll">
+                {mode === "text" && (
+                  <>
+                    <pre className="message-payload-body">{displayText}</pre>
+                    {isTextTruncated && (
+                      <p className="message-payload-truncation">
+                        Showing the first {Math.round(TEXT_PREVIEW_CHARS / 1024)} KB of{" "}
+                        {Math.round((text?.length ?? 0) / 1024).toLocaleString()} KB.{" "}
+                        <button type="button" className="link-button" onClick={() => setExpandedPayload(payloadBase64)}>
+                          Show the whole payload
+                        </button>
+                      </p>
+                    )}
+                  </>
+                )}
+                {mode === "json" &&
+                  (isLoadingFullPayload ? (
+                    <PayloadLoadingSpinner />
+                  ) : json !== undefined ? (
+                    // Keyed by payload so every message gets a fresh tree.
+                    // `JsonNode` decides whether to start expanded in a
+                    // `useState` initialiser, which React runs once per mounted
+                    // instance — and nodes reconcile by position and property
+                    // name, so without this an `events` node expanded on a
+                    // message with three entries stays expanded on the next
+                    // message where it holds three thousand, rendering all of
+                    // them in one pass.
                     <JsonTreeView
                       key={payloadBase64}
-                      value={decodeAvro.data}
+                      value={json}
                       onOpenInNewTab={() => {
                         const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                        selectTab(openJsonTab(title, decodeAvro.data));
+                        selectTab(openJsonTab(title, json));
                       }}
                     />
-                  )}
-                </>
-              )}
-              {mode === "xml" &&
-                (isLoadingFullPayload ? (
-                  <PayloadLoadingSpinner />
-                ) : xml !== undefined ? (
-                  <XmlTreeView
-                    value={xml}
-                    onOpenInNewTab={() => {
-                      const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                      selectTab(openJsonTab(title, xml, "xml"));
-                    }}
-                  />
-                ) : (
-                  <p role="alert">Payload is not valid XML.</p>
-                ))}
+                  ) : (
+                    <p role="alert">Payload is not valid JSON.</p>
+                  ))}
+                {mode === "avro" && isLoadingFullPayload && <PayloadLoadingSpinner />}
+                {mode === "avro" && !isLoadingFullPayload && (
+                  <>
+                    {decodeAvro.isPending && <p>Decoding…</p>}
+                    {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
+                    {decodeAvro.isSuccess && (
+                      // Same reason as the JSON view above.
+                      <JsonTreeView
+                        key={payloadBase64}
+                        value={decodeAvro.data}
+                        onOpenInNewTab={() => {
+                          const title = `Partition ${message.partition} · Offset ${message.offset}`;
+                          selectTab(openJsonTab(title, decodeAvro.data));
+                        }}
+                      />
+                    )}
+                  </>
+                )}
+                {mode === "xml" &&
+                  (isLoadingFullPayload ? (
+                    <PayloadLoadingSpinner />
+                  ) : xml !== undefined ? (
+                    <XmlTreeView
+                      value={xml}
+                      onOpenInNewTab={() => {
+                        const title = `Partition ${message.partition} · Offset ${message.offset}`;
+                        selectTab(openJsonTab(title, xml, "xml"));
+                      }}
+                    />
+                  ) : (
+                    <p role="alert">Payload is not valid XML.</p>
+                  ))}
+              </div>
             </>
           )}
         </div>

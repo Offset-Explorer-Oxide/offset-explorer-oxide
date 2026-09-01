@@ -93,6 +93,56 @@ describe("ConnectionModal", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  it("returns to the tab holding the missing field when Add is clicked from another tab", async () => {
+    const user = userEvent.setup();
+    renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
+
+    await user.click(screen.getByRole("tab", { name: "Security" }));
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(screen.getByRole("tab", { name: "Properties" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("Cluster name")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cluster name is required");
+  });
+
+  it("shows the add in progress and re-enables the button once it fails", async () => {
+    let rejectAdd: (err: Error) => void = () => {};
+    const onAdd = vi.fn().mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectAdd = reject;
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithClient(<ConnectionModal onAdd={onAdd} onCancel={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(await screen.findByRole("button", { name: "Adding…" })).toBeDisabled();
+
+    await act(async () => {
+      rejectAdd(new Error("a connection named Local Kafka already exists"));
+    });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("already exists");
+    expect(screen.getByRole("button", { name: "Add" })).toBeEnabled();
+  });
+
+  it("keeps Cancel usable while an add is in flight", async () => {
+    const onCancel = vi.fn();
+    const onAdd = vi.fn().mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    renderWithClient(<ConnectionModal onAdd={onAdd} onCancel={onCancel} />);
+
+    await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
+    await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("calls onAdd with the assembled connection when Add is clicked with valid fields", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();

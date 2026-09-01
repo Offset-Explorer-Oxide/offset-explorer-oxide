@@ -10,6 +10,8 @@ interface LogsState {
   entries: LogEntry[];
   isExpanded: boolean;
   addEntry: (entry: LogEntry) => void;
+  /** Backs the logs panel's right-click "Clear logs" action. */
+  clearEntries: () => void;
   toggleExpanded: () => void;
 }
 
@@ -24,6 +26,7 @@ export const useLogsStore = create<LogsState>((set, get) => ({
   entries: [],
   isExpanded: loadStoredExpanded(),
   addEntry: (entry) => set((state) => ({ entries: [...state.entries, entry] })),
+  clearEntries: () => set({ entries: [] }),
   toggleExpanded: () => {
     const next = !get().isExpanded;
     if (typeof localStorage !== "undefined") {

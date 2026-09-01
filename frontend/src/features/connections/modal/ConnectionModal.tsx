@@ -28,6 +28,13 @@ export function ConnectionModal({ onAdd, onCancel, initialDraft }: ConnectionMod
   function validateOrShowError(): boolean {
     const error = validateDraft(draft);
     setValidationError(error);
+    // Every rule in `validateDraft` is about a Properties-tab field (name,
+    // bootstrap servers, the Zookeeper pair). Hitting Add from Security or
+    // Advanced therefore used to report a missing field that wasn't on
+    // screen, leaving the user with an error, a modal that wouldn't close,
+    // and nothing visibly wrong on the tab in front of them. Show the tab
+    // the offending field actually lives on.
+    if (error !== null) setActiveTab("properties");
     return error === null;
   }
 
@@ -76,11 +83,11 @@ export function ConnectionModal({ onAdd, onCancel, initialDraft }: ConnectionMod
         />
 
         <footer className="connection-modal-footer">
-          <button type="button" onClick={handleTest} disabled={testConnection.isPending}>
+          <button type="button" onClick={handleTest} disabled={testConnection.isPending || isAdding}>
             Test
           </button>
           <button type="button" onClick={handleAdd} disabled={isAdding}>
-            Add
+            {isAdding ? "Adding…" : "Add"}
           </button>
           <button type="button" onClick={onCancel}>
             Cancel

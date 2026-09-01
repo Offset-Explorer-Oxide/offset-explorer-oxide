@@ -65,14 +65,14 @@ fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> St
 ///
 /// The breaker is cleared by editing the connection (see
 /// `connection_update`) or by an explicit Reconnect (see
-/// `connection_connect`) — both are deliberate acts by a user who has had a
-/// chance to fix the credentials.
+/// `connection_connect`, which clears it before calling this) — both are
+/// deliberate acts by a user who has had a chance to fix the credentials.
 async fn connection_for_request(state: &AppState, id: &str) -> Result<Connection, CommandError> {
     if let Some(reason) = state.connections.auth_block_reason(id) {
         return Err(CommandError {
             message: format!(
                 "{}: authentication failed for this connection, so it is not being retried: {reason}. \
-                 Edit the connection's credentials and save to try again.",
+                 Use Reconnect to try again, or edit the connection's credentials and save.",
                 AppError::Authentication
             ),
         });
@@ -335,6 +335,20 @@ pub async fn connection_connect(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ConnectionStatus, CommandError> {
+    // A click on Reconnect is the deliberate retry the breaker is meant to
+    // allow — `connection_for_request`'s own documentation has said so all
+    // along, and this is what finally makes it true. Without it that function
+    // refused this call too, so a connection whose credentials had been
+    // rejected could only be un-blocked by opening it, changing something and
+    // saving: the tree's Reconnect answered "not being retried" however many
+    // times it was clicked, including after the password had been fixed on
+    // the broker's side rather than in the app.
+    //
+    // Only this explicit, human-initiated path clears it. Everything the app
+    // does on its own — the tree's listings, the status polls, a fetch — still
+    // goes through `connection_for_request` and stays blocked, which is the
+    // hammering the breaker exists to prevent.
+    state.connections.clear_auth_failures(&id);
     let connection = connection_for_request(&state, &id).await?;
 
     let started = std::time::Instant::now();
@@ -477,14 +491,45 @@ pub async fn connection_count_topic_messages(
 /// moving, without flooding the panel on a fast, high-volume topic.
 const PROGRESS_LOG_INTERVAL: usize = 25;
 
-/// Backs the topic Data tab's Fetch button. Streams each message to the
-/// frontend via the `"messages-batch"` event as soon as it's polled (see
-/// `MessagesBatchEvent`), in addition to returning the full, authoritative
-/// `MessageFetchResult` once the fetch completes — the frontend uses the
-/// stream to paint rows incrementally and then reconciles with the final
-/// result on success. `MessageFetchResult::total_matching` lets the Data tab
-/// show "42 loaded of 150 matching" so the user can tell whether more
-/// messages remain beyond what this fetch actually pulled.
+/// How many streamed messages to carry in one `"messages-batch"` event.
+///
+/// Every event is a separate serialization and a separate dispatch into the
+/// webview, and this used to send one message per event — 1,000 of them for a
+/// 1,000-message fetch, to feed a frontend that already coalesces arrivals
+/// into at most ten renders a second. Batching is pure saving: the rows
+/// arrive in the same order, in the same buffer, just in far fewer hops.
+const STREAM_BATCH_SIZE: usize = 64;
+
+/// How long a partly-filled batch may wait for the messages that would fill
+/// it before being sent anyway.
+///
+/// Without this, a slow topic (or the tail of a fetch) would hold rows back
+/// until 64 of them existed — which on a fetch that returns 20 messages means
+/// they never stream at all and the grid stays empty until the fetch ends.
+/// Matched to the frontend's own 100ms flush window, so it adds no delay the
+/// user could perceive that was not there already.
+const STREAM_BATCH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Backs the topic Data tab's Fetch button, and its per-row "Fetch payload".
+///
+/// `stream_updates` picks between the two, and decides how the messages come
+/// back:
+///
+/// * **`true`** (the Data tab's Fetch): messages are streamed to the frontend
+///   in `"messages-batch"` events as they are polled, and the returned
+///   `MessageFetchResult` carries only the messages the stream did *not*
+///   deliver — normally none. Every message used to be sent twice, once
+///   streamed and once again in the result, so a fetch moved twice the base64
+///   it needed to and the webview briefly held both copies. The frontend
+///   keeps what it streamed instead.
+/// * **`false`** (the per-row payload fetch): nothing is streamed — that
+///   caller wants one specific message back, and its events were emitted only
+///   to be discarded by a listener that filters on a request id it
+///   deliberately does not match — and the result carries the message.
+///
+/// Either way `MessageFetchResult::total_matching` lets the Data tab show
+/// "42 loaded of 150 matching" so the user can tell whether more messages
+/// remain beyond what this fetch actually pulled.
 ///
 /// `max_total_payload_bytes` is General settings > Messages > Max Total Fetch
 /// Size. It is the only cap here measured in bytes — every other one counts
@@ -511,6 +556,7 @@ pub async fn connection_fetch_messages(
     read_timeout_ms: u64,
     max_message_size_bytes: u32,
     max_total_payload_bytes: Option<u64>,
+    stream_updates: bool,
 ) -> Result<kafkaoxide_core::MessageFetchResult, CommandError> {
     // Registered before anything that can await, so the window in which a
     // Stop click has nothing to cancel is as small as the IPC hop that
@@ -531,40 +577,52 @@ pub async fn connection_fetch_messages(
         }
     };
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
-    let forward_task = {
-        let app = app.clone();
-        let topic = topic.clone();
-        let request_id = request_id.clone();
+    // Only when the caller is streaming. Handing the fetch a sender it does
+    // not need would have it clone every message into a channel nobody reads.
+    //
+    // The batching itself lives in `kafkaoxide_core::forward_in_batches`,
+    // which is where it can be tested — this crate needs a desktop toolchain
+    // and a running Tauri app to exercise at all. What stays here is the part
+    // that is genuinely Tauri's: turning a batch into an event, and a running
+    // total into a Logs panel line.
+    let (sender, forward_task) = if stream_updates {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
         let cancelled = std::sync::Arc::clone(&cancelled);
-        tokio::spawn(async move {
-            let mut count = 0usize;
-            while let Some(message) = rx.recv().await {
-                // Stopping the poll loop isn't the whole of stopping: whatever
-                // it had already queued here would still be serialized, sent
-                // to a Data tab that is discarding it, and logged as "fetched
-                // ... so far" — so Stop looked like it had been ignored for as
-                // long as the backlog took to drain.
-                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-                count += 1;
-                let _ = app.emit(
-                    "messages-batch",
-                    MessagesBatchEvent {
-                        request_id: request_id.clone(),
-                        message,
-                    },
-                );
-                if count % PROGRESS_LOG_INTERVAL == 0 {
-                    crate::logging::emit_log(
-                        &app,
-                        "info",
-                        format!("Fetched {count} messages for topic \"{topic}\" so far..."),
+        let emit_app = app.clone();
+        let emit_request_id = request_id.clone();
+        let progress_app = app.clone();
+        let progress_topic = topic.clone();
+        // Returns how many messages it actually emitted, which is what lets
+        // the result below carry the remainder and nothing more.
+        let task = tokio::spawn(async move {
+            kafkaoxide_core::forward_in_batches(
+                rx,
+                cancelled,
+                STREAM_BATCH_SIZE,
+                STREAM_BATCH_INTERVAL,
+                PROGRESS_LOG_INTERVAL,
+                move |messages| {
+                    let _ = emit_app.emit(
+                        "messages-batch",
+                        MessagesBatchEvent {
+                            request_id: emit_request_id.clone(),
+                            messages,
+                        },
                     );
-                }
-            }
-        })
+                },
+                move |seen| {
+                    crate::logging::emit_log(
+                        &progress_app,
+                        "info",
+                        format!("Fetched {seen} messages for topic \"{progress_topic}\" so far..."),
+                    );
+                },
+            )
+            .await
+        });
+        (Some(tx), Some(task))
+    } else {
+        (None, None)
     };
 
     let was_cancelled = std::sync::Arc::clone(&cancelled);
@@ -574,20 +632,38 @@ pub async fn connection_fetch_messages(
             &connection,
             &topic,
             &filter,
-            Some(tx),
+            sender,
             Duration::from_millis(read_timeout_ms),
             max_message_size_bytes,
             max_total_payload_bytes,
             cancelled,
         )
         .await;
-    let _ = forward_task.await;
+    // A panicked forwarding task counts as having emitted nothing, so the
+    // result below carries every message rather than assuming they arrived.
+    let streamed = match forward_task {
+        Some(task) => task.await.unwrap_or(0),
+        None => 0,
+    };
     state.fetch_cancellations.finish(&request_id);
     let was_cancelled = was_cancelled.load(std::sync::atomic::Ordering::Relaxed);
     record_auth_outcome(&state, &id, &result);
 
     match result {
-        Ok(fetch_result) => {
+        Ok(mut fetch_result) => {
+            // How many the fetch actually produced — read before the streamed
+            // ones are dropped below, because it is what the log lines and
+            // the user's "fetched N" mean.
+            let fetched = fetch_result.messages.len();
+            // The stream already delivered the first `streamed` of them, in
+            // this exact order (the fetch loop sends each message and then
+            // pushes the same one onto this vector). Sending them a second
+            // time in the response doubled the base64 crossing the IPC
+            // boundary and made the webview hold both copies at once. What is
+            // left is the tail the stream did not carry: nothing at all in the
+            // ordinary case, and exactly the missing messages if the
+            // forwarding task ended early.
+            fetch_result.messages.drain(..streamed.min(fetched));
             // Says so explicitly when the user stopped it. Without this the
             // last thing in the panel was an ordinary "Fetched N of M" line,
             // which reads as the fetch having run to completion regardless of
@@ -596,14 +672,10 @@ pub async fn connection_fetch_messages(
                 &app,
                 "info",
                 if was_cancelled {
-                    format!(
-                        "Stopped fetching messages for topic \"{topic}\" after {} message(s)",
-                        fetch_result.messages.len()
-                    )
+                    format!("Stopped fetching messages for topic \"{topic}\" after {fetched} message(s)")
                 } else {
                     format!(
-                        "Fetched {} of {} matching messages for topic \"{topic}\"",
-                        fetch_result.messages.len(),
+                        "Fetched {fetched} of {} matching messages for topic \"{topic}\"",
                         fetch_result.total_matching
                     )
                 },

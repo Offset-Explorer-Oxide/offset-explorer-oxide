@@ -81,7 +81,8 @@ Object.assign(w.__handlers, {
   connection_fetch_messages: async (a: Record<string, unknown>) => {
     const filter = a.filter as { includePayload: boolean };
     const requestId = a.requestId as string;
-    w.__fetchLog.push({ topic: a.topic, includePayload: filter.includePayload, requestId });
+    const streamUpdates = a.streamUpdates as boolean;
+    w.__fetchLog.push({ topic: a.topic, includePayload: filter.includePayload, requestId, streamUpdates });
     const messages = [];
     for (let i = 0; i < 200; i++) {
       messages.push({
@@ -94,9 +95,23 @@ Object.assign(w.__handlers, {
         headers: [],
       });
     }
-    for (const m of messages) w.__emit("messages-batch", { requestId, message: m });
+    // Mirrors the real backend: batched events while streaming, and a result
+    // carrying only what the stream did not deliver.
+    let streamed = 0;
+    if (streamUpdates) {
+      const BATCH = 64;
+      for (let i = 0; i < messages.length; i += BATCH) {
+        const batch = messages.slice(i, i + BATCH);
+        w.__emit("messages-batch", { requestId, messages: batch });
+        streamed += batch.length;
+      }
+    }
     await new Promise((r) => setTimeout(r, 400));
-    return { messages, totalMatching: 200, payloadBytesRead: filter.includePayload ? 200 * 3000 : 0 };
+    return {
+      messages: messages.slice(streamed),
+      totalMatching: 200,
+      payloadBytesRead: filter.includePayload ? 200 * 3000 : 0,
+    };
   },
 });
 

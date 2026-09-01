@@ -208,9 +208,16 @@ export interface TopicMessage {
 }
 
 /** Payload of the `"messages-batch"` event, emitted once per message as `connection_fetch_messages` streams results. `requestId` must be checked against the id passed into that call — a stale fetch (superseded by a newer one, or one the user hit Stop on) keeps emitting until its backend task finishes, so a listener must ignore events for any other request. */
+/**
+ * A batch of streamed rows from an in-flight fetch.
+ *
+ * One event carries many messages: it used to carry exactly one, which cost a
+ * separate IPC hop and a separate serialization per row for a listener that
+ * buffers them and repaints ten times a second anyway.
+ */
 export interface MessagesBatchEvent {
   requestId: string;
-  message: TopicMessage;
+  messages: TopicMessage[];
 }
 
 /** `totalMatching` is how many messages satisfy the fetch's partition/offset/timestamp filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller than this when those caps trimmed the result, telling the Data tab more remain beyond what was actually loaded. */
@@ -278,7 +285,24 @@ export const api = {
       topic,
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
     }),
-  fetchMessages: (id: string, topic: string, filter: MessageFilter, requestId: string) =>
+  /**
+   * `streamUpdates` decides how the messages come back, and every caller has
+   * to choose:
+   *
+   * - `true` — rows arrive as `"messages-batch"` events while the fetch runs,
+   *   and `MessageFetchResult.messages` carries only what the stream did not
+   *   deliver (normally nothing). For the Data tab's Fetch, which paints rows
+   *   as they land; without it every message crossed the IPC boundary twice.
+   * - `false` — nothing is streamed and the result carries the messages. For
+   *   the single-message fetches, whose events no listener wants.
+   */
+  fetchMessages: (
+    id: string,
+    topic: string,
+    filter: MessageFilter,
+    requestId: string,
+    streamUpdates: boolean,
+  ) =>
     invoke<MessageFetchResult>("connection_fetch_messages", {
       id,
       topic,
@@ -287,6 +311,7 @@ export const api = {
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
       maxMessageSizeBytes: useGeneralSettingsStore.getState().maxMessageSizeBytes,
       maxTotalPayloadBytes: useGeneralSettingsStore.getState().maxTotalFetchBytes,
+      streamUpdates,
     }),
   /** Interrupts a fetch already in flight — the Data tab's Stop button, and switching topics mid-fetch. A no-op if the request already finished. */
   cancelFetch: (requestId: string) => invoke<void>("connection_cancel_fetch", { requestId }),

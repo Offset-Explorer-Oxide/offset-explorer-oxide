@@ -195,6 +195,18 @@ describe("ClusterResourceTree", () => {
     expect(await screen.findByText("orders")).toBeInTheDocument();
   });
 
+  it("keeps the topic search box in its own sticky band, outside the list it filters", async () => {
+    setInvokeHandlers({ connection_list_topics: () => [{ name: "orders", partitionCount: 3 }] });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+
+    await user.click(screen.getByTestId("category-Topics"));
+
+    const search = await screen.findByLabelText("Search Topics");
+    expect(search.parentElement).toHaveClass("resource-category-search-row");
+    expect(search.closest(".resource-item-list")).toBeNull();
+  });
+
   it("selects a topic into the workspace store when clicked", async () => {
     setInvokeHandlers({ connection_list_topics: () => [{ name: "orders", partitionCount: 3 }] });
     const user = userEvent.setup();

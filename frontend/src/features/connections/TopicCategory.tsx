@@ -57,13 +57,20 @@ export function TopicCategory({ connectionId, topics, isLoading, error, onExpand
       </div>
       {expanded && (
         <div className="resource-category-body">
-          <input
-            className="resource-category-search"
-            aria-label="Search Topics"
-            placeholder="Search topics…"
-            value={query}
-            onChange={(e) => setSearchText(key, e.target.value)}
-          />
+          {/* Sticky band, like the category header and cluster row above it —
+              see `.resource-category-search-row`. This is the category the
+              pinning matters most for: a cluster with hundreds of topics is
+              exactly when you need the box that filters them while you are
+              scrolling the list. */}
+          <div className="resource-category-search-row">
+            <input
+              className="resource-category-search"
+              aria-label="Search Topics"
+              placeholder="Search topics…"
+              value={query}
+              onChange={(e) => setSearchText(key, e.target.value)}
+            />
+          </div>
           {error && <CategoryLoadWarning label="Topics" error={error} />}
           {isLoading && <p>Loading…</p>}
           <ul className="resource-item-list">

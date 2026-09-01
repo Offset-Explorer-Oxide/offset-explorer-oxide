@@ -15,13 +15,16 @@ import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-let capturedMessagesBatchHandler: ((event: { payload: { requestId: string; message: unknown } }) => void) | null =
-  null;
+let capturedMessagesBatchHandler:
+  | ((event: { payload: { requestId: string; messages: unknown[] } }) => void)
+  | null = null;
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn((_event: string, handler: (event: { payload: { requestId: string; message: unknown } }) => void) => {
-    capturedMessagesBatchHandler = handler;
-    return Promise.resolve(() => {});
-  }),
+  listen: vi.fn(
+    (_event: string, handler: (event: { payload: { requestId: string; messages: unknown[] } }) => void) => {
+      capturedMessagesBatchHandler = handler;
+      return Promise.resolve(() => {});
+    },
+  ),
 }));
 
 // Real AG Grid needs DOM measurement (ResizeObserver etc.) jsdom doesn't
@@ -300,6 +303,8 @@ describe("DataTab", () => {
         readTimeoutMs: 10_000,
         maxMessageSizeBytes: 1_048_576,
         maxTotalPayloadBytes: 536_870_912,
+        // The grid's own Fetch paints rows as they arrive.
+        streamUpdates: true,
       }),
     );
   });
@@ -452,7 +457,7 @@ describe("DataTab", () => {
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
     const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
 
     await waitFor(() => expect(lastGridProps?.rowData).toEqual([streamed]));
 
@@ -484,7 +489,7 @@ describe("DataTab", () => {
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
     const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -634,7 +639,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(lastGridProps?.loading).toBe(false));
 
     const stale = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId: "some-other-request", message: stale } });
+    capturedMessagesBatchHandler?.({ payload: { requestId: "some-other-request", messages: [stale] } });
 
     expect(lastGridProps?.rowData).toEqual([]);
   });
@@ -1132,6 +1137,10 @@ describe("DataTab", () => {
       readTimeoutMs: 10_000,
       maxMessageSizeBytes: 1_048_576,
       maxTotalPayloadBytes: 536_870_912,
+      // A single-row fetch streams nothing: its events would only be
+      // discarded by the listener above, which matches on the grid fetch's
+      // request id.
+      streamUpdates: false,
     });
     expect(lastGridProps?.rowData).toEqual([
       { partition: 0, offset: 1, timestampMs: null, keyBase64: "k", payloadBase64: "eA==" },
@@ -1612,8 +1621,8 @@ describe("DataTab", () => {
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: row(4_000, 4_000) } });
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: row(4_000, 4_000) } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(2));
 
     // Still mid-fetch, and already counted.
@@ -1627,7 +1636,10 @@ describe("DataTab", () => {
     resolveFetch({ messages: [], totalMatching: 0 });
   });
 
-  it("replaces the streamed running total with the finished fetch's own count, rather than doubling it", async () => {
+  // The response no longer repeats what the stream delivered — it carries
+  // only the messages the stream did *not* — so a streamed row is written
+  // once, by the stream, and counted once.
+  it("counts a streamed row once, and does not drop it when the response carries no messages", async () => {
     useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
     let resolveFetch: (result: unknown) => void = () => {};
     const pending = new Promise((resolve) => {
@@ -1641,23 +1653,24 @@ describe("DataTab", () => {
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
     const requestId = fetchMessages.mock.calls[0][0].requestId;
     const streamed = row(4_000, 4_000);
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
     await waitFor(() => expect(held()).toBe(4_000));
 
-    resolveFetch({ messages: [streamed], totalMatching: 1, payloadBytesRead: 4_000 });
+    resolveFetch({ messages: [], totalMatching: 1, payloadBytesRead: 4_000 });
 
-    // The same single row, counted once — not 8,000.
-    await waitFor(() => expect(held()).toBe(4_000));
+    // The same single row, counted once — not 8,000, and not zero.
+    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeTruthy());
+    expect(lastGridProps?.rowData).toHaveLength(1);
+    expect(held()).toBe(4_000);
   });
 
-  // The ordering the "rather than doubling it" test above does NOT cover: the
-  // stream buffer flushes on a 100ms timer, so when the fetch's own result
-  // lands inside that window the flush runs *after* `setTabMessages` has
-  // already written the authoritative rows — and appends the same messages a
-  // second time, on top of the result that already contained them. That is
-  // the ordering the real backend produces: it emits its last
-  // "messages-batch" events immediately before the command returns.
-  it("does not re-append streamed rows that the finished fetch's own result already carried", async () => {
+  // The response settling inside the stream's own 100ms flush window is the
+  // ordering the real backend produces: it emits its last "messages-batch"
+  // events immediately before the command returns. The buffer used to be
+  // *discarded* here, which was harmless only because the response repeated
+  // every row. Now that it doesn't, those rows have to be flushed instead —
+  // and still not duplicated.
+  it("writes rows still buffered when the fetch resolves, exactly once", async () => {
     useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
     let resolveFetch: (result: unknown) => void = () => {};
     const pending = new Promise((resolve) => {
@@ -1673,12 +1686,12 @@ describe("DataTab", () => {
 
     const streamed = row(4_000, 4_000);
     // Streamed and resolved inside the same flush window, so the buffer is
-    // still pending when the authoritative result is written.
-    capturedMessagesBatchHandler?.({ payload: { requestId, message: streamed } });
-    resolveFetch({ messages: [streamed], totalMatching: 1, payloadBytesRead: 4_000 });
+    // still pending when the fetch completes.
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
+    resolveFetch({ messages: [], totalMatching: 1, payloadBytesRead: 4_000 });
 
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
-    // Long enough for a flush timer left running to have fired.
+    // Long enough for a flush timer left running to have fired again.
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 250));
     });
@@ -1686,6 +1699,54 @@ describe("DataTab", () => {
     expect(lastGridProps?.rowData).toHaveLength(1);
     expect(held()).toBe(4_000);
     expect(screen.getByText("1 loaded of 1 matching")).toBeTruthy();
+  });
+
+  // The response is not always empty: if the forwarding task ends early the
+  // backend hands back exactly the messages it did not stream, and those
+  // still belong on the grid.
+  it("appends the messages the response says the stream did not deliver", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    let resolveFetch: (result: unknown) => void = () => {};
+    const pending = new Promise((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
+
+    resolveFetch({ messages: [row(1_000, 1_000)], totalMatching: 2, payloadBytesRead: 5_000 });
+
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(2));
+    // Streamed row plus the tail, each counted once.
+    expect(held()).toBe(5_000);
+    expect(screen.getByText("2 loaded of 2 matching")).toBeTruthy();
+  });
+
+  // One event now carries many rows — the whole point of batching them.
+  it("writes every row in a batch, not just the first", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    const pending = new Promise(() => {});
+    const fetchMessages = vi.fn((_args: { requestId: string }) => pending);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
+    const requestId = fetchMessages.mock.calls[0][0].requestId;
+
+    capturedMessagesBatchHandler?.({
+      payload: { requestId, messages: [row(1_000, 1_000), row(2_000, 2_000), row(3_000, 3_000)] },
+    });
+
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(3));
+    expect(held()).toBe(6_000);
   });
 
   it("starts the view's total over when Fetch is run again", async () => {

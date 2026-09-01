@@ -5,6 +5,7 @@ mod connection_export;
 mod error;
 mod fetch_cancellation;
 mod message;
+mod message_stream;
 mod registry;
 
 pub use cluster::{
@@ -12,6 +13,7 @@ pub use cluster::{
     PartitionSummary, TopicSummary,
 };
 pub use message::{MessageFetchResult, MessageFilter, MessageHeader, MessagesBatchEvent, TopicMessage};
+pub use message_stream::forward_in_batches;
 pub use connection::{
     Connection, ConnectionStatus, NewConnection, SaslMechanism, SecurityProtocol,
 };

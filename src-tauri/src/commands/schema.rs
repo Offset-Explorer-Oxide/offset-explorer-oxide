@@ -51,9 +51,19 @@ pub async fn topic_schema_delete(
 /// overriding their registry) had no test anywhere. This function now only
 /// gathers the inputs and carries out the decision.
 ///
-/// Both inputs are local SQLite reads, so they are fetched up front rather
+/// Both DB inputs are local SQLite reads, so they are fetched up front rather
 /// than lazily per branch: it costs one extra cheap read on the container-file
 /// path and buys a single, testable rule instead of an order of `if`s.
+///
+/// **Every CPU-bound step runs on the blocking pool.** Base64-decoding a
+/// payload, parsing an Avro schema, decoding the record and building the
+/// `serde_json::Value` for it are all O(payload) and none of them yield —
+/// inline, a multi-megabyte message stalled one of the async runtime's worker
+/// threads for the whole decode, and every other command scheduled on that
+/// worker (a status poll, another cluster's topic listing) waited behind a
+/// message the user happened to open. There are two blocking hops rather than
+/// one because the registry path has to `await` an HTTP fetch in the middle,
+/// which a blocking closure cannot do.
 #[tauri::command]
 pub async fn connection_decode_avro(
     state: State<'_, AppState>,
@@ -61,31 +71,64 @@ pub async fn connection_decode_avro(
     topic: String,
     payload_base64: String,
 ) -> Result<serde_json::Value, CommandError> {
-    let bytes = BASE64
-        .decode(&payload_base64)
-        .change_context(AppError::Decode)
-        .attach_printable("payload isn't valid base64")?;
+    // First, exactly as before: an unusable payload is reported as such
+    // rather than as whatever the database lookups below happen to say.
+    let bytes = tokio::task::spawn_blocking(move || {
+        BASE64
+            .decode(&payload_base64)
+            .change_context(AppError::Decode)
+            .attach_printable("payload isn't valid base64")
+    })
+    .await
+    .change_context(AppError::Decode)
+    .attach_printable("base64 decode task panicked")??;
 
     let manual_schema = kafkaoxide_db::topic_schemas::get(&state.pool, &id, &topic, "avro").await?;
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
-    let endpoint = connection.schema_registry_endpoint.as_deref();
+    let has_registry_endpoint = connection.schema_registry_endpoint.is_some();
 
-    let strategy = kafkaoxide_avro::decide_decode_strategy(&bytes, manual_schema.is_some(), endpoint.is_some())
-        .map_err(|refusal| {
-            CommandError::from(Report::new(AppError::Decode).attach_printable(refusal.message()))
-        })?;
+    /// What the first blocking hop produced: either the finished value, or
+    /// the payload handed back with the schema id that still has to be
+    /// resolved against the registry.
+    enum DecodeOutcome {
+        Decoded(serde_json::Value),
+        NeedsRegistrySchema { bytes: Vec<u8>, schema_id: u32 },
+    }
 
-    let schema_id = match strategy {
-        kafkaoxide_avro::AvroDecodeStrategy::ContainerFile => {
-            return Ok(kafkaoxide_avro::decode_container(&bytes)?);
-        }
-        kafkaoxide_avro::AvroDecodeStrategy::ManualSchema => {
-            let schema = manual_schema.expect("the strategy is only chosen when a manual schema exists");
-            return Ok(kafkaoxide_avro::decode(&bytes, &schema)?);
-        }
-        kafkaoxide_avro::AvroDecodeStrategy::SchemaRegistry { schema_id } => schema_id,
+    let outcome = tokio::task::spawn_blocking(
+        move || -> Result<DecodeOutcome, Report<AppError>> {
+            let strategy =
+                kafkaoxide_avro::decide_decode_strategy(&bytes, manual_schema.is_some(), has_registry_endpoint)
+                    .map_err(|refusal| Report::new(AppError::Decode).attach_printable(refusal.message()))?;
+
+            match strategy {
+                kafkaoxide_avro::AvroDecodeStrategy::ContainerFile => {
+                    Ok(DecodeOutcome::Decoded(kafkaoxide_avro::decode_container(&bytes)?))
+                }
+                kafkaoxide_avro::AvroDecodeStrategy::ManualSchema => {
+                    let schema =
+                        manual_schema.expect("the strategy is only chosen when a manual schema exists");
+                    Ok(DecodeOutcome::Decoded(kafkaoxide_avro::decode(&bytes, &schema)?))
+                }
+                kafkaoxide_avro::AvroDecodeStrategy::SchemaRegistry { schema_id } => {
+                    Ok(DecodeOutcome::NeedsRegistrySchema { bytes, schema_id })
+                }
+            }
+        },
+    )
+    .await
+    .change_context(AppError::Decode)
+    .attach_printable("avro decode task panicked")??;
+
+    let (bytes, schema_id) = match outcome {
+        DecodeOutcome::Decoded(value) => return Ok(value),
+        DecodeOutcome::NeedsRegistrySchema { bytes, schema_id } => (bytes, schema_id),
     };
-    let endpoint = endpoint.expect("the strategy is only chosen when an endpoint is configured");
+
+    let endpoint = connection
+        .schema_registry_endpoint
+        .as_deref()
+        .expect("the strategy is only chosen when an endpoint is configured");
 
     let auth = SchemaRegistryAuth {
         basic_auth_credentials: connection.schema_registry_basic_auth_credentials.as_deref(),
@@ -101,5 +144,15 @@ pub async fn connection_decode_avro(
     let client = state.schema_registry.get_or_create(&id, endpoint, auth)?;
     let schema_text = client.fetch_schema_by_id(schema_id).await?;
 
-    Ok(kafkaoxide_avro::decode(&bytes[5..], &schema_text)?)
+    let value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Report<AppError>> {
+        // The 5-byte Confluent header (magic byte + schema id) is what
+        // `decide_decode_strategy` matched on; the record itself starts after
+        // it.
+        Ok(kafkaoxide_avro::decode(&bytes[5..], &schema_text)?)
+    })
+    .await
+    .change_context(AppError::Decode)
+    .attach_printable("avro decode task panicked")??;
+
+    Ok(value)
 }

@@ -252,7 +252,6 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const [byteBudgetBytesRead, setByteBudgetBytesRead] = useState<number | null>(null);
   const setTabMessages = useTabDataStore((s) => s.setTabMessages);
   const clearTabMessages = useTabDataStore((s) => s.clearTabMessages);
-  const setTabPayloadBytes = useTabDataStore((s) => s.setTabPayloadBytes);
   const addTabPayloadBytes = useTabDataStore((s) => s.addTabPayloadBytes);
   /** Set when this view alone holds the whole Max Total Fetch Size, so eviction has nothing left it is allowed to drop — see `enforceRetentionLimit`. */
   const [payloadBudgetSpent, setPayloadBudgetSpent] = useState(false);
@@ -281,6 +280,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   /** Streamed messages waiting to be written to the store — see the listener below. */
   const streamBufferRef = useRef<TopicMessage[]>([]);
   const streamFlushHandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Writes the buffer out now, set by the listener effect below.
+   *
+   * A completed fetch has to flush rather than wait for the pending timer:
+   * the streamed rows *are* the result now (the response no longer repeats
+   * them), so discarding the last window — which is what used to happen,
+   * harmlessly, when the authoritative result replaced everything — would
+   * lose up to a flush interval's worth of rows off the end of every fetch.
+   */
+  const streamFlushRef = useRef<() => void>(() => {});
   /** Tags the in-flight Fetch's `requestId` so the "messages-batch" listener below can tell its rows apart from a stale/superseded fetch's late-arriving events — see `MessagesBatchEvent`'s doc comment. */
   const activeRequestIdRef = useRef<string | null>(null);
 
@@ -363,10 +372,13 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       enforceRetentionLimitRef.current();
     };
 
+    streamFlushRef.current = flush;
+
     const unlisten = listen<MessagesBatchEvent>("messages-batch", (event) => {
       if (stoppedRef.current) return;
       if (event.payload.requestId !== activeRequestIdRef.current) return;
-      streamBufferRef.current.push(event.payload.message);
+      // One event, many rows — see `MessagesBatchEvent`.
+      streamBufferRef.current.push(...event.payload.messages);
       if (streamFlushHandleRef.current === null) {
         streamFlushHandleRef.current = setTimeout(flush, STREAM_FLUSH_MS);
       }
@@ -530,30 +542,39 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         topic: topicName,
         filter: toMessageFilter(form),
         requestId,
+        // Rows are painted as they arrive, from the stream below.
+        streamUpdates: true,
       });
       if (!stoppedRef.current && activeRequestIdRef.current === requestId) {
-        // The result is authoritative and already contains every message the
-        // stream delivered, so anything still sitting in the buffer is a
-        // duplicate of a row about to be written below. Dropping it here (and
-        // retiring the request id, so a "messages-batch" event that overtakes
-        // the response is ignored too) is what stops the last flush window
-        // from appending the tail of the fetch a second time — which showed
-        // up as "200 loaded of 100 matching", doubled payload byte totals,
-        // and duplicate `getRowId`s that cost AG Grid the selected row on the
-        // next tab switch.
-        discardBufferedStream();
+        // The streamed rows are the result. The response used to repeat every
+        // message the stream had already delivered, and this replaced the
+        // grid's rows with that copy — which is why the buffer was dropped
+        // here (its rows were about to be written again, and appending them
+        // showed up as "200 loaded of 100 matching", doubled payload byte
+        // totals, and duplicate `getRowId`s that cost AG Grid the selected
+        // row on the next tab switch).
+        //
+        // Now the response carries only what the stream did *not* deliver, so
+        // the two are disjoint by construction: flush what is buffered, then
+        // append the remainder — which is empty on every ordinary fetch, and
+        // exactly the missing rows if the forwarding task ended early.
+        streamFlushRef.current();
+        if (result.messages.length > 0) {
+          appendTabMessages(tabKey, result.messages);
+          // Same accounting the flush does for streamed rows: what this view
+          // is now *holding*, measured off the rows themselves rather than
+          // taken from the fetch's `payloadBytesRead`. A fetch reads whole
+          // messages and keeps only a bounded slice of each, so the two
+          // differ by orders of magnitude on a large-message topic — and it
+          // is what is held, not what crossed the wire, that decides whether
+          // the webview survives.
+          addTabPayloadBytes(tabKey, retainedPayloadBytes(result.messages));
+        }
+        // Retired only after the flush above, so nothing streamed for this
+        // request is dropped on the way out.
         activeRequestIdRef.current = null;
         retiredHere = true;
-        setTabMessages(tabKey, result.messages);
         setTabTotalMatching(tabKey, result.totalMatching);
-        // What this view is now *holding*, measured off the rows themselves
-        // rather than taken from the fetch's `payloadBytesRead`. A fetch
-        // reads whole messages and keeps only a bounded slice of each, so
-        // the two differ by orders of magnitude on a large-message topic —
-        // and it is what is held, not what crossed the wire, that decides
-        // whether the webview survives. Zero when "Fetch message payload"
-        // was off, since those rows carry no payload at all.
-        setTabPayloadBytes(tabKey, retainedPayloadBytes(result.messages));
         setByteBudgetBytesRead(result.stoppedAtByteBudget ? (result.payloadBytesRead ?? 0) : null);
         enforceRetentionLimit();
       }
@@ -655,6 +676,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       // only reacts to the main Fetch's activeRequestIdRef); its result is
       // patched into the cached rows directly below instead.
       requestId: crypto.randomUUID(),
+      // ...and for the same reason it is not streamed at all: the event would
+      // be emitted only to be discarded by that listener.
+      streamUpdates: false,
     });
     const updated = result.messages.find((m) => m.partition === row.partition && m.offset === row.offset);
     if (!updated) return;

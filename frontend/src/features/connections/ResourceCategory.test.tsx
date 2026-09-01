@@ -207,6 +207,20 @@ describe("ResourceCategory", () => {
     expect(screen.queryByText("item-59")).not.toBeInTheDocument();
   });
 
+  it("keeps the search box in its own sticky band, outside the scrolling item list", async () => {
+    const user = userEvent.setup();
+    renderCategory();
+    await user.click(screen.getByTestId("category-Topics"));
+
+    const search = screen.getByLabelText("Search Topics");
+    // The sticky band, not the input, is what spans the body's full width —
+    // see `.resource-category-search-row`.
+    expect(search.parentElement).toHaveClass("resource-category-search-row");
+    // …and it is a sibling of the list rather than inside it, so scrolling
+    // the topics never scrolls the box that filters them.
+    expect(search.closest(".resource-item-list")).toBeNull();
+  });
+
   it("still respects onSelect for a virtualized row", async () => {
     const user = userEvent.setup();
     const manyItems = Array.from({ length: 60 }, (_, i) => ({ id: String(i), name: `item-${i}` }));
