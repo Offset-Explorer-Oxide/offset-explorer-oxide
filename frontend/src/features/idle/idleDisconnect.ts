@@ -13,6 +13,9 @@ export const IDLE_DISCONNECT_MS = 120 * 60 * 1000;
  * (never refetched) while the user was away.
  */
 export async function disconnectAllConnections(queryClient: QueryClient): Promise<void> {
+  // Reported on the line below: one backend disconnect per connected cluster,
+  // each closing a broker socket (and a Schema Registry one), run together.
+  const started = performance.now();
   const connections = await api.listConnections();
   const disconnected: string[] = [];
 
@@ -31,7 +34,7 @@ export async function disconnectAllConnections(queryClient: QueryClient): Promis
     useLogsStore.getState().addEntry({
       timestamp: new Date().toISOString(),
       level: "info",
-      message: `Disconnected ${disconnected.join(", ")} after 120 minutes of inactivity`,
+      message: `Disconnected ${disconnected.join(", ")} after 120 minutes of inactivity in ${Math.round(performance.now() - started)} ms`,
     });
   }
 }

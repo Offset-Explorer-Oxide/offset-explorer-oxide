@@ -156,8 +156,13 @@ pub async fn connection_create(
     state: State<'_, AppState>,
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
+    let started = std::time::Instant::now();
     let connection = kafkaoxide_db::connections::create(&state.pool, &new_connection).await?;
-    crate::logging::emit_log(&app, "info", format!("Created connection \"{}\"", connection.name));
+    crate::logging::emit_log(
+        &app,
+        "info",
+        format!("Created connection \"{}\" in {} ms", connection.name, started.elapsed().as_millis()),
+    );
     Ok(connection)
 }
 
@@ -168,6 +173,7 @@ pub async fn connection_update(
     id: String,
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
+    let started = std::time::Instant::now();
     let connection = kafkaoxide_db::connections::update(&state.pool, &id, &new_connection).await?;
     // The settings the broker rejected no longer exist, so the verdict on
     // them is meaningless — give the edited connection a clean slate.
@@ -180,7 +186,11 @@ pub async fn connection_update(
     // changed. `get_or_create` would notice via its fingerprint anyway; this
     // makes it immediate and keeps the two pools behaving identically.
     state.schema_registry.release(&id);
-    crate::logging::emit_log(&app, "info", format!("Updated connection \"{}\"", connection.name));
+    crate::logging::emit_log(
+        &app,
+        "info",
+        format!("Updated connection \"{}\" in {} ms", connection.name, started.elapsed().as_millis()),
+    );
     Ok(connection)
 }
 
@@ -190,6 +200,7 @@ pub async fn connection_delete(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), CommandError> {
+    let started = std::time::Instant::now();
     kafkaoxide_db::connections::delete(&state.pool, &id).await?;
     kafkaoxide_db::topic_schemas::delete_all_for_connection(&state.pool, &id).await?;
     state.connections.mark_disconnected(&id);
@@ -198,7 +209,11 @@ pub async fn connection_delete(
     // Nothing will ever ask for this connection's schemas again, and the
     // client holds an open HTTPS connection to the registry.
     state.schema_registry.release(&id);
-    crate::logging::emit_log(&app, "info", format!("Deleted connection {id}"));
+    crate::logging::emit_log(
+        &app,
+        "info",
+        format!("Deleted connection {id} in {} ms", started.elapsed().as_millis()),
+    );
     Ok(())
 }
 
@@ -369,6 +384,7 @@ pub async fn connection_connect(
 /// Backs the cluster detail panel's "Disconnect" button.
 #[tauri::command]
 pub async fn connection_disconnect(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
+    let started = std::time::Instant::now();
     state.connections.mark_disconnected(&id);
     // A fetch already inside its poll loop holds its own consumer, so
     // releasing the pool below stops new requests but not that one — it would
@@ -379,7 +395,11 @@ pub async fn connection_disconnect(app: AppHandle, state: State<'_, AppState>, i
         crate::logging::emit_log(
             &app,
             "info",
-            format!("Stopped {} in-flight fetch(es) on disconnect", cancelled.len()),
+            format!(
+                "Stopped {} in-flight fetch(es) on disconnect in {} ms",
+                cancelled.len(),
+                started.elapsed().as_millis()
+            ),
         );
     }
     // Disconnect means disconnect: drop the pooled client so the socket
@@ -567,6 +587,11 @@ pub async fn connection_fetch_messages(
     // whole fix.
     // Registered against this connection, so disconnecting the cluster can
     // stop it — see `FetchCancellations::cancel_all_for_connection`.
+    // Timed from here — the whole fetch as the user experiences it, including
+    // the connection lookup, the client build and the handshake, not just the
+    // poll loop. `Instant` is `Copy`, so the progress closure below gets its
+    // own copy of the same start.
+    let started = std::time::Instant::now();
     let cancelled = state.fetch_cancellations.begin_for_connection(&request_id, &id);
     let connection = match connection_for_request(&state, &id).await {
         Ok(connection) => connection,
@@ -614,7 +639,10 @@ pub async fn connection_fetch_messages(
                     crate::logging::emit_log(
                         &progress_app,
                         "info",
-                        format!("Fetched {seen} messages for topic \"{progress_topic}\" so far..."),
+                        format!(
+                            "Fetched {seen} messages for topic \"{progress_topic}\" so far in {} ms...",
+                            started.elapsed().as_millis()
+                        ),
                     );
                 },
             )
@@ -672,11 +700,15 @@ pub async fn connection_fetch_messages(
                 &app,
                 "info",
                 if was_cancelled {
-                    format!("Stopped fetching messages for topic \"{topic}\" after {fetched} message(s)")
+                    format!(
+                        "Stopped fetching messages for topic \"{topic}\" after {fetched} message(s) in {} ms",
+                        started.elapsed().as_millis()
+                    )
                 } else {
                     format!(
-                        "Fetched {fetched} of {} matching messages for topic \"{topic}\"",
-                        fetch_result.total_matching
+                        "Fetched {fetched} of {} matching messages for topic \"{topic}\" in {} ms",
+                        fetch_result.total_matching,
+                        started.elapsed().as_millis()
                     )
                 },
             );
@@ -708,7 +740,11 @@ pub async fn connection_fetch_messages(
             crate::logging::emit_log(
                 &app,
                 "error",
-                format!("Failed to fetch messages for topic \"{topic}\": {}", command_err.message),
+                format!(
+                    "Failed to fetch messages for topic \"{topic}\" after {} ms: {}",
+                    started.elapsed().as_millis(),
+                    command_err.message
+                ),
             );
             Err(command_err)
         }

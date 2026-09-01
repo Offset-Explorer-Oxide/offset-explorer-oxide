@@ -1008,11 +1008,54 @@ body {
   display: flex;
   flex-direction: column;
 }
-/* The one part of the right pane that scrolls. */
+/* The one part of the right pane that scrolls — in both directions. */
 .message-payload-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+}
+/* ...which means the structured views must not scroll horizontally on their
+   own account.
+
+   `.json-tree-body` (used by both the JSON and XML trees) carries
+   `overflow-x: auto`, and inside this pane that put the horizontal scrollbar
+   at the bottom of the *tree* — an element as tall as the whole document —
+   so on anything longer than a screen it sat somewhere far below the visible
+   area and a long line simply looked cut off. Handing the horizontal axis to
+   the scroll region above puts the scrollbar on the pane's bottom edge, where
+   it stays put while you scroll down.
+
+   `width: max-content` lets the box grow to its widest line so its border and
+   background still wrap the content once scrolled; `min-width: 100%` keeps it
+   filling the pane when the content is narrower. Scoped to this pane: the
+   same tree opened as its own tab scrolls inside the middle pane and is fine
+   as it is. */
+.message-payload-scroll .json-tree-body {
+  overflow-x: visible;
+  width: max-content;
+  min-width: 100%;
+}
+/* Drawn rather than left to the platform's overlay scrollbars, which fade out
+   when idle: this pane is narrow and its content routinely runs off the right
+   edge, so the bar is the only thing that says there is more to see. Styling
+   `::-webkit-scrollbar` at all is what makes the webview reserve space for it
+   instead of floating it over the payload. */
+.message-payload-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.message-payload-scroll::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}
+.message-payload-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+.message-payload-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-fg-muted);
+}
+.message-payload-scroll::-webkit-scrollbar-corner {
+  background: var(--color-bg);
 }
 /* Header row of the Headers table, pinned while its rows scroll under it. */
 .message-payload-headers-table thead th {
@@ -1036,6 +1079,11 @@ body {
 .message-payload-meta {
   color: var(--color-fg-muted);
   margin: 0 0 8px;
+  /* This line sits in the pane's fixed header, which does not scroll, so a
+     long message key has to wrap rather than run off the edge — the pane
+     itself clips (`overflow: hidden`) so anything past the edge would be
+     unreadable with no way to reach it. */
+  overflow-wrap: anywhere;
 }
 .message-payload-avro-banner {
   background: var(--color-bg);

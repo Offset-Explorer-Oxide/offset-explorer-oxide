@@ -11,6 +11,7 @@ import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { useDataTabGridStateStore } from "./useDataTabGridStateStore";
 import { MAX_INLINE_PAYLOAD_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { useLogsStore } from "../bottom-panel/useLogsStore";
 import { DataTab } from "./DataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -129,6 +130,7 @@ beforeEach(() => {
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, byTab: {} });
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
+  useLogsStore.setState({ entries: [] });
   useGeneralSettingsStore.setState({ maxTotalFetchBytes: 536_870_912 });
   useDataTabFiltersStore.setState({ formByTab: {} });
   useDataTabGridStateStore.setState({ stateByTab: {} });
@@ -1533,6 +1535,11 @@ describe("DataTab", () => {
     expect(held(COLD)).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab[COLD]).toBeUndefined();
     expect(useTabDataStore.getState().evictedTabs[COLD]).toBe(true);
+    // ...and said so in the Logs panel, with how long the eviction took —
+    // every action the panel reports carries its duration, so the log doubles
+    // as a performance record.
+    const evictionLog = useLogsStore.getState().entries.find((entry) => /Cleared \d+ cached/.test(entry.message));
+    expect(evictionLog?.message).toMatch(/^Cleared 1 cached message view\(s\) to stay within Max total fetch size in \d+ ms$/);
   });
 
   it("never evicts the view being fetched into", async () => {

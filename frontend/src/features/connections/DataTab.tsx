@@ -491,12 +491,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
    */
   function enforceRetentionLimit() {
     const limit = useGeneralSettingsStore.getState().maxTotalFetchBytes;
+    // Timed like every other action the panel reports: eviction walks and
+    // rewrites the cached rows of every view it drops, so on a large cache it
+    // is not free, and it runs on each flush of a streaming fetch.
+    const started = performance.now();
     const evicted = evictToFit(limit, tabKey);
     if (evicted.length > 0) {
       useLogsStore.getState().addEntry({
         timestamp: new Date().toISOString(),
         level: "info",
-        message: `Cleared ${evicted.length} cached message view(s) to stay within Max total fetch size`,
+        message: `Cleared ${evicted.length} cached message view(s) to stay within Max total fetch size in ${Math.round(performance.now() - started)} ms`,
       });
     }
     const remaining = totalRetainedPayloadBytes(useTabDataStore.getState().payloadBytesByTab);

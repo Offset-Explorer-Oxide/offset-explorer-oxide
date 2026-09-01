@@ -101,5 +101,8 @@ describe("disconnectAllConnections", () => {
     expect(useLogsStore.getState().entries).toHaveLength(1);
     expect(useLogsStore.getState().entries[0].message).toContain("prod, staging");
     expect(useLogsStore.getState().entries[0].message).toContain("120 minutes");
+    // Every action the panel reports carries how long it took, so the log
+    // doubles as a performance record.
+    expect(useLogsStore.getState().entries[0].message).toMatch(/in \d+ ms$/);
   });
 });
