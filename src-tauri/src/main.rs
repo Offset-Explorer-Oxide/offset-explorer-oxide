@@ -75,6 +75,10 @@ fn main() {
             kafkaoxide_kafka::set_app_version(&handle.package_info().version.to_string());
 
             tauri::async_runtime::block_on(async move {
+                // What "Application started" below reports: opening the
+                // database and running any outstanding migrations, which is
+                // the one piece of startup work that can grow with use.
+                let started = std::time::Instant::now();
                 let data_dir = handle.path().app_data_dir().expect("app data dir");
                 std::fs::create_dir_all(&data_dir).expect("create app data dir");
                 let db_path = data_dir.join("kafkaoxide.sqlite");
@@ -92,7 +96,11 @@ fn main() {
                     schema_registry: kafkaoxide_schema_registry::SchemaRegistryClients::default(),
                 });
 
-                logging::emit_log(&handle, "info", "Application started");
+                logging::emit_log(
+                    &handle,
+                    "info",
+                    format!("Application started in {} ms", started.elapsed().as_millis()),
+                );
 
                 // Logged so the id is discoverable from the app itself: it is
                 // what an operator filters broker metrics and quotas by, and
