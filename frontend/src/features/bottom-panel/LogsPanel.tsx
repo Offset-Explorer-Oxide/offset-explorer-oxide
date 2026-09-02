@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { ContextMenu } from "../../components/ContextMenu";
 import { useLogsStore } from "./useLogsStore";
+// The backend stamps its log entries in UTC (`chrono::Utc::now`), and the
+// frontend-generated ones are ISO strings; both are rendered in the system's
+// own timezone here rather than shown as they arrived.
+import { formatLocalTimestamp } from "../../lib/time";
 
 export function LogsPanel() {
   const entries = useLogsStore((s) => s.entries);
@@ -25,7 +29,7 @@ export function LogsPanel() {
         <ul className="logs-panel" aria-label="Application logs">
           {entries.map((entry, index) => (
             <li key={index} className={`log-entry log-entry--${entry.level}`}>
-              <span className="log-timestamp">{entry.timestamp}</span>
+              <span className="log-timestamp">{formatLocalTimestamp(entry.timestamp)}</span>
               <span className="log-message">{entry.message}</span>
             </li>
           ))}

@@ -10,7 +10,13 @@ export interface FilterFormState {
   /** `<input type="datetime-local">` value. */
   fromDate: string;
   toDate: string;
-  /** An explicit starting offset — takes priority over fromDate on the backend when both are set. */
+  /**
+   * An explicit starting offset. Not an alternative to `fromDate` — when both
+   * are set the backend applies them together, starting from whichever
+   * resolves to the later offset (`combined_start_offset`), so each one can
+   * only narrow the fetch further. Out-of-range values are clamped to the
+   * partition's watermarks rather than rejected.
+   */
   offset: string;
   /** The "Fetch message payload" checkbox below Fetch. */
   includePayload: boolean;
@@ -63,9 +69,29 @@ function parsePartitions(value: string): number[] | null {
   return parsed.length > 0 ? parsed : null;
 }
 
+/**
+ * A `datetime-local` value as epoch milliseconds, read in the system's own
+ * timezone — the same zone the Data grid's Timestamp column and the logs
+ * panel are rendered in (see `formatLocalTimestamp`).
+ *
+ * `new Date(string)` already does this for the `YYYY-MM-DDTHH:mm` form the
+ * input produces: ECMAScript reads a date-*time* with no offset as local
+ * time, which is why typing 09:00 filters from 09:00 on the user's clock and
+ * matches what they then see in the grid.
+ *
+ * The `T` is what makes that true, and it is the whole reason for the branch
+ * below: the same standard reads a date-*only* string (`2026-09-02`) as
+ * **UTC**. A value in that form — a browser that fills the date before the
+ * time, a restored filter written by something other than the picker — would
+ * silently shift the boundary by the machine's offset, filtering from 05:30
+ * for a user in IST who asked for midnight. Normalising it to local midnight
+ * keeps every accepted form in one timezone.
+ */
 function parseDate(value: string): number | null {
-  if (value.trim().length === 0) return null;
-  const ms = new Date(value).getTime();
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? `${trimmed}T00:00` : trimmed;
+  const ms = new Date(normalized).getTime();
   return Number.isFinite(ms) ? ms : null;
 }
 

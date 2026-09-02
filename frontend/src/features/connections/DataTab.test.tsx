@@ -145,8 +145,8 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Max messages per partition")).toBeInTheDocument();
     expect(screen.getByLabelText("Total max messages")).toBeInTheDocument();
     expect(screen.getByLabelText("Partition filter")).toBeInTheDocument();
-    expect(screen.getByLabelText("From")).toBeInTheDocument();
-    expect(screen.getByLabelText("To")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^From/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^To(\s|$)/)).toBeInTheDocument();
     expect(screen.getByLabelText("Offset")).toBeInTheDocument();
   });
 
@@ -404,8 +404,8 @@ describe("DataTab", () => {
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-01-02T00:00" } });
-    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.change(screen.getByLabelText(/^From/), { target: { value: "2026-01-02T00:00" } });
+    fireEvent.change(screen.getByLabelText(/^To(\s|$)/), { target: { value: "2026-01-01T00:00" } });
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent('"To" date must be after "From" date');
@@ -418,8 +418,8 @@ describe("DataTab", () => {
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-01-01T00:00" } });
-    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.change(screen.getByLabelText(/^From/), { target: { value: "2026-01-01T00:00" } });
+    fireEvent.change(screen.getByLabelText(/^To(\s|$)/), { target: { value: "2026-01-01T00:00" } });
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent('"To" date must be after "From" date');
@@ -510,8 +510,8 @@ describe("DataTab", () => {
     expect(screen.getByLabelText("Total max messages")).toBeDisabled();
     expect(screen.getByLabelText("Partition filter")).toBeDisabled();
     expect(screen.getByLabelText("Offset")).toBeDisabled();
-    expect(screen.getByLabelText("From")).toBeDisabled();
-    expect(screen.getByLabelText("To")).toBeDisabled();
+    expect(screen.getByLabelText(/^From/)).toBeDisabled();
+    expect(screen.getByLabelText(/^To(\s|$)/)).toBeDisabled();
     expect(screen.getByLabelText("Fetch message payload")).toBeDisabled();
   });
 
@@ -938,9 +938,13 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     const columnDefs = lastGridProps?.columnDefs ?? [];
+    // Matched by prefix: the timestamp column's header carries the system's
+    // timezone ("Timestamp (IST)"), which varies with the machine running
+    // this — see `localTimeZoneLabel`.
     const excluded = ["Partition", "Offset", "Timestamp"];
     for (const headerName of excluded) {
-      const colDef = columnDefs.find((c) => c.headerName === headerName);
+      const colDef = columnDefs.find((c) => c.headerName?.startsWith(headerName));
+      expect(colDef).toBeDefined();
       expect(colDef?.getQuickFilterText?.({})).toBe("");
     }
 
