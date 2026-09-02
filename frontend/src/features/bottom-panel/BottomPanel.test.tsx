@@ -8,6 +8,8 @@ import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, useTabDataStore } from "../workspace/useTabDataStore";
+import { retainedPayloadBytes, retainedRowBytes } from "../connections/payloadDecoding";
+import { TopicMessage } from "../../lib/tauri";
 
 /** The panel reads the payload viewer's open message out of the query cache, so it needs a client. */
 function renderPanel() {
@@ -36,7 +38,7 @@ beforeEach(() => {
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useWorkspaceSelectionStore.setState({ selection: null, activeTabId: null, byTab: {} });
   useMessageViewerStore.setState({ message: null, activeTabId: null, byTab: {} });
-  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
   capturedHandler = null;
 });
 
@@ -104,8 +106,7 @@ describe("BottomPanel tab memory", () => {
 
     renderPanel();
 
-    const expectedBytes = JSON.stringify(cached).length + JSON.stringify(null).length;
-    expect(screen.getByText(`Tab memory: ${formatTabMemory(expectedBytes)}`)).toBeInTheDocument();
+    expect(screen.getByText(`Tab memory: ${formatTabMemory(retainedRowBytes(cached))}`)).toBeInTheDocument();
   });
 
   it("sums every topic (and partition) the active tab has ever fetched, regardless of which one is currently selected", () => {
@@ -129,11 +130,7 @@ describe("BottomPanel tab memory", () => {
 
     renderPanel();
 
-    const expectedBytes =
-      JSON.stringify(orders).length +
-      JSON.stringify(payments).length +
-      JSON.stringify(partitionZero).length +
-      JSON.stringify(null).length;
+    const expectedBytes = retainedRowBytes([...orders, ...payments, ...partitionZero]);
     expect(screen.getByText(`Tab memory: ${formatTabMemory(expectedBytes)}`)).toBeInTheDocument();
   });
 
@@ -148,8 +145,7 @@ describe("BottomPanel tab memory", () => {
 
     renderPanel();
 
-    const expectedBytes = JSON.stringify(cached).length + JSON.stringify(null).length;
-    expect(screen.getByText(`Tab memory: ${formatTabMemory(expectedBytes)}`)).toBeInTheDocument();
+    expect(screen.getByText(`Tab memory: ${formatTabMemory(retainedRowBytes(cached))}`)).toBeInTheDocument();
   });
 
   it("only reflects the active tab's own cached data, not another tab's", () => {
@@ -205,6 +201,98 @@ describe("BottomPanel tab memory", () => {
     expect(useTabDataStore.getState().messagesByTab[ordersKey]).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab[paymentsKey]).toBeUndefined();
     expect(useTabDataStore.getState().messagesByTab[otherTabKey]).toBeDefined();
+  });
+
+  // Both figures only ever disagreed with reality on a tab fetched with
+  // "Fetch message payload" on: with no payloads there was nothing for the
+  // double count below to double, and nothing for the units to differ over.
+  describe("with payloads fetched", () => {
+    const withPayload = (offset: number, bytes: number): TopicMessage => ({
+      partition: 0,
+      offset,
+      timestampMs: null,
+      keyBase64: null,
+      payloadBase64: btoa("a".repeat(bytes)),
+      payloadSizeBytes: bytes,
+      headers: [],
+    });
+
+    // Clicking a grid row hands the viewer the very object the row cache
+    // holds — one message in memory, not two — so adding its size on top of
+    // the cache's was counting the selected row twice. Invisible until the
+    // rows carried payloads, and then worth up to a whole preview per tab.
+    it("does not count the selected row a second time", () => {
+      const selected = withPayload(1, 512 * 1024);
+      const cached = [withPayload(0, 512 * 1024), selected];
+      useTabsStore.setState({ activeTabId: "tab-1" });
+      useTabDataStore.setState({ messagesByTab: { [dataTabCacheKey("tab-1", "1", "orders")]: cached } });
+      useMessageViewerStore.setState({
+        activeTabId: "tab-1",
+        message: selected,
+        byTab: { "tab-1": { message: selected, connectionId: "1", topic: "orders" } },
+      });
+
+      renderPanel();
+
+      expect(screen.getByText(`Tab memory: ${formatTabMemory(retainedRowBytes(cached))}`)).toBeInTheDocument();
+    });
+
+    // ...but a message the viewer is still showing after its rows went (an
+    // eviction, another connection's disconnect) is a copy nothing else
+    // holds, and dropping it from the figure understates the tab.
+    it("still counts a viewed message whose cached rows have gone", () => {
+      const orphan = withPayload(1, 256 * 1024);
+      useTabsStore.setState({ activeTabId: "tab-1" });
+      useMessageViewerStore.setState({
+        activeTabId: "tab-1",
+        message: orphan,
+        byTab: { "tab-1": { message: orphan, connectionId: "1", topic: "orders" } },
+      });
+
+      renderPanel();
+
+      expect(screen.getByText(`Tab memory: ${formatTabMemory(retainedRowBytes([orphan]))}`)).toBeInTheDocument();
+    });
+
+    // The payload viewer's copy is the one payload carried whole rather than
+    // truncated — the largest single thing the tab holds, and the app-wide
+    // figure has counted it since v0.53.0 while this one did not.
+    it("counts the payload viewer's open message", () => {
+      useTabsStore.setState({ activeTabId: "tab-1" });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(["full-payload", "1", "orders", 0, 7], {
+        messages: [withPayload(7, 2 * 1024 * 1024)],
+        totalMatching: 1,
+      });
+
+      render(
+        <QueryClientProvider client={client}>
+          <BottomPanel />
+        </QueryClientProvider>,
+      );
+
+      expect(screen.getByText("Tab memory: 2.00 MB")).toBeInTheDocument();
+    });
+
+    // The two figures describe the same rows, so on a single tab holding
+    // nothing else they have to be the same number. Sized by
+    // `JSON.stringify`, "Tab memory" counted a payload's base64 characters
+    // and the ceiling counted the bytes they carry: a third apart, on every
+    // fetch that brought payloads back.
+    it("agrees with the app-wide payload figure about the same rows", () => {
+      const cached = [withPayload(0, 1024 * 1024)];
+      const key = dataTabCacheKey("tab-1", "1", "orders");
+      useTabsStore.setState({ activeTabId: "tab-1" });
+      useTabDataStore.setState({
+        messagesByTab: { [key]: cached },
+        payloadBytesByTab: { [key]: retainedPayloadBytes(cached) },
+      });
+
+      renderPanel();
+
+      expect(screen.getByText("Tab memory: 1.00 MB")).toBeInTheDocument();
+      expect(screen.getByText(/Payloads \(all tabs\): 1\.00 MB/)).toBeInTheDocument();
+    });
   });
 
   it("asks the backend to trim the OS-visible working set when Clear memory is clicked", async () => {

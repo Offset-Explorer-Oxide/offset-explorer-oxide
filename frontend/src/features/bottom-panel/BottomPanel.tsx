@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { LogsPanel } from "./LogsPanel";
 import { useLogsListener } from "./useLogsListener";
 import { useLogsPanelHeight } from "./useLogsPanelHeight";
@@ -10,10 +10,10 @@ import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionSt
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { tabDataPrefix, totalRetainedPayloadBytes, useTabDataStore } from "../workspace/useTabDataStore";
 import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
-import { retainedPayloadBytes } from "../connections/payloadDecoding";
+import { retainedPayloadBytes, retainedRowBytes } from "../connections/payloadDecoding";
 import { MessageFetchResult } from "../../lib/tauri";
 
-/** Formats a byte count (a JSON-serialized-size estimate, not an exact figure) as megabytes for display. */
+/** Formats a byte count (an estimate — see `retainedRowBytes` — not an exact heap figure) as megabytes for display. */
 export function formatTabMemory(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
@@ -30,14 +30,33 @@ export function BottomPanel() {
   // one happens to be selected right now), plus any payload loaded into
   // the right pane's message viewer — not anything scoped to the left
   // sidebar's tree.
+  //
+  // Measured by `retainedRowBytes` rather than by serializing the cache:
+  // in the same units the ceiling below is enforced in, and without
+  // allocating a copy of everything being measured on every render. See its
+  // doc comment — both of those were wrong specifically for a tab fetched
+  // with "Fetch message payload" on, which is the only case with payloads to
+  // get wrong.
   const messagesByTab = useTabDataStore((s) => s.messagesByTab);
   const tabPrefix = tabDataPrefix(activeTabId);
-  const cachedBytes = Object.entries(messagesByTab).reduce(
-    (total, [key, messages]) => (key.startsWith(tabPrefix) ? total + JSON.stringify(messages).length : total),
-    0,
-  );
   const viewedMessage = useMessageViewerStore((s) => (activeTabId ? s.byTab[activeTabId] : undefined) ?? null);
-  const bytesUsed = cachedBytes + JSON.stringify(viewedMessage).length;
+  const cachedBytes = useMemo(() => {
+    const viewed = viewedMessage?.message ?? null;
+    let total = 0;
+    // Clicking a grid row hands the viewer the row object itself, so the
+    // message on screen is almost always one of the rows already counted
+    // below — one message held once, not two. It is counted separately only
+    // when it is genuinely a separate copy: its rows can go without it (an
+    // eviction, a disconnect, a re-fetch), and then it is the only thing
+    // holding that payload.
+    let viewedIsCached = false;
+    for (const [key, messages] of Object.entries(messagesByTab)) {
+      if (!key.startsWith(tabPrefix)) continue;
+      total += retainedRowBytes(messages);
+      if (viewed !== null && !viewedIsCached && messages.includes(viewed)) viewedIsCached = true;
+    }
+    return total + (viewed !== null && !viewedIsCached ? retainedRowBytes([viewed]) : 0);
+  }, [messagesByTab, tabPrefix, viewedMessage]);
 
   // The figure the Max total fetch size ceiling is actually enforced against:
   // payload bytes retained across *every* tab, not just this one. Shown
@@ -75,6 +94,12 @@ export function BottomPanel() {
         ),
   );
   const retainedBytes = totalRetainedPayloadBytes(payloadBytesByTab) + openPayloadBytes;
+  // The open payload counts towards this tab too. It belongs to the tab
+  // showing it, it is the one payload carried whole rather than truncated —
+  // so the largest single thing that tab holds — and leaving it out had the
+  // per-tab figure sitting still while the app-wide one beside it jumped by
+  // megabytes on the same click.
+  const bytesUsed = cachedBytes + openPayloadBytes;
   const retentionLimit = useGeneralSettingsStore((s) => s.maxTotalFetchBytes);
   const isNearLimit = retainedBytes > retentionLimit * 0.8;
 
