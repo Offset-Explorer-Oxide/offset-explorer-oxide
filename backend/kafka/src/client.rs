@@ -25,7 +25,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::assignment::decode_consumer_protocol_assignment;
-use crate::config::{build_client_config, client_config, BrokerSslConfig};
+use crate::config::{build_client_config, client_config, fetch_consumer_config, BrokerSslConfig};
 use crate::messages::{
     budgeted_payload_bytes, byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
     effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
@@ -949,33 +949,7 @@ impl KafkaClient for RdKafkaClient {
         max_total_payload_bytes: Option<u64>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError> {
-        let mut config = client_config(connection);
-        config.set("group.id", "kafkaoxide-message-browser");
-        config.set("enable.auto.commit", "false");
-        config.set("max.partition.fetch.bytes", max_message_size_bytes.to_string());
-
-        // librdkafka keeps pre-fetching ahead of what this fetch will
-        // actually consume: assigning a partition at an offset tells it where
-        // to start, never where to stop, so it reads forward towards the high
-        // watermark until its local queue is full. That queue defaults to
-        // 64 MB, which on a topic of 2-10 MB records is several times more
-        // data pulled over the network than a 100-message fetch will ever
-        // show.
-        //
-        // Kept at twice the largest message the user expects (floor of 1 MB)
-        // so a single maximum-size record always fits with room to spare —
-        // a queue smaller than one message would stall the fetch outright.
-        let prefetch_kbytes = (u64::from(max_message_size_bytes) * 2 / 1024).max(1024);
-        config.set("queued.max.messages.kbytes", prefetch_kbytes.to_string());
-
-        // How long a broker may hold a fetch request open waiting for data
-        // before answering it (librdkafka's default is 500ms). That default
-        // is tuned for a streaming consumer, where an idle wait costs nothing
-        // and saves request churn. This is an interactive browse: every fetch
-        // here is bounded, already knows the offsets it wants, and has a user
-        // watching — so a half-second of the broker holding a request is a
-        // half-second of the UI looking stuck.
-        config.set("fetch.wait.max.ms", "50");
+        let config = fetch_consumer_config(connection, max_message_size_bytes);
         let topic = topic.to_string();
         let filter = filter.clone();
         tokio::task::spawn_blocking(move || {

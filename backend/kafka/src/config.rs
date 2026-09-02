@@ -251,6 +251,77 @@ pub fn client_config(connection: &Connection) -> ClientConfig {
     )
 }
 
+/// The consumer one message fetch uses, on top of [`client_config`].
+///
+/// Separate from `fetch_messages` (which needs a broker, a desktop-free
+/// toolchain and several seconds to exercise) so the relationship between
+/// these properties can be pinned by a unit test — the bug below was a
+/// interaction between two of them that no single value looked wrong in.
+pub fn fetch_consumer_config(connection: &Connection, max_message_size_bytes: u32) -> ClientConfig {
+    let mut config = client_config(connection);
+    config.set("group.id", "kafkaoxide-message-browser");
+    config.set("enable.auto.commit", "false");
+    config.set("max.partition.fetch.bytes", max_message_size_bytes.to_string());
+
+    // librdkafka keeps pre-fetching ahead of what this fetch will actually
+    // consume: assigning a partition at an offset tells it where to start,
+    // never where to stop, so it reads forward towards the high watermark
+    // until its local queue is full. That queue defaults to 64 MB, which on
+    // a topic of 2-10 MB records is several times more data pulled over the
+    // network than a 100-message fetch will ever show.
+    //
+    // Kept at twice the largest message the user expects (floor of 1 MB) so
+    // a single maximum-size record always fits with room to spare — a queue
+    // smaller than one message would stall the fetch outright.
+    let prefetch_kbytes = (u64::from(max_message_size_bytes) * 2 / 1024).max(1024);
+    config.set("queued.max.messages.kbytes", prefetch_kbytes.to_string());
+
+    // **Set because the line above is.** These two are a pair, and lowering
+    // the queue without lowering this is what made a large fetch crawl.
+    //
+    // Whenever the local queue is over its threshold, librdkafka postpones
+    // the next fetch for that partition by this much — and the default is a
+    // flat **1000 ms**. With a 64 MB queue that threshold is rarely reached,
+    // so the default costs nothing; with the 2 MB queue above it is reached
+    // constantly, and every time it is, the fetch stops dead for a second.
+    //
+    // Measured against a real broker, 30,000 messages (~30 MB) over 6
+    // partitions: **7,050 ms** on the default, of which 7,000 ms was seven
+    // one-second stalls spaced exactly ~4,096 messages apart, and ~50 ms was
+    // the actual work. At 10 ms the same fetch's poll loop takes **108 ms**
+    // with no stalls at all. The relationship is linear in this value
+    // (5 ms → 68 ms, 50 ms → 390 ms, 250 ms → 1,809 ms), because the cost is
+    // simply "number of times the threshold is hit" x "this".
+    //
+    // librdkafka's own documentation for the property describes exactly this
+    // failure: *"may need to be decreased if the queue thresholds are set low
+    // and the application is experiencing long (~1s) delays between
+    // messages."*
+    //
+    // 10 ms rather than the 1 ms floor: the property also warns that low
+    // values raise CPU use, and this is an order of magnitude below
+    // `fetch.wait.max.ms` below, so a re-check can never be what the fetch is
+    // waiting on.
+    //
+    // None of this was visible through "Fetch message payload": the broker
+    // sends whole records either way and they fill this queue either way —
+    // turning payloads off only skips the base64 afterwards. That is why the
+    // fetch stayed slow with payloads disabled, which is what made this
+    // look like a client-side cost rather than a stalled read.
+    config.set("fetch.queue.backoff.ms", "10");
+
+    // How long a broker may hold a fetch request open waiting for data
+    // before answering it (librdkafka's default is 500ms). That default
+    // is tuned for a streaming consumer, where an idle wait costs nothing
+    // and saves request churn. This is an interactive browse: every fetch
+    // here is bounded, already knows the offsets it wants, and has a user
+    // watching — so a half-second of the broker holding a request is a
+    // half-second of the UI looking stuck.
+    config.set("fetch.wait.max.ms", "50");
+
+    config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +357,56 @@ mod tests {
             created_at: "now".into(),
             updated_at: "now".into(),
         }
+    }
+
+    /// The two properties that made a large fetch crawl. `fetch_messages`
+    /// lowers the prefetch queue to bound over-reading on large-message
+    /// topics; librdkafka then hits that threshold constantly and postpones
+    /// each next fetch by `fetch.queue.backoff.ms`, whose default is a flat
+    /// second. Neither value looks wrong alone — the bug is that one was set
+    /// and the other left at a default tuned for the opposite queue size.
+    #[test]
+    fn a_lowered_prefetch_queue_comes_with_a_lowered_queue_backoff() {
+        let config = fetch_consumer_config(&sample_connection(), 1_048_576);
+
+        let queue_kbytes: u64 = config.get("queued.max.messages.kbytes").unwrap().parse().unwrap();
+        let backoff_ms: u64 = config.get("fetch.queue.backoff.ms").unwrap().parse().unwrap();
+
+        // 64 MB is librdkafka's default queue; anything below it means the
+        // threshold is reached often enough that the backoff is paid
+        // repeatedly, so it cannot be left at librdkafka's 1000 ms.
+        assert!(
+            queue_kbytes < 65_536,
+            "the point of setting this is to prefetch less than the default"
+        );
+        assert!(
+            backoff_ms <= 50,
+            "a {queue_kbytes} KB prefetch queue with a {backoff_ms} ms queue backoff stalls the \
+             fetch every time the queue fills — see this property's doc comment"
+        );
+    }
+
+    /// The floor keeps a single maximum-size record from being unable to fit
+    /// in the queue at all, which would stall the fetch outright.
+    #[test]
+    fn the_prefetch_queue_always_holds_at_least_one_maximum_size_message() {
+        for max_message_size in [1_024u32, 1_048_576, 12 * 1_048_576] {
+            let config = fetch_consumer_config(&sample_connection(), max_message_size);
+            let queue_bytes: u64 =
+                config.get("queued.max.messages.kbytes").unwrap().parse::<u64>().unwrap() * 1024;
+            assert!(
+                queue_bytes >= u64::from(max_message_size),
+                "a {max_message_size} byte message does not fit in a {queue_bytes} byte queue"
+            );
+        }
+    }
+
+    /// An interactive browse must never join a consumer group or move
+    /// anyone's committed offsets.
+    #[test]
+    fn a_message_fetch_never_commits_offsets() {
+        let config = fetch_consumer_config(&sample_connection(), 1_048_576);
+        assert_eq!(config.get("enable.auto.commit"), Some("false"));
     }
 
     #[test]

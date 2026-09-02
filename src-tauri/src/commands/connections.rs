@@ -509,7 +509,11 @@ pub async fn connection_count_topic_messages(
 /// How often (in messages received) to log fetch progress to the Logs
 /// panel — frequent enough to reassure the user a large fetch is still
 /// moving, without flooding the panel on a fast, high-volume topic.
-const PROGRESS_LOG_INTERVAL: usize = 25;
+///
+/// Matched to `STREAM_BATCH_SIZE` so one line covers one batch: at 25 a
+/// 1,000-message fetch wrote 40 near-identical lines, and the panel became
+/// something to scroll past rather than read.
+const PROGRESS_LOG_INTERVAL: usize = 100;
 
 /// How many streamed messages to carry in one `"messages-batch"` event.
 ///
@@ -518,7 +522,11 @@ const PROGRESS_LOG_INTERVAL: usize = 25;
 /// 1,000-message fetch, to feed a frontend that already coalesces arrivals
 /// into at most ten renders a second. Batching is pure saving: the rows
 /// arrive in the same order, in the same buffer, just in far fewer hops.
-const STREAM_BATCH_SIZE: usize = 64;
+///
+/// A bigger batch costs no latency: `STREAM_BATCH_INTERVAL` below sends a
+/// partly-filled one anyway, so 100 is a ceiling on how many messages *may*
+/// share an event, never a threshold rows have to reach before they appear.
+const STREAM_BATCH_SIZE: usize = 100;
 
 /// How long a partly-filled batch may wait for the messages that would fill
 /// it before being sent anyway.

@@ -58,6 +58,22 @@ kexec sh -c "for i in \$(seq 1 30); do cat /tmp/big.txt; done > /tmp/big30.txt"
 kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-msgs < /tmp/big20.txt" >/dev/null 2>&1
 kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-2mb  < /tmp/big30.txt" >/dev/null 2>&1
 
+# --- fetch_stall.rs --------------------------------------------------------
+# Enough messages, over enough partitions, that a fetch of the whole topic
+# crosses librdkafka's prefetch-queue threshold many times over — which is
+# the only way the one-second-per-crossing stall that test guards against
+# becomes visible. A few hundred small messages never reach the threshold at
+# all and the test would pass against the bug.
+echo "==> stall fixture (perf-probe: 30,000 x 1 KB over 6 partitions)"
+topic perf-probe 6
+if [ "$(kexec "$K/kafka-get-offsets.sh" --bootstrap-server "$BOOTSTRAP" --topic perf-probe \
+        | awk -F: '{ total += $3 } END { print total + 0 }')" -lt 30000 ]; then
+  kexec sh -c 'head -c 1000 /dev/zero | tr "\0" x > /tmp/kb.txt; echo >> /tmp/kb.txt'
+  kexec sh -c 'rm -f /tmp/perf.txt; for i in $(seq 1 30000); do cat /tmp/kb.txt; done > /tmp/perf.txt'
+  kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic perf-probe \
+    --batch-size 65536 < /tmp/perf.txt" >/dev/null 2>&1
+fi
+
 # --- cluster_reads.rs ------------------------------------------------------
 echo "==> cluster fixtures (e2e-basic, e2e-headers)"
 topic e2e-basic 3
