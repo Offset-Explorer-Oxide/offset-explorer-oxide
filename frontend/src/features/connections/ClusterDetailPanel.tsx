@@ -46,12 +46,12 @@ export function ClusterDetailPanel({ connectionId }: ClusterDetailPanelProps) {
     setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
   }
 
-  async function handleReconnect() {
+  async function handleConnect() {
     setError(null);
     try {
       await connect.mutateAsync();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reconnect");
+      setError(err instanceof Error ? err.message : "Failed to connect");
     }
   }
 
@@ -108,8 +108,14 @@ export function ClusterDetailPanel({ connectionId }: ClusterDetailPanelProps) {
       />
 
       <footer className="cluster-detail-footer">
-        <button type="button" onClick={handleReconnect} disabled={connect.isPending}>
-          Reconnect
+        {/*
+          One button, two names: "Reconnect" only makes sense when there is
+          a live session to replace. On a cluster that is not connected this
+          is simply Connect, and labelling it "Reconnect" made the action
+          that gets you online look like a recovery step.
+        */}
+        <button type="button" onClick={handleConnect} disabled={connect.isPending}>
+          {connected ? "Reconnect" : "Connect"}
         </button>
         <button type="button" onClick={handleDisconnect} disabled={disconnect.isPending}>
           Disconnect

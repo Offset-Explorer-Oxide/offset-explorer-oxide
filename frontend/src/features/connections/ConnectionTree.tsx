@@ -35,7 +35,7 @@ import { useClusterDisconnectCleanup, useUnreachableDisconnect } from "./useClus
  * and disconnecting could not clear it because the reachability poll runs
  * regardless of connection state. An idle cluster being unreachable is not a
  * fault; it is only worth knowing at the moment you try to use it, which is
- * what Reconnect and the modal's Test button are for. The tooltip
+ * what Connect/Reconnect and the modal's Test button are for. The tooltip
  * (`statusTitle`) still reports reachability in words for anyone who wants
  * it.
  *
@@ -60,7 +60,7 @@ function statusClass(status: ConnectionStatus, isConnected: boolean, isAuthBlock
  * credentials the broker rejected — and neither of them clears by
  * disconnecting, because reachability is polled whether or not there is a
  * session and the auth breaker deliberately survives one (only editing the
- * connection or Reconnect clears it). A user looking at a red dot on a local
+ * connection or a Connect/Reconnect clears it). A user looking at a red dot on a local
  * plaintext cluster they have just disconnected from has no way to tell which
  * of those they are in, or what to do about it.
  */
@@ -71,14 +71,18 @@ function statusTitle(
   bootstrapServers: string,
 ): string {
   if (authBlockReason) {
-    return `Authentication failed: ${authBlockReason}. Requests are paused — edit the connection's credentials and save, or use Reconnect, to try again.`;
+    // The breaker survives a disconnect, so this tooltip is shown in both
+    // states — and it names whichever label the context menu is actually
+    // showing right now, rather than sending the user to look for a
+    // "Reconnect" that says Connect.
+    return `Authentication failed: ${authBlockReason}. Requests are paused — edit the connection's credentials and save, or use ${isConnected ? "Reconnect" : "Connect"}, to try again.`;
   }
   // Says nothing about reachability while disconnected, because nothing is
   // checking it: the poll behind `status` only runs for a live session (see
   // `useConnectionStatus`), so any value left over from the last one is a
   // fact about the past, not about now.
   if (!isConnected) {
-    return `Not connected to ${bootstrapServers}. Use Reconnect to open a session.`;
+    return `Not connected to ${bootstrapServers}. Use Connect to open a session.`;
   }
   if (status === "UNREACHABLE") {
     return `Connected, but ${bootstrapServers} has stopped answering. The session ends if it stays unreachable.`;
@@ -188,7 +192,12 @@ function ConnectionRow({ connection, onClone }: ConnectionRowProps) {
           y={menuPosition.y}
           onClose={() => setMenuPosition(null)}
           items={[
-            { label: "Reconnect", onSelect: () => connect.mutate() },
+            // "Reconnect" only when there is a session to re-establish.
+            // On a cluster that has never been connected (or was
+            // disconnected), it is the first connect, and calling it
+            // "Reconnect" made the one action that gets you online read as
+            // a recovery step for a state you were never in.
+            { label: connected ? "Reconnect" : "Connect", onSelect: () => connect.mutate() },
             { label: "Disconnect", onSelect: () => disconnect.mutate(id) },
             { label: "Clone Connection", onSelect: () => onClone(connection) },
             { label: "Export Connection", onSelect: handleExport },

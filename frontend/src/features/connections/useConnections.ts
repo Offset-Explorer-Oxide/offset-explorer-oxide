@@ -179,7 +179,8 @@ export function useConnectionConnected(id: string) {
 }
 
 /**
- * Backs the cluster detail panel's "Reconnect" button. Takes `id` as a hook
+ * Backs the cluster detail panel's Connect/Reconnect button (one button,
+ * named for whether there is already a session). Takes `id` as a hook
  * argument (rather than at `.mutate()` time) so the mutation key is scoped
  * to this connection — `useIsMutating({ mutationKey: connectMutationKey(id) })`
  * elsewhere (the connection tree's spinner) can then observe it in flight

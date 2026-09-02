@@ -87,7 +87,7 @@ export function useUnreachableDisconnect(
     useLogsStore.getState().addEntry({
       timestamp: new Date().toISOString(),
       level: "warn",
-      message: `${connectionName} became unreachable — disconnected, and its loaded data cleared. Use Reconnect once the cluster is back.`,
+      message: `${connectionName} became unreachable — disconnected, and its loaded data cleared. Use Connect once the cluster is back.`,
     });
     disconnectRef.current.mutate(connectionId);
     // `status` is in the deps for correctness on a change back to reachable;

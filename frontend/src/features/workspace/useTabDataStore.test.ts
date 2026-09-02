@@ -11,7 +11,7 @@ import {
 const sample = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
 
 beforeEach(() => {
-  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, fetchDurationMsByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
 });
 
 describe("tabDataKey", () => {
@@ -146,6 +146,52 @@ describe("useTabDataStore", () => {
     useTabDataStore.getState().clearTabMessages("tab-1");
 
     expect(useTabDataStore.getState().totalMatchingByTab["tab-1"]).toBeUndefined();
+  });
+
+  /**
+   * The timing is cached with the rows for the same reason the total is:
+   * the middle pane remounts per tab, so a number held in the component
+   * would vanish the moment the user looked away from rows that are still
+   * sitting there.
+   */
+  it("records how long a view's last fetch took, per view", () => {
+    useTabDataStore.getState().setTabFetchDurationMs("tab-1", 2_000);
+    useTabDataStore.getState().setTabFetchDurationMs("tab-2", 15);
+
+    expect(useTabDataStore.getState().fetchDurationMsByTab["tab-1"]).toBe(2_000);
+    expect(useTabDataStore.getState().fetchDurationMsByTab["tab-2"]).toBe(15);
+  });
+
+  it("clears a view's fetch timing along with its cached messages", () => {
+    useTabDataStore.getState().setTabMessages("tab-1", sample);
+    useTabDataStore.getState().setTabFetchDurationMs("tab-1", 2_000);
+
+    useTabDataStore.getState().clearTabMessages("tab-1");
+
+    expect(useTabDataStore.getState().fetchDurationMsByTab["tab-1"]).toBeUndefined();
+  });
+
+  it("drops a disconnected cluster's fetch timings with its rows, in every tab", () => {
+    useTabDataStore.getState().setTabFetchDurationMs(dataTabCacheKey("tab-1", "gone", "orders"), 2_000);
+    useTabDataStore.getState().setTabFetchDurationMs(dataTabCacheKey("tab-2", "gone", "payments"), 40);
+    useTabDataStore.getState().setTabFetchDurationMs(dataTabCacheKey("tab-1", "stays", "orders"), 15);
+
+    useTabDataStore.getState().clearForConnection("gone");
+
+    expect(useTabDataStore.getState().fetchDurationMsByTab).toEqual({
+      [dataTabCacheKey("tab-1", "stays", "orders")]: 15,
+    });
+  });
+
+  it("clears every fetch timing under a tab's prefix, leaving other tabs untouched", () => {
+    useTabDataStore.getState().setTabFetchDurationMs(dataTabCacheKey("tab-1", "1", "orders"), 2_000);
+    useTabDataStore.getState().setTabFetchDurationMs(dataTabCacheKey("tab-2", "1", "orders"), 15);
+
+    useTabDataStore.getState().clearAllMessagesForTab("tab-1");
+
+    expect(useTabDataStore.getState().fetchDurationMsByTab).toEqual({
+      [dataTabCacheKey("tab-2", "1", "orders")]: 15,
+    });
   });
 
   it("clears every total-matching entry under a tab's prefix, leaving other tabs untouched", () => {
@@ -303,6 +349,8 @@ describe("tabDataPrefix", () => {
 
     expect(useTabDataStore.getState().messagesByTab.cold).toBeUndefined();
     expect(useTabDataStore.getState().totalMatchingByTab.cold).toBeUndefined();
+    // The timing describes rows that are no longer there.
+    expect(useTabDataStore.getState().fetchDurationMsByTab.cold).toBeUndefined();
     expect(useTabDataStore.getState().evictedTabs.cold).toBe(true);
     expect(useTabDataStore.getState().evictedTabs.hot).toBeUndefined();
   });

@@ -76,6 +76,21 @@ interface TabDataState {
    */
   totalMatchingByTab: Record<string, number>;
   /**
+   * How long the last Fetch into this view took, wall-clock, in
+   * milliseconds — what the count line reports as "… in 2,000 ms".
+   *
+   * Cached alongside the rows rather than kept in DataTab's local state for
+   * the same reason `totalMatchingByTab` is: the middle pane remounts per
+   * tab, so a locally-held number would vanish the moment the user looked
+   * at another tab and came back to rows that are still sitting there.
+   *
+   * `undefined` means "no completed fetch to report" — this view has never
+   * been fetched, or its last fetch was stopped or failed part-way. The
+   * count line then simply omits the timing rather than showing a number
+   * that describes an incomplete result.
+   */
+  fetchDurationMsByTab: Record<string, number>;
+  /**
    * Payload bytes this tab is currently holding, charged against General
    * settings > Messages > Max Total Fetch Size.
    *
@@ -112,6 +127,8 @@ interface TabDataState {
   setTabPayloadBytes: (tabId: string, bytes: number) => void;
   /** Adds to a tab's payload-byte total — one per-row "Fetch payload" click, which retains bytes on top of what the last Fetch already did. */
   addTabPayloadBytes: (tabId: string, bytes: number) => void;
+  /** Records how long the last completed Fetch into a view took, for the count line's "in N ms". */
+  setTabFetchDurationMs: (tabId: string, durationMs: number) => void;
   /** Records the last Fetch's total-matching count separately from the row cache — a single-row payload patch (`fetchPayloadForRow`) replaces a tab's cached rows without knowing (or wanting to overwrite) the total the original Fetch found. */
   setTabTotalMatching: (tabId: string, totalMatching: number) => void;
   /** Appends one streamed message onto a tab's rows — backs the Data tab's live-streaming Fetch, which paints rows in as they arrive instead of waiting for the whole fetch to finish. */
@@ -165,6 +182,7 @@ export function totalRetainedPayloadBytes(payloadBytesByTab: Record<string, numb
 export const useTabDataStore = create<TabDataState>((set) => ({
   messagesByTab: {},
   totalMatchingByTab: {},
+  fetchDurationMsByTab: {},
   payloadBytesByTab: {},
   lastUsedByTab: {},
   evictedTabs: {},
@@ -181,6 +199,8 @@ export const useTabDataStore = create<TabDataState>((set) => ({
     })),
   setTabTotalMatching: (tabId, totalMatching) =>
     set((state) => ({ totalMatchingByTab: { ...state.totalMatchingByTab, [tabId]: totalMatching } })),
+  setTabFetchDurationMs: (tabId, durationMs) =>
+    set((state) => ({ fetchDurationMsByTab: { ...state.fetchDurationMsByTab, [tabId]: durationMs } })),
   appendTabMessage: (tabId, message) =>
     set((state) => ({
       messagesByTab: { ...state.messagesByTab, [tabId]: [...(state.messagesByTab[tabId] ?? []), message] },
@@ -201,6 +221,10 @@ export const useTabDataStore = create<TabDataState>((set) => ({
     set((state) => {
       const { [tabId]: _removed, ...rest } = state.messagesByTab;
       const { [tabId]: _removedTotal, ...restTotal } = state.totalMatchingByTab;
+      // The timing describes the fetch that produced those rows, so it is
+      // dropped with them — a stale "in 2,000 ms" next to a fresh fetch's
+      // growing row count would be describing the fetch before it.
+      const { [tabId]: _removedDuration, ...restDuration } = state.fetchDurationMsByTab;
       // The byte total describes the rows being dropped, so it goes with
       // them — otherwise a re-Fetch started against a budget already spent
       // by the fetch it is replacing.
@@ -212,6 +236,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       return {
         messagesByTab: rest,
         totalMatchingByTab: restTotal,
+        fetchDurationMsByTab: restDuration,
         payloadBytesByTab: restBytes,
         lastUsedByTab: restUsed,
         evictedTabs: restEvicted,
@@ -226,6 +251,9 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const totalMatchingByTab = Object.fromEntries(
         Object.entries(state.totalMatchingByTab).filter(([key]) => !key.startsWith(prefix)),
       );
+      const fetchDurationMsByTab = Object.fromEntries(
+        Object.entries(state.fetchDurationMsByTab).filter(([key]) => !key.startsWith(prefix)),
+      );
       const payloadBytesByTab = Object.fromEntries(
         Object.entries(state.payloadBytesByTab).filter(([key]) => !key.startsWith(prefix)),
       );
@@ -235,7 +263,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const evictedTabs = Object.fromEntries(
         Object.entries(state.evictedTabs).filter(([key]) => !key.startsWith(prefix)),
       );
-      return { messagesByTab, totalMatchingByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
+      return { messagesByTab, totalMatchingByTab, fetchDurationMsByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
     }),
   clearForConnection: (connectionId) =>
     set((state) => {
@@ -244,6 +272,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       return {
         messagesByTab: keep(state.messagesByTab),
         totalMatchingByTab: keep(state.totalMatchingByTab),
+        fetchDurationMsByTab: keep(state.fetchDurationMsByTab),
         payloadBytesByTab: keep(state.payloadBytesByTab),
         lastUsedByTab: keep(state.lastUsedByTab),
         evictedTabs: keep(state.evictedTabs),
@@ -256,6 +285,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const payloadBytesByTab = { ...state.payloadBytesByTab };
       const messagesByTab = { ...state.messagesByTab };
       const totalMatchingByTab = { ...state.totalMatchingByTab };
+      const fetchDurationMsByTab = { ...state.fetchDurationMsByTab };
       const lastUsedByTab = { ...state.lastUsedByTab };
       const evictedTabs = { ...state.evictedTabs };
 
@@ -273,6 +303,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
         delete payloadBytesByTab[coldest];
         delete messagesByTab[coldest];
         delete totalMatchingByTab[coldest];
+        delete fetchDurationMsByTab[coldest];
         delete lastUsedByTab[coldest];
         evictedTabs[coldest] = true;
         evicted.push(coldest);
@@ -280,7 +311,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
 
       return evicted.length === 0
         ? state
-        : { messagesByTab, totalMatchingByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
+        : { messagesByTab, totalMatchingByTab, fetchDurationMsByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
     });
     return evicted;
   },
