@@ -1478,26 +1478,63 @@ describe("DataTab", () => {
     expect(held()).toBe(2_048);
   });
 
-  it("keeps adding across repeated per-row fetches rather than replacing the total", async () => {
+  // The button that runs this only appears on a row with no payload, so the
+  // charge below is normally the whole of what arrives. It is a *replacement*
+  // all the same: whatever the row was holding is dropped in the same
+  // update, and charging the tab for the new payload without crediting the
+  // old one counts bytes nobody holds.
+  it("credits the preview a per-row fetch replaces rather than charging for both", async () => {
     useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
     setInvokeHandlers({
-      connection_fetch_messages: () => ({ messages: [row(1_000_000, null)], totalMatching: 1, payloadBytesRead: 0 }),
+      connection_fetch_messages: () => ({
+        messages: [row(3_000_000, 1_024)],
+        totalMatching: 1,
+        payloadBytesRead: 3_000_000,
+      }),
+    });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    await user.click(screen.getByLabelText("Fetch message payload"));
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(held()).toBe(1_024));
+
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [row(3_000_000, 4_096)],
+        totalMatching: 1,
+        payloadBytesRead: 3_000_000,
+      }),
+    });
+    await lastGridProps?.context.fetchPayload(row(3_000_000, 1_024));
+
+    expect(held()).toBe(4_096);
+  });
+
+  it("keeps adding across per-row fetches of different rows rather than replacing the total", async () => {
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    const rowAt = (offset: number, retained: number | null) => ({ ...row(1_000_000, retained), offset });
+    setInvokeHandlers({
+      connection_fetch_messages: () => ({
+        messages: [rowAt(1, null), rowAt(2, null), rowAt(3, null)],
+        totalMatching: 3,
+        payloadBytesRead: 0,
+      }),
     });
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
+    await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(3));
 
     setInvokeHandlers({
-      connection_fetch_messages: () => ({
-        messages: [row(1_000_000, 1_024)],
+      connection_fetch_messages: (args: { filter: MessageFilter }) => ({
+        messages: [rowAt(args.filter.offset!, 1_024)],
         totalMatching: 1,
         payloadBytesRead: 1_000_000,
       }),
     });
-    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
-    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
-    await lastGridProps?.context.fetchPayload(row(1_000_000, null));
+    await lastGridProps?.context.fetchPayload(rowAt(1, null));
+    await lastGridProps?.context.fetchPayload(rowAt(2, null));
+    await lastGridProps?.context.fetchPayload(rowAt(3, null));
 
     expect(held()).toBe(3_072);
   });

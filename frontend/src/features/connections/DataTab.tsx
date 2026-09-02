@@ -712,11 +712,20 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     });
     const updated = result.messages.find((m) => m.partition === row.partition && m.offset === row.offset);
     if (!updated) return;
+    const current = useTabDataStore.getState().messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES;
     // The bytes actually kept for this row — the payload is truncated to
     // `MAX_INLINE_PAYLOAD_BYTES` on the way back, so the message's full size
-    // is not what lands in memory.
-    addTabPayloadBytes(tabKey, base64DecodedLength(updated.payloadBase64 ?? ""));
-    const current = useTabDataStore.getState().messagesByTab[tabKey] ?? EMPTY_TAB_MESSAGES;
+    // is not what lands in memory. Charged as the *change*, because the
+    // update below replaces the row: whatever it was holding is released in
+    // the same breath, and charging for the new payload on top of the old one
+    // would have the tab counting bytes nothing holds. Zero on the ordinary
+    // path (the button only offers itself on a row with no payload at all),
+    // and the difference on a row fetched with a preview already in it.
+    const replaced = current.find((m) => m.partition === row.partition && m.offset === row.offset);
+    addTabPayloadBytes(
+      tabKey,
+      base64DecodedLength(updated.payloadBase64 ?? "") - base64DecodedLength(replaced?.payloadBase64 ?? ""),
+    );
     setTabMessages(
       tabKey,
       current.map((m) => (m.partition === row.partition && m.offset === row.offset ? updated : m)),

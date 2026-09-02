@@ -165,6 +165,53 @@ export function retainedPayloadBytes(messages: Pick<TopicMessage, "payloadBase64
 }
 
 /**
+ * What one cached row costs beyond its own bytes: the object itself, its
+ * numeric fields, and the per-field bookkeeping the engine keeps for them.
+ *
+ * A round figure, not a measurement — there is no way to ask the engine what
+ * an object weighs, and the number exists so that a tab holding a hundred
+ * thousand metadata-only rows doesn't report 0.00 MB.
+ */
+export const ROW_OVERHEAD_BYTES = 128;
+
+/**
+ * What a set of cached rows is holding, payloads included — the bottom
+ * panel's "Tab memory".
+ *
+ * Deliberately arithmetic rather than `JSON.stringify(messages).length`,
+ * which this replaced, for two reasons:
+ *
+ * 1. **It agrees with the ceiling.** The payload part of this is exactly what
+ *    [`retainedPayloadBytes`] charges against Max Total Fetch Size, so
+ *    "Tab memory" and "Payloads (all tabs)" describe the same rows in the
+ *    same units. Serialized, a payload counted as its base64 *characters* —
+ *    about 4/3 of the bytes they carry — so the two figures disagreed by a
+ *    third on any tab fetched with "Fetch message payload" on, and agreed
+ *    only when there were no payloads to disagree about.
+ * 2. **Measuring memory shouldn't allocate a copy of it.** Serializing built
+ *    a string as large as everything being measured, on every render of the
+ *    bottom panel — which re-renders on every store change, including each
+ *    of the ten row flushes a second a streaming fetch produces. On the
+ *    large-payload fetches this figure exists to warn about, the measurement
+ *    was itself a bigger allocation than most of what it was measuring.
+ */
+export function retainedRowBytes(messages: TopicMessage[]): number {
+  return messages.reduce(
+    (total, message) =>
+      total +
+      ROW_OVERHEAD_BYTES +
+      (message.payloadBase64 === null ? 0 : base64DecodedLength(message.payloadBase64)) +
+      (message.keyBase64 === null ? 0 : base64DecodedLength(message.keyBase64)) +
+      message.headers.reduce(
+        (headerTotal, header) =>
+          headerTotal + header.key.length + (header.valueBase64 === null ? 0 : base64DecodedLength(header.valueBase64)),
+        0,
+      ),
+    0,
+  );
+}
+
+/**
  * How many payload bytes [`decodeValuePreview`] actually decodes.
  *
  * It cuts the base64 on a 4-character boundary, and 4 base64 characters

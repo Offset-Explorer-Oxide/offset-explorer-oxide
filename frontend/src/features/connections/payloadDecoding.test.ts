@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TopicMessage } from "../../lib/tauri";
 import {
   base64ToBytes,
   base64ToDisplayText,
@@ -13,6 +14,9 @@ import {
   tryParseJson,
   tryParseXml,
   VALUE_PREVIEW_BYTES,
+  retainedPayloadBytes,
+  retainedRowBytes,
+  ROW_OVERHEAD_BYTES,
 } from "./payloadDecoding";
 
 function toBase64(bytes: number[]): string {
@@ -253,5 +257,46 @@ describe("isPayloadTruncated", () => {
 
   it("is true when the base64 carries less than the payload's real size", () => {
     expect(isPayloadTruncated(encodeBytes(4096), 3_145_728)).toBe(true);
+  });
+});
+
+describe("retainedRowBytes", () => {
+  const encodeBytes = (n: number) => btoa("a".repeat(n));
+  const row = (over: Partial<TopicMessage> = {}): TopicMessage => ({
+    partition: 0,
+    offset: 1,
+    timestampMs: null,
+    keyBase64: null,
+    payloadBase64: null,
+    payloadSizeBytes: null,
+    headers: [],
+    ...over,
+  });
+
+  it("is a fixed per-row overhead for metadata-only rows", () => {
+    expect(retainedRowBytes([row(), row(), row()])).toBe(3 * ROW_OVERHEAD_BYTES);
+  });
+
+  // The whole point of measuring rows this way: "Tab memory" and "Payloads
+  // (all tabs)" describe the same cached rows, so the payload part of the
+  // first has to be the same number the second charges against the ceiling.
+  // Sized by JSON.stringify, it was ~4/3 of it (base64 characters, not the
+  // bytes they carry) and the two figures disagreed by a third.
+  it("counts a payload as exactly what retainedPayloadBytes charges for it", () => {
+    const rows = [row({ payloadBase64: encodeBytes(4096) }), row({ payloadBase64: encodeBytes(2048) })];
+
+    expect(retainedRowBytes(rows) - 2 * ROW_OVERHEAD_BYTES).toBe(retainedPayloadBytes(rows));
+  });
+
+  it("counts a row's key and headers on top of its payload", () => {
+    const rows = [
+      row({
+        payloadBase64: encodeBytes(300),
+        keyBase64: encodeBytes(20),
+        headers: [{ key: "trace-id", valueBase64: encodeBytes(16) }],
+      }),
+    ];
+
+    expect(retainedRowBytes(rows)).toBe(ROW_OVERHEAD_BYTES + 300 + 20 + "trace-id".length + 16);
   });
 });
