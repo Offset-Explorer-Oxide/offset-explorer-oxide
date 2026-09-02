@@ -49,7 +49,7 @@ describe("ClusterDetailPanel", () => {
     expect(await screen.findByLabelText("Cluster name")).toHaveValue("Local Kafka");
   });
 
-  it("shows Reconnect, Disconnect, and Update buttons", async () => {
+  it("shows Connect, Disconnect, and Update buttons", async () => {
     setInvokeHandlers({
       connection_list: () => [sampleConnection()],
       connection_is_connected: () => false,
@@ -57,7 +57,7 @@ describe("ClusterDetailPanel", () => {
     renderWithClient(<ClusterDetailPanel connectionId="1" />);
 
     await screen.findByLabelText("Cluster name");
-    expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update" })).toBeInTheDocument();
   });
@@ -114,7 +114,7 @@ describe("ClusterDetailPanel", () => {
     expect(screen.getByLabelText("Cluster name")).toBeEnabled();
   });
 
-  it("calls connection_connect with the id when Reconnect is clicked", async () => {
+  it("calls connection_connect with the id when Connect is clicked", async () => {
     const connect = vi.fn(() => "REACHABLE");
     setInvokeHandlers({
       connection_list: () => [sampleConnection()],
@@ -125,9 +125,26 @@ describe("ClusterDetailPanel", () => {
     renderWithClient(<ClusterDetailPanel connectionId="1" />);
     await screen.findByLabelText("Cluster name");
 
-    await user.click(screen.getByRole("button", { name: "Reconnect" }));
+    await user.click(screen.getByRole("button", { name: "Connect" }));
 
     await waitFor(() => expect(connect).toHaveBeenCalledWith({ id: "1" }));
+  });
+
+  /**
+   * The same button, renamed by state: there is nothing to *re*-connect
+   * until a session exists, and calling the first connect "Reconnect" made
+   * the action that gets you online read as a recovery step.
+   */
+  it("names the button Reconnect once the cluster is connected", async () => {
+    setInvokeHandlers({
+      connection_list: () => [sampleConnection()],
+      connection_is_connected: () => true,
+    });
+    renderWithClient(<ClusterDetailPanel connectionId="1" />);
+    await screen.findByLabelText("Cluster name");
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
   });
 
   it("calls connection_disconnect with the id when Disconnect is clicked", async () => {

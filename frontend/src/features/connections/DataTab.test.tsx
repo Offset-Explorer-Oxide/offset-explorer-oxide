@@ -14,6 +14,20 @@ import { MAX_INLINE_PAYLOAD_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding
 import { useLogsStore } from "../bottom-panel/useLogsStore";
 import { DataTab } from "./DataTab";
 
+/**
+ * The "N loaded of M matching" line, with its trailing " in N ms" stripped.
+ *
+ * The timing is wall clock, so it is different on every run and cannot be
+ * asserted literally — but it is part of the same paragraph's text, which is
+ * what `getByText` matches against. Stripping it here keeps every count
+ * assertion exact instead of loosening them all to a prefix match.
+ */
+function countLine(): string {
+  const line = document.querySelector(".data-tab-total-count");
+  return (line?.textContent ?? "").replace(/ in [\d,]+ ms$/, "");
+}
+
+
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 let capturedMessagesBatchHandler:
@@ -129,7 +143,7 @@ beforeEach(() => {
   capturedMessagesBatchHandler = null;
   useMessageViewerStore.setState({ message: null, connectionId: null, topic: null, partitionId: undefined, byTab: {} });
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
-  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
+  useTabDataStore.setState({ messagesByTab: {}, totalMatchingByTab: {}, fetchDurationMsByTab: {}, payloadBytesByTab: {}, lastUsedByTab: {}, evictedTabs: {} });
   useLogsStore.setState({ entries: [] });
   useGeneralSettingsStore.setState({ maxTotalFetchBytes: 536_870_912 });
   useDataTabFiltersStore.setState({ formByTab: {} });
@@ -763,11 +777,11 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("2 loaded of 2 matching"));
 
     await user.type(screen.getByLabelText("Search messages"), "order-1");
 
-    await waitFor(() => expect(screen.getByText("1 loaded of 2 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 2 matching"));
   });
 
   it("warns that search is bounded when a loaded message is larger than the searched prefix", async () => {
@@ -791,7 +805,7 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 1 matching"));
 
     expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
   });
@@ -811,7 +825,7 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("2 loaded of 2 matching"));
 
     expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
   });
@@ -826,7 +840,7 @@ describe("DataTab", () => {
     const user = userEvent.setup();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 1 matching"));
     expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
 
     setInvokeHandlers({
@@ -853,14 +867,14 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("2 loaded of 2 matching"));
 
     expect(screen.queryByText(/Search matches only/)).not.toBeInTheDocument();
   });
 
   it("shows nothing loaded before any fetch has run", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument();
+    expect(countLine()).toBe("0 loaded of 0 matching");
   });
 
   it("shows every loaded message as matching the total when the fetch wasn't capped", async () => {
@@ -874,7 +888,86 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    await waitFor(() => expect(screen.getByText("2 loaded of 2 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("2 loaded of 2 matching"));
+  });
+
+  /**
+   * The raw line, timing included — `countLine` deliberately strips it, so
+   * these are the tests that look at it.
+   */
+  function rawCountLine(): string {
+    return document.querySelector(".data-tab-total-count")?.textContent ?? "";
+  }
+
+  it("reports how long the fetch took next to the loaded/matching count", async () => {
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 8000 }) });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(rawCountLine()).toMatch(/^1 loaded of 8,000 matching in [\d,]+ ms$/));
+  });
+
+  it("shows no timing before any fetch has run", () => {
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    expect(rawCountLine()).not.toMatch(/ms/);
+  });
+
+  /**
+   * The timing describes the fetch that produced the rows on screen. A new
+   * fetch clears the rows, so it has to clear the timing with them rather
+   * than leave the previous fetch's duration sitting next to a count that
+   * is climbing again.
+   */
+  it("drops the previous fetch's timing as soon as a new fetch starts", async () => {
+    let resolveSecond: (result: { messages: unknown[]; totalMatching: number }) => void = () => {};
+    const second = new Promise<{ messages: unknown[]; totalMatching: number }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMessages = vi
+      .fn()
+      .mockResolvedValueOnce({
+        messages: [
+          { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] },
+        ],
+        totalMatching: 1,
+      })
+      .mockReturnValueOnce(second);
+    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
+    const user = userEvent.setup();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(rawCountLine()).toMatch(/ms$/));
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+
+    await waitFor(() => expect(rawCountLine()).toBe("0 loaded of 0 matching"));
+
+    resolveSecond({ messages: [], totalMatching: 0 });
+  });
+
+  /**
+   * Cached with the rows, not held in the component — the middle pane
+   * remounts per tab, and the timing has to survive that alongside the
+   * count it sits next to.
+   */
+  it("keeps the timing across an unmount/remount, like the count it sits next to", async () => {
+    const messages = [{ partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null, payloadSizeBytes: null, headers: [] }];
+    setInvokeHandlers({ connection_fetch_messages: () => ({ messages, totalMatching: 1 }) });
+    const user = userEvent.setup();
+    const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() => expect(rawCountLine()).toMatch(/ms$/));
+    const shown = rawCountLine();
+
+    unmount();
+    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+
+    expect(rawCountLine()).toBe(shown);
   });
 
   it("shows fewer loaded than total matching when a max-messages cap trimmed the fetch, so the user knows more remain", async () => {
@@ -885,7 +978,7 @@ describe("DataTab", () => {
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
-    await waitFor(() => expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 150 matching"));
   });
 
   it("keeps showing the last fetch's loaded/total count for a tab across an unmount/remount", async () => {
@@ -895,12 +988,12 @@ describe("DataTab", () => {
     const { unmount } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 150 matching"));
 
     unmount();
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    expect(screen.getByText("1 loaded of 150 matching")).toBeInTheDocument();
+    expect(countLine()).toBe("1 loaded of 150 matching");
   });
 
   it("resets the loaded/matching count when a new fetch starts, instead of keeping the previous fetch's stale total", async () => {
@@ -922,14 +1015,14 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("1 loaded of 6,000 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 6,000 matching"));
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     // The second fetch hasn't resolved yet, but starting it should already
     // have cleared the first fetch's total rather than leaving "6000"
     // displayed next to a grid that's about to show a different result.
-    await waitFor(() => expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("0 loaded of 0 matching"));
 
     resolveSecond({ messages: [], totalMatching: 0 });
   });
@@ -1028,7 +1121,7 @@ describe("DataTab", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(screen.getByText("0 loaded of 0 matching")).toBeInTheDocument());
+    await waitFor(() => expect(countLine()).toBe("0 loaded of 0 matching"));
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
@@ -1707,7 +1800,7 @@ describe("DataTab", () => {
     resolveFetch({ messages: [], totalMatching: 1, payloadBytesRead: 4_000 });
 
     // The same single row, counted once — not 8,000, and not zero.
-    await waitFor(() => expect(screen.getByText("1 loaded of 1 matching")).toBeTruthy());
+    await waitFor(() => expect(countLine()).toBe("1 loaded of 1 matching"));
     expect(lastGridProps?.rowData).toHaveLength(1);
     expect(held()).toBe(4_000);
   });
@@ -1746,7 +1839,7 @@ describe("DataTab", () => {
 
     expect(lastGridProps?.rowData).toHaveLength(1);
     expect(held()).toBe(4_000);
-    expect(screen.getByText("1 loaded of 1 matching")).toBeTruthy();
+    expect(countLine()).toBe("1 loaded of 1 matching");
   });
 
   // The response is not always empty: if the forwarding task ends early the
@@ -1774,7 +1867,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(2));
     // Streamed row plus the tail, each counted once.
     expect(held()).toBe(5_000);
-    expect(screen.getByText("2 loaded of 2 matching")).toBeTruthy();
+    expect(countLine()).toBe("2 loaded of 2 matching");
   });
 
   // One event now carries many rows — the whole point of batching them.

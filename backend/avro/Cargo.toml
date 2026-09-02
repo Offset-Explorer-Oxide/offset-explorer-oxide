@@ -9,4 +9,13 @@ error-stack = { workspace = true }
 serde_json = { workspace = true }
 apache-avro = "0.16"
 base64 = "0.22"
+chrono = { workspace = true }
+# Same 0.4 line `apache-avro` uses, so its `From<Decimal> for BigInt`
+# applies here — that is the only way out of an `apache_avro::Decimal`,
+# whose own fields are private.
+num-bigint = "0.4"
 
+
+[dev-dependencies]
+# Only to build a `Value::Uuid` in the logical-type tests.
+uuid = { workspace = true }

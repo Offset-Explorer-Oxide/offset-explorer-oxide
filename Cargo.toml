@@ -12,7 +12,14 @@ members = [
 [workspace.dependencies]
 error-stack = "0.5"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps `serde_json::Value::Object` in insertion order
+# (IndexMap) instead of sorting keys (BTreeMap). Decoded Avro records are
+# built in schema field order, and that is the order the payload viewer
+# must show — alphabetising a record silently reorders every message the
+# user opens. Nothing here depends on keys being sorted: every other
+# `serde_json` use in the workspace serialises a `#[derive(Serialize)]`
+# struct, whose order comes from the struct, not the map.
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }

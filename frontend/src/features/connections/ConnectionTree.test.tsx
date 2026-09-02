@@ -138,7 +138,8 @@ describe("ConnectionTree", () => {
     await waitFor(() => {
       const title = screen.getByTestId("status-1").getAttribute("title") ?? "";
       expect(title).toContain("Invalid username or password");
-      expect(title).toContain("Reconnect");
+      // Disconnected, so the menu item it points at says Connect.
+      expect(title).toContain("Connect");
     });
   });
 
@@ -155,7 +156,7 @@ describe("ConnectionTree", () => {
     await waitFor(() => {
       const title = screen.getByTestId("status-1").getAttribute("title") ?? "";
       expect(title).toContain("Not connected to localhost:9092");
-      expect(title).toContain("Reconnect");
+      expect(title).toContain("Use Connect to open a session");
     });
   });
 
@@ -418,10 +419,10 @@ describe("ConnectionTree", () => {
       return user;
     }
 
-    it("shows Reconnect, Disconnect, Clone Connection, Export Connection, and Delete Connection", async () => {
+    it("shows Connect, Disconnect, Clone Connection, Export Connection, and Delete Connection", async () => {
       await openMenu();
 
-      expect(screen.getByRole("menuitem", { name: "Reconnect" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Connect" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Disconnect" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Clone Connection" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Export Connection" })).toBeInTheDocument();
@@ -433,7 +434,7 @@ describe("ConnectionTree", () => {
       expect(useWorkspaceSelectionStore.getState().selection).toBeNull();
     });
 
-    it("calls connection_connect when Reconnect is clicked", async () => {
+    it("calls connection_connect when Connect is clicked", async () => {
       const connect = vi.fn(() => "REACHABLE");
       setInvokeHandlers({
         connection_list: () => [sampleConnection()],
@@ -443,9 +444,26 @@ describe("ConnectionTree", () => {
       });
       const user = await openMenu();
 
-      await user.click(screen.getByRole("menuitem", { name: "Reconnect" }));
+      await user.click(screen.getByRole("menuitem", { name: "Connect" }));
 
       await waitFor(() => expect(connect).toHaveBeenCalledWith({ id: "1" }));
+    });
+
+    /**
+     * "Reconnect" only makes sense against a live session. A cluster that
+     * has never been connected offers Connect, and the same menu item
+     * becomes Reconnect once there is a session to replace.
+     */
+    it("names the item Reconnect once the cluster is connected", async () => {
+      setInvokeHandlers({
+        connection_list: () => [sampleConnection()],
+        connection_check_status: () => "REACHABLE",
+        connection_is_connected: () => true,
+      });
+      await openMenu();
+
+      expect(screen.getByRole("menuitem", { name: "Reconnect" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Connect" })).not.toBeInTheDocument();
     });
 
     it("calls connection_disconnect when Disconnect is clicked", async () => {

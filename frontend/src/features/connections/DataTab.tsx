@@ -288,8 +288,10 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const evictToFit = useTabDataStore((s) => s.evictToFit);
   const touchTab = useTabDataStore((s) => s.touchTab);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
+  const setTabFetchDurationMs = useTabDataStore((s) => s.setTabFetchDurationMs);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
   const totalMatching = useTabDataStore((s) => s.totalMatchingByTab[tabKey]);
+  const fetchDurationMs = useTabDataStore((s) => s.fetchDurationMsByTab[tabKey]);
   const appendTabMessages = useTabDataStore((s) => s.appendTabMessages);
   /**
    * The stream listener below is subscribed once and must not re-subscribe,
@@ -546,6 +548,10 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
       return;
     }
     setIsPlaying(true);
+    // Wall clock, started here rather than around `mutateAsync` alone: what
+    // the user is timing is the Fetch they clicked, which includes the
+    // streamed rows being painted in, not just the round trip.
+    const startedAt = performance.now();
     stoppedRef.current = false;
     discardBufferedStream();
     const requestId = crypto.randomUUID();
@@ -605,6 +611,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         activeRequestIdRef.current = null;
         retiredHere = true;
         setTabTotalMatching(tabKey, result.totalMatching);
+        // Recorded on this branch only — the branch that has the
+        // authoritative result. A stopped or superseded fetch leaves the
+        // view with no timing rather than one that describes a fetch the
+        // user cut short.
+        setTabFetchDurationMs(tabKey, Math.round(performance.now() - startedAt));
         setByteBudgetBytesRead(result.stoppedAtByteBudget ? (result.payloadBytesRead ?? 0) : null);
         enforceRetentionLimit();
       }
@@ -881,6 +892,13 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           600000 is hard to size at a glance.
         */}
         {visibleMessageCount.toLocaleString()} loaded of {(totalMatching ?? messages.length).toLocaleString()} matching
+        {/*
+          Omitted entirely rather than shown as 0 ms while a fetch is still
+          running or after one was stopped: the number is how long the fetch
+          that produced these rows took, and there is no such number until
+          one finishes.
+        */}
+        {fetchDurationMs !== undefined && ` in ${fetchDurationMs.toLocaleString()} ms`}
       </p>
 
       <div className="data-tab-grid" data-testid="message-grid">
