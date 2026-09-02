@@ -950,8 +950,16 @@ impl KafkaClient for RdKafkaClient {
         cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError> {
         let config = fetch_consumer_config(connection, max_message_size_bytes);
+        // The topic's partition list comes from the **pooled** metadata
+        // client, never from this fetch's own consumer — see the metadata
+        // call below for why that is worth a second client.
+        let metadata_client = self.metadata_client(connection)?;
         let topic = topic.to_string();
         let filter = filter.clone();
+        // Captured here rather than reached for inside the blocking closure,
+        // so the deferred teardown at the end of it cannot depend on a
+        // runtime context being present on a blocking-pool thread.
+        let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             // A consumer per fetch, deliberately.
             //
@@ -985,9 +993,41 @@ impl KafkaClient for RdKafkaClient {
                 return Ok(MessageFetchResult::default());
             }
 
-            let metadata = consumer.fetch_metadata(Some(&topic), read_timeout).map_err(|err| {
-                client.failure(&err, &format!("failed to fetch metadata for topic {topic}"))
-            })?;
+            // Asked of the pooled metadata client rather than the consumer
+            // built just above, because the same question costs ~500x more
+            // of the one than the other.
+            //
+            // `fetch_consumer_config` has to set a `group.id`: rdkafka
+            // routes `assign()` through librdkafka's consumer-group
+            // machinery, and without one it fails outright with "Local:
+            // Unknown group". Setting it also starts that machinery, whose
+            // first act on a new client is a **group coordinator query** —
+            // and a metadata request issued on the same client queues behind
+            // it on librdkafka's main queue. This fetch never subscribes,
+            // never joins the group and never commits, so that coordinator
+            // round trip buys nothing and is paid on every single fetch.
+            //
+            // `client_config` (what `metadata_client` is built from) sets no
+            // `group.id` at all, so that client has no group machinery to
+            // wait on — and it is long-lived and already connected.
+            //
+            // Measured, 100-message browse of a 6-partition topic, five
+            // consecutive fetches: **[513, 24, 527, 512, 527] ms** asking
+            // this fetch's own consumer, against **[12, 14, 13, 13, 11] ms**
+            // asking the pooled one, whose metadata call itself is ~1 ms.
+            // The rest of the fetch — watermarks, assign, and polling 100
+            // messages — is 11 ms of that, and is left on the fetch's own
+            // consumer: `fetch_watermarks` uses its own reply queue rather
+            // than the main one (see `ObservedClient::error_slot`), so it
+            // never queues behind the coordinator query and is already fast.
+            //
+            // Not fixed by pooling the *fetch* consumer instead: re-assigning
+            // a parked consumer costs ~370 ms a browse, which is what the
+            // note above about consumers-per-fetch found and this re-measured.
+            let metadata = metadata_client.observed(
+                &format!("failed to fetch metadata for topic {topic}"),
+                |consumer| consumer.fetch_metadata(Some(&topic), read_timeout),
+            )?;
             let topic_metadata = metadata
                 .topics()
                 .iter()
@@ -1257,13 +1297,40 @@ impl KafkaClient for RdKafkaClient {
                 }
             }
 
-            Ok(MessageFetchResult {
+            let result = MessageFetchResult {
                 messages: collected,
                 total_matching,
                 poll_error: last_poll_error,
                 stopped_at_byte_budget,
                 payload_bytes_read,
-            })
+            };
+
+            // Closing this consumer costs a flat **99 ms**, and the user is
+            // not waiting for any of it.
+            //
+            // It is the same `group.id` tax as the metadata call above, at
+            // the other end of the consumer's life: `assign()` forces a
+            // group id, a group id starts librdkafka's consumer-group
+            // machinery, and closing that machinery down is a fixed cost
+            // whether or not the group was ever joined. Measured over five
+            // create-then-drop cycles: **99, 99, 99, 99, 99 ms** with a
+            // group id set against **0, 0, 0, 0, 0 ms** without one — so it
+            // is the group, not the socket or the threads.
+            //
+            // Nothing in `result` refers to this consumer: the messages are
+            // owned `TopicMessage`s, already copied out of librdkafka's
+            // buffers. So the close is moved onto the blocking pool and the
+            // fetch returns without it, taking a 100-message browse from
+            // ~111 ms to ~12 ms.
+            //
+            // The early returns above (a Stop caught between phases) still
+            // close inline. They are not worth the same treatment: they run
+            // when the user has already given up on this fetch, so there is
+            // no latency there to save.
+            let teardown = (client, consumer);
+            runtime.spawn_blocking(move || drop(teardown));
+
+            Ok(result)
         })
         .await
         .change_context(AppError::Kafka)
