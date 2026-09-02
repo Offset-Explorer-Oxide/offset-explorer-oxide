@@ -76,6 +76,21 @@ fn connection(bootstrap_servers: String) -> Connection {
     }
 }
 
+/// The shape of an ordinary browse — the newest 100 messages — where the
+/// fixed cost of setting a fetch up is the whole of what the user waits for.
+fn browse_filter() -> MessageFilter {
+    MessageFilter {
+        partitions: None,
+        max_messages_per_partition: Some(100),
+        max_total_messages: Some(100),
+        from_timestamp_ms: None,
+        to_timestamp_ms: None,
+        offset: None,
+        include_payload: true,
+        max_payload_preview_bytes: Some(4096),
+    }
+}
+
 fn filter(include_payload: bool) -> MessageFilter {
     MessageFilter {
         partitions: None,
@@ -141,6 +156,73 @@ async fn the_same_holds_when_payloads_are_fetched() {
     assert!(
         elapsed < BUDGET,
         "fetching {count} messages with payloads took {} ms",
+        elapsed.as_millis(),
+    );
+}
+
+/// Five small browses back to back, which is what using the Data tab looks
+/// like — and where a fixed per-fetch cost shows up as the whole wait.
+///
+/// The fetch's own consumer must set a `group.id` (rdkafka routes `assign()`
+/// through the consumer-group machinery), and asking *that* client for topic
+/// metadata queues the request behind librdkafka's group-coordinator query:
+/// ~500 ms, on every fetch, for a group this consumer never joins. The
+/// partition list is asked of the pooled metadata client instead, which has
+/// no `group.id` and is already connected.
+///
+/// Measured as a total rather than per fetch because the old behaviour was
+/// bimodal — roughly four fetches in five paid the coordinator query and the
+/// fifth slipped past it, so any single fetch could pass by luck. Five
+/// together could not: ~2,100 ms against the ~60 ms this budget allows.
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_small_browses_do_not_pay_a_coordinator_query_each() {
+    let Some(bootstrap) = bootstrap_servers() else {
+        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        return;
+    };
+    let client = RdKafkaClient::new();
+    let connection = connection(bootstrap);
+
+    // The app reaches a Data tab through the tree, which lists the cluster's
+    // topics first — so the pooled metadata client is always already built
+    // and connected by the time Fetch is clicked. Doing that here measures
+    // the steady state the user is actually in, rather than charging the
+    // first browse for a connection the real app opened minutes ago.
+    client
+        .list_topics(&connection, Duration::from_secs(30))
+        .await
+        .expect("list_topics failed");
+
+    let started = Instant::now();
+    let mut each = Vec::new();
+    for _ in 0..5 {
+        let one = Instant::now();
+        let result = client
+            .fetch_messages(
+                &connection,
+                TOPIC,
+                &browse_filter(),
+                None,
+                Duration::from_secs(30),
+                1_048_576,
+                None,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .expect("fetch failed");
+        each.push(one.elapsed().as_millis());
+        assert_eq!(result.messages.len(), 100);
+    }
+    let elapsed = started.elapsed();
+
+    println!("five 100-message browses: {} ms each={each:?}", elapsed.as_millis());
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "five 100-message browses took {} ms; each should be ~10. Both costs this guards are \
+         the `group.id` that `assign()` forces on the fetch consumer: ~500 ms if the partition \
+         list is asked of that consumer instead of the pooled metadata client (its group \
+         coordinator query), and ~99 ms if the consumer is closed on the critical path instead \
+         of on the blocking pool. See `fetch_messages`.",
         elapsed.as_millis(),
     );
 }
