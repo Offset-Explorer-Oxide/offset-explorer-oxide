@@ -47,6 +47,7 @@ import {
   VALUE_PREVIEW_BYTES,
 } from "./payloadDecoding";
 import { api } from "../../lib/tauri";
+import { formatLocalTimestamp, localTimeZoneLabel } from "../../lib/time";
 import { useFetchMessages } from "./useClusterResources";
 import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
 import { useLogsStore } from "../bottom-panel/useLogsStore";
@@ -54,8 +55,13 @@ import { ValueCell, ValueCellContext } from "./ValueCell";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
+/**
+ * The broker's record timestamp, shown in the system's timezone rather than
+ * UTC — see `formatLocalTimestamp`. The column still sorts and filters on the
+ * raw `timestampMs`, so this is presentation only.
+ */
 function formatTimestamp(params: ValueFormatterParams<TopicMessage, number | null>): string {
-  return params.value ? new Date(params.value).toISOString() : "";
+  return formatLocalTimestamp(params.value);
 }
 
 /**
@@ -65,6 +71,21 @@ function formatTimestamp(params: ValueFormatterParams<TopicMessage, number | nul
  * Keyed weakly, so a row's preview is released with the row itself when a
  * new fetch replaces the tab's messages.
  */
+const TIMESTAMP_HEADER = (() => {
+  const zone = localTimeZoneLabel();
+  return zone ? `Timestamp (${zone})` : "Timestamp";
+})();
+
+/**
+ * The From/To filter inputs name the same zone as the Timestamp column, for
+ * one reason: the boundary a user types is read in the system's timezone
+ * (see `parseDate`), so the field and the column it filters have to visibly
+ * agree. Saying it on both is what makes "filter from 09:00, get rows from
+ * 09:00" something the user can see rather than has to trust.
+ */
+const FROM_LABEL = TIMESTAMP_HEADER === "Timestamp" ? "From" : `From (${localTimeZoneLabel()})`;
+const TO_LABEL = TIMESTAMP_HEADER === "Timestamp" ? "To" : `To (${localTimeZoneLabel()})`;
+
 const valuePreviewCache = new WeakMap<TopicMessage, string>();
 
 /**
@@ -125,7 +146,12 @@ const COLUMN_DEFS: ColDef<TopicMessage>[] = [
   { field: "offset", headerName: "Offset", width: 100, getQuickFilterText: excludeFromQuickFilter },
   {
     field: "timestampMs",
-    headerName: "Timestamp",
+    // The zone is named once in the header instead of on every row — see
+    // `localTimeZoneLabel`. Read at module load: a machine does not change
+    // timezone mid-session, and a header that re-derived it per render would
+    // be doing `Intl` work on every grid repaint for a string that never
+    // moves.
+    headerName: TIMESTAMP_HEADER,
     valueFormatter: formatTimestamp,
     width: 200,
     getQuickFilterText: excludeFromQuickFilter,
@@ -741,7 +767,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           />
         </label>
         <label>
-          From
+          {FROM_LABEL}
           <input
             type="datetime-local"
             value={form.fromDate}
@@ -750,7 +776,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           />
         </label>
         <label>
-          To
+          {TO_LABEL}
           <input
             type="datetime-local"
             value={form.toDate}

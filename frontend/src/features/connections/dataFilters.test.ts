@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
 import { MAX_INLINE_PAYLOAD_BYTES, PAYLOAD_RETENTION_BUDGET_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
+import { formatLocalTimestamp } from "../../lib/time";
 
 describe("emptyFilterForm", () => {
   it("pre-fills both count caps, and leaves every other field blank with includePayload unchecked", () => {
@@ -116,11 +117,47 @@ describe("toMessageFilter", () => {
     expect(toMessageFilter(form).partitions).toEqual([0, 2, 5]);
   });
 
-  it("converts fromDate/toDate datetime-local values to epoch milliseconds", () => {
-    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T00:00", toDate: "2026-01-02T00:00" };
+  /**
+   * Asserted against an explicitly-local `Date` rather than against
+   * `new Date("2026-01-01T00:00")` — which is how this read before, and which
+   * proved nothing: both sides ran the same parse, so the test passed whether
+   * that parse was local or UTC. Built from local Y/M/D/h/m instead, it fails
+   * if the boundary is ever read as UTC, in any timezone the suite runs in.
+   */
+  it("converts fromDate/toDate datetime-local values to epoch milliseconds in the system's timezone", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T09:00", toDate: "2026-01-02T17:30" };
     const filter = toMessageFilter(form);
-    expect(filter.fromTimestampMs).toBe(new Date("2026-01-01T00:00").getTime());
-    expect(filter.toTimestampMs).toBe(new Date("2026-01-02T00:00").getTime());
+    expect(filter.fromTimestampMs).toBe(new Date(2026, 0, 1, 9, 0, 0, 0).getTime());
+    expect(filter.toTimestampMs).toBe(new Date(2026, 0, 2, 17, 30, 0, 0).getTime());
+  });
+
+  /**
+   * The zone the filter is read in has to be the zone the Timestamp column is
+   * rendered in, or the user filters from 09:00 and gets rows labelled 03:30.
+   * This pins the two together across the whole round trip: form value ->
+   * epoch ms -> the string the grid would show for that instant.
+   */
+  it("agrees with how the grid renders the same instant, so a typed boundary matches the column", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01T09:00" };
+    const fromMs = toMessageFilter(form).fromTimestampMs;
+    expect(formatLocalTimestamp(fromMs)).toBe("2026-01-01 09:00:00.000");
+  });
+
+  /**
+   * A date with no time is the one form ECMAScript reads as UTC — see
+   * `parseDate`. Left alone it would shift the boundary by the machine's
+   * offset.
+   */
+  it("reads a date-only value as local midnight rather than UTC midnight", () => {
+    const form = { ...emptyFilterForm(), fromDate: "2026-01-01" };
+    expect(toMessageFilter(form).fromTimestampMs).toBe(new Date(2026, 0, 1, 0, 0, 0, 0).getTime());
+  });
+
+  it("ignores a date value it cannot parse at all rather than sending NaN to the backend", () => {
+    const form = { ...emptyFilterForm(), fromDate: "not a date", toDate: "   " };
+    const filter = toMessageFilter(form);
+    expect(filter.fromTimestampMs).toBeNull();
+    expect(filter.toTimestampMs).toBeNull();
   });
 
   it("ignores an empty partitions string rather than producing [NaN]", () => {

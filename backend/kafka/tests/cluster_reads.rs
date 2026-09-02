@@ -304,20 +304,19 @@ async fn a_from_timestamp_before_the_topic_existed_resolves_to_the_whole_topic()
     assert_eq!(since_epoch.len(), all.len());
 }
 
-/// The other side of the fallback, and a characterization of behaviour that
-/// looks wrong rather than an endorsement of it.
+/// The other side of the fallback — corrected, having been pinned here as a
+/// characterization of behaviour that looked wrong (which it was).
 ///
-/// `offsets_for_times` cannot place a timestamp that is after every message in
-/// a partition, so the fallback runs — and for a *from* timestamp the fallback
-/// is the **low** watermark. The effect is that setting the Data tab's "From"
-/// to a future date returns the entire topic rather than nothing, which is the
-/// opposite of what the filter reads as. (The high watermark is what would
-/// match nothing; `low` is only ever right for a timestamp *older* than the
-/// partition, which librdkafka resolves on its own without the fallback.)
-///
-/// Pinned so that correcting it is deliberate and visible here.
+/// `offsets_for_times` cannot place a timestamp that is after every message
+/// in a partition, so the fallback runs, and for a *from* timestamp it used
+/// to be the **low** watermark: setting the Data tab's "From" to a future
+/// date returned the entire topic rather than nothing, the exact opposite of
+/// what the filter reads as. It is now the high watermark, which is the
+/// offset that matches nothing. (`low` is only ever right for a timestamp
+/// *older* than the partition, which librdkafka resolves on its own without
+/// ever reaching the fallback — see the test above.)
 #[tokio::test(flavor = "multi_thread")]
-async fn a_from_timestamp_in_the_future_currently_falls_back_to_the_whole_topic() {
+async fn a_from_timestamp_in_the_future_matches_nothing() {
     let client = RdKafkaClient::new();
     let connection = connection(broker!());
 
@@ -327,6 +326,8 @@ async fn a_from_timestamp_in_the_future_currently_falls_back_to_the_whole_topic(
         .as_millis() as i64
         + 86_400_000;
     let all = fetch(&client, &connection, TOPIC, MessageFilter::default()).await;
+    assert!(!all.is_empty(), "fixture topic is empty — run scripts/e2e-fixtures.sh");
+
     let from_the_future = fetch(
         &client,
         &connection,
@@ -335,10 +336,12 @@ async fn a_from_timestamp_in_the_future_currently_falls_back_to_the_whole_topic(
     )
     .await;
 
-    assert_eq!(
+    assert!(
+        from_the_future.is_empty(),
+        "a from-timestamp after every message must match nothing, not fall back to the whole topic \
+         ({} of {} message(s) returned)",
         from_the_future.len(),
         all.len(),
-        "today's behaviour: the unresolvable from-timestamp falls back to each partition's low watermark"
     );
 }
 

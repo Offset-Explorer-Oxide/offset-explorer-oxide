@@ -1059,11 +1059,32 @@ impl KafkaClient for RdKafkaClient {
                 })
                 .transpose()?;
 
+            // The fallback is the **high** watermark, not the low one.
+            //
+            // `offsets_for_times` leaves a partition unresolved in exactly one
+            // situation: the requested time is after every message in it. The
+            // right start for "From 5pm" in a partition whose newest message
+            // is from midday is therefore the end of that partition — no
+            // message satisfies the filter, so the fetch reads none.
+            //
+            // This used to fall back to the low watermark, which is the
+            // opposite answer to the same question: a From-time later than a
+            // partition's newest message made it read that partition **from
+            // the very beginning**, so a filter meant to narrow the fetch to
+            // the last few minutes returned the topic's oldest messages
+            // instead. On an idle topic — where every partition is past its
+            // newest message the moment you ask for anything recent — that
+            // was every partition, so From appeared to be ignored entirely.
+            //
+            // See the `to_timestamp_ms` resolution below, whose own fallback
+            // is the high watermark for the mirror-image reason: a To-time
+            // after every message means "read to the end", which is what the
+            // high watermark already says.
             let from_timestamp_start_offsets: Option<BTreeMap<i32, i64>> = filter
                 .from_timestamp_ms
                 .map(|from_ms| {
                     resolve_offsets_by_timestamp(&consumer, &topic, &target_partitions, from_ms, read_timeout, |p| {
-                        watermarks(p).map(|(low, _)| low)
+                        watermarks(p).map(|(_, high)| high)
                     })
                 })
                 .transpose()?;
