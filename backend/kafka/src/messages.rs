@@ -205,6 +205,66 @@ pub fn budgeted_payload_bytes(payload_len: usize, include_payload: bool) -> u64 
     }
 }
 
+/// The largest number of consumer instances a fetch will spread its
+/// partitions across.
+///
+/// Eight is where the measured return flattens, and it keeps the worst-case
+/// prefetch memory below on a scale a desktop can absorb.
+pub const MAX_FETCH_SHARDS: usize = 8;
+
+/// The most prefetch buffering a single fetch may cap itself at, across all
+/// its shards. Not an allocation — `queued.max.messages.kbytes` is a ceiling
+/// librdkafka fills only with data it actually has in flight.
+const SHARD_PREFETCH_CEILING_BYTES: u64 = 128 * 1024 * 1024;
+
+/// How many consumer instances to spread a fetch's partitions across.
+///
+/// One consumer polling every partition serialises two things that do not
+/// have to be: the network fetch, and librdkafka's **decompression**, which
+/// happens on the broker thread that received the response, before a message
+/// is ever queued for the application. A second consumer instance is a second
+/// set of those threads, so splitting the partitions across several is what
+/// makes either run in parallel — and because the parallelism is librdkafka's
+/// own, the application still polls them from a single loop.
+///
+/// Measured against a real broker, browsing the newest 100 messages, median
+/// of five with the previous fetch's teardown left to drain:
+///
+/// | topic | 1 shard | 8 shards |
+/// |-------|---------|----------|
+/// | 25 partitions, 2.75 MB gzip records | 659ms | **157ms** |
+/// | 25 partitions, 2.75 MB plain records | 188ms | **68ms** |
+/// | 24 partitions, 1.2 KB gzip records | 71ms | **31ms** |
+/// | 6 partitions, 135 KB gzip records | 56ms | **26ms** |
+/// | 6 partitions, 1.2 KB gzip records | 30ms | **18ms** |
+/// | 24 partitions, 1.2 KB plain records | 21ms | 22ms |
+/// | 6 partitions, 135 KB plain records | 16ms | 20ms |
+/// | 6 partitions, 1.2 KB plain records | 11ms | 11ms |
+///
+/// The gain tracks how much work librdkafka has to do off the wire, so the
+/// compressed rows move and the small plain ones do not. Those last rows are
+/// what the count has to stay honest about: a fetch already finishing in
+/// ~15 ms has nothing to parallelise, and two things had to be true before
+/// they came out flat rather than three times worse — the shards are built
+/// concurrently, and the poll loop never blocks long on any one of them (see
+/// `fetch_messages`). Both were measured regressions before they were fixed.
+///
+/// Two things bound it. A shard cannot be given less than one partition, and
+/// each shard carries its own prefetch queue — which has to stay large enough
+/// for one maximum-size record (see `fetch_consumer_config`), so on a
+/// large-message topic the shards' queues are what caps the count rather than
+/// [`MAX_FETCH_SHARDS`].
+pub fn fetch_shard_count(partitions_with_work: usize, max_message_size_bytes: u32) -> usize {
+    if partitions_with_work == 0 {
+        return 1;
+    }
+    // Mirrors the queue each shard will be configured with.
+    let per_shard_prefetch = (u64::from(max_message_size_bytes) * 2).max(8 * 1024 * 1024);
+    let affordable = (SHARD_PREFETCH_CEILING_BYTES / per_shard_prefetch).max(1) as usize;
+    partitions_with_work.min(MAX_FETCH_SHARDS).min(affordable)
+}
+
+
 pub fn combined_start_offset(explicit_offset: Option<i64>, from_timestamp_offset: Option<i64>) -> Option<i64> {
     match (explicit_offset, from_timestamp_offset) {
         (Some(a), Some(b)) => Some(a.max(b)),
@@ -216,6 +276,58 @@ pub fn combined_start_offset(explicit_offset: Option<i64>, from_timestamp_offset
 
 #[cfg(test)]
 mod tests {
+
+    /// The whole point of sharding is a topic wide enough to spread, and the
+    /// measured win grows with the fan-out — see the table on the function.
+    #[test]
+    fn a_wide_topic_is_spread_across_every_shard_available() {
+        assert_eq!(fetch_shard_count(50, 1_048_576), MAX_FETCH_SHARDS);
+        assert_eq!(fetch_shard_count(24, 1_048_576), MAX_FETCH_SHARDS);
+    }
+
+    /// A shard with no partition to read is a consumer, a connection and a
+    /// set of librdkafka threads built to poll nothing.
+    #[test]
+    fn a_narrow_topic_never_builds_more_shards_than_it_has_partitions() {
+        for partitions in 1..=MAX_FETCH_SHARDS {
+            assert_eq!(
+                fetch_shard_count(partitions, 1_048_576),
+                partitions,
+                "{partitions} partitions should not be split more ways than that"
+            );
+        }
+    }
+
+    /// A fetch that matched nothing still has to build one consumer, not zero.
+    #[test]
+    fn a_fetch_with_no_work_still_reports_a_usable_shard_count() {
+        assert_eq!(fetch_shard_count(0, 1_048_576), 1);
+    }
+
+    /// Each shard keeps a prefetch queue big enough for one maximum-size
+    /// record, so on a large-message topic the shard count is what decides
+    /// the worst-case buffering. Past a point the queues, not the partition
+    /// count, are the binding constraint.
+    #[test]
+    fn a_large_message_topic_trades_shards_away_to_bound_prefetch_memory() {
+        let shards = fetch_shard_count(50, 32 * 1_048_576);
+
+        assert!(
+            shards < MAX_FETCH_SHARDS,
+            "a 32 MB maximum message size gives each shard a 64 MB prefetch queue; \
+             {shards} of those is more buffering than a fetch should reserve"
+        );
+        assert!(shards >= 1, "there is always at least one consumer");
+    }
+
+    /// The ceiling binds on the queue size, never on the number of shards
+    /// alone — a topic of ordinary records must not be throttled by a limit
+    /// meant for multi-megabyte ones.
+    #[test]
+    fn an_enormous_maximum_message_size_falls_back_to_a_single_consumer() {
+        assert_eq!(fetch_shard_count(50, 200 * 1_048_576), 1);
+    }
+
     use super::*;
 
     fn map(pairs: &[(i32, i64)]) -> BTreeMap<i32, i64> {

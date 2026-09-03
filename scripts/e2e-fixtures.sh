@@ -74,6 +74,27 @@ if [ "$(kexec "$K/kafka-get-offsets.sh" --bootstrap-server "$BOOTSTRAP" --topic 
     --batch-size 65536 < /tmp/perf.txt" >/dev/null 2>&1
 fi
 
+# --- fetch_completion.rs ---------------------------------------------------
+# A topic whose offsets are NOT all readable messages. Every transaction
+# writes a commit marker, which occupies an offset that the broker never
+# delivers to a consumer — so `high - low` over-counts what a fetch can
+# actually collect, and the newest offset in a partition is typically a
+# marker rather than a record.
+#
+# That gap is the whole point of the fixture: a fetch that decides it is
+# finished by counting messages up to `high - low` can never reach that
+# number here, and falls back on its idle timeout instead.
+echo "==> completion fixture (perf-txn: 10,000 transactional records + commit markers)"
+topic perf-txn 6
+if [ "$(kexec "$K/kafka-get-offsets.sh" --bootstrap-server "$BOOTSTRAP" --topic perf-txn \
+        | awk -F: '{ total += $3 } END { print total + 0 }')" -lt 10000 ]; then
+  kexec sh -c 'head -c 1000 /dev/zero | tr "\0" y > /tmp/txn-kb.txt; echo >> /tmp/txn-kb.txt'
+  kexec "$K/kafka-producer-perf-test.sh" --topic perf-txn --num-records 10000 \
+    --payload-file /tmp/txn-kb.txt --throughput -1 \
+    --transactional-id e2e-fixture-txn --transaction-duration-ms 50 \
+    --producer-props "bootstrap.servers=$BOOTSTRAP" batch.size=65536 >/dev/null 2>&1
+fi
+
 # --- cluster_reads.rs ------------------------------------------------------
 echo "==> cluster fixtures (e2e-basic, e2e-headers)"
 topic e2e-basic 3
