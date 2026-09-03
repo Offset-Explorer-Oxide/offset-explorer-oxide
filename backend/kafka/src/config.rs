@@ -270,10 +270,31 @@ pub fn fetch_consumer_config(connection: &Connection, max_message_size_bytes: u3
     // a topic of 2-10 MB records is several times more data pulled over the
     // network than a 100-message fetch will ever show.
     //
-    // Kept at twice the largest message the user expects (floor of 1 MB) so
-    // a single maximum-size record always fits with room to spare — a queue
-    // smaller than one message would stall the fetch outright.
-    let prefetch_kbytes = (u64::from(max_message_size_bytes) * 2 / 1024).max(1024);
+    // Kept at twice the largest message the user expects so a single
+    // maximum-size record always fits with room to spare — a queue smaller
+    // than one message would stall the fetch outright.
+    //
+    // The 8 MB floor is where that "twice the message size" rule stops being
+    // enough on its own. A topic of ordinary small records leaves it at the
+    // floor, and the floor is then the whole prefetch window: too low a one
+    // and the queue sits over its threshold for most of a large fetch, so
+    // every refill pays `fetch.queue.backoff.ms` below. Measured against a
+    // real broker, draining 30,000 records of ~1.2 KB over 6 partitions:
+    //
+    // | floor | plain | gzip | 135 KB records, gzip |
+    // |-------|-------|------|----------------------|
+    // | 1 MB  | 152ms | 137ms| 417ms                |
+    // | 8 MB  |  79ms | 128ms| 334ms                |
+    // | 64 MB |  86ms | 125ms| 312ms                |
+    //
+    // 8 MB rather than more because that is the knee — 64 MB (librdkafka's
+    // own default) buys nothing beyond it, and the point of capping this at
+    // all is that a 64 MB queue of decompressed multi-MB records is what
+    // used to exhaust memory on large-message topics. Small browses are
+    // indifferent to the value: 100 messages measured 8/26/11/50 ms across
+    // those same four topics at every floor from 1 MB to 64 MB, because a
+    // fetch that small never reaches the threshold in the first place.
+    let prefetch_kbytes = (u64::from(max_message_size_bytes) * 2 / 1024).max(8192);
     config.set("queued.max.messages.kbytes", prefetch_kbytes.to_string());
 
     // **Set because the line above is.** These two are a pair, and lowering
@@ -318,6 +339,31 @@ pub fn fetch_consumer_config(connection: &Connection, max_message_size_bytes: u3
     // watching — so a half-second of the broker holding a request is a
     // half-second of the UI looking stuck.
     config.set("fetch.wait.max.ms", "50");
+
+    // How the poll loop learns it has read everything the filter asked for.
+    //
+    // The loop's other stopping condition is a message count worked out from
+    // the partitions' watermarks (`high - low`, narrowed by the caps), and
+    // that figure is only ever an **upper bound**: an offset can exist
+    // without a consumer ever being handed a message for it. A transaction's
+    // commit marker takes an offset and is never delivered; so do records
+    // removed by compaction. On such a topic the count is unreachable, and
+    // without this the fetch had nothing left to stop it but `IDLE_TIMEOUT`
+    // — ten seconds of empty polls, on every single fetch.
+    //
+    // It is the ordinary case rather than an edge case: the newest offset in
+    // a transactional partition is usually the last transaction's commit
+    // marker, so a newest-first browse comes up short almost every time.
+    // Measured against a real broker, an ordinary "newest 100" browse of a
+    // transactional topic: **10,009 ms** returning 94 messages, against
+    // **5-9 ms** for the same browse of a plain one.
+    //
+    // With this set, librdkafka reports reaching the end of each partition as
+    // a `PartitionEOF` poll result, which `fetch_messages` treats as "this
+    // partition is finished" — an exact signal that costs nothing and does
+    // not depend on the offset arithmetic being a perfect count. It is not an
+    // error, and is deliberately kept out of `poll_error`.
+    config.set("enable.partition.eof", "true");
 
     config
 }
@@ -383,6 +429,42 @@ mod tests {
             backoff_ms <= 50,
             "a {queue_kbytes} KB prefetch queue with a {backoff_ms} ms queue backoff stalls the \
              fetch every time the queue fills — see this property's doc comment"
+        );
+    }
+
+    /// `fetch_messages` ends its poll loop when every partition reports
+    /// itself finished, and a `PartitionEOF` result is one of the three ways
+    /// that happens. librdkafka suppresses those unless this is on (its
+    /// default has been `false` since 1.0), which would leave the loop with
+    /// nothing but an unreachable message count and a ten-second idle timeout
+    /// on any topic carrying commit markers or compacted-away offsets.
+    #[test]
+    fn the_fetch_consumer_is_told_about_the_end_of_each_partition() {
+        let config = fetch_consumer_config(&sample_connection(), 1_048_576);
+
+        assert_eq!(
+            config.get("enable.partition.eof").as_deref(),
+            Some("true"),
+            "without partition EOF the poll loop cannot tell 'I have read everything' from \
+             'nothing has arrived yet', and waits out IDLE_TIMEOUT on every fetch of a \
+             transactional or compacted topic — see this property's doc comment"
+        );
+    }
+
+    /// A topic of ordinary small records leaves the queue at its floor, so
+    /// the floor alone decides how much of a large fetch runs before the
+    /// queue threshold starts charging `fetch.queue.backoff.ms` per refill.
+    /// At 1 MB that doubled the time to drain 30,000 small records — see the
+    /// table on the property.
+    #[test]
+    fn the_prefetch_queue_floor_is_the_whole_window_for_small_records() {
+        let config = fetch_consumer_config(&sample_connection(), 1_048_576);
+
+        assert_eq!(
+            config.get("queued.max.messages.kbytes").as_deref(),
+            Some("8192"),
+            "a topic of small records prefetches only as far as this floor, and a low one \
+             makes every refill of a large fetch pay fetch.queue.backoff.ms"
         );
     }
 

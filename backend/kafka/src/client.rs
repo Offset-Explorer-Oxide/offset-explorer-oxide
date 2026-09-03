@@ -15,7 +15,7 @@ use rdkafka::groups::{GroupInfo, GroupMemberInfo};
 use rdkafka::message::{BorrowedMessage, Headers};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 use rdkafka::{ClientConfig, Message};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +28,7 @@ use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, fetch_consumer_config, BrokerSslConfig};
 use crate::messages::{
     budgeted_payload_bytes, byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
-    effective_max_messages_per_partition, newest_first_start_offset, partition_limits,
+    effective_max_messages_per_partition, fetch_shard_count, newest_first_start_offset, partition_limits,
     payload_preview_slice,
 };
 
@@ -950,6 +950,9 @@ impl KafkaClient for RdKafkaClient {
         cancelled: Arc<AtomicBool>,
     ) -> Result<MessageFetchResult, AppError> {
         let config = fetch_consumer_config(connection, max_message_size_bytes);
+        // Identical to `config`; a separate handle only because the closure
+        // below needs one to build each extra shard's consumer from.
+        let shard_config = config.clone();
         // The topic's partition list comes from the **pooled** metadata
         // client, never from this fetch's own consumer — see the metadata
         // call below for why that is worth a second client.
@@ -1197,25 +1200,94 @@ impl KafkaClient for RdKafkaClient {
                     .collect::<Result<_, _>>()?
             };
 
-            let mut assign_tpl = TopicPartitionList::new();
-            for (&partition, &limit) in &limits {
-                if limit > 0 {
-                    let start = start_offsets.get(&partition).copied().unwrap_or(0);
-                    assign_tpl
-                        .add_partition_offset(&topic, partition, Offset::Offset(start))
-                        .change_context(AppError::Kafka)
-                        .attach_printable("failed to build partition assignment")?;
+            let working: Vec<i32> =
+                limits.iter().filter(|(_, &limit)| limit > 0).map(|(&partition, _)| partition).collect();
+
+            // One consumer per shard, polled from this one loop.
+            //
+            // The parallelism being bought here is librdkafka's, not ours:
+            // each consumer instance runs its own thread per broker, and that
+            // thread is where a fetch response is received *and decompressed*,
+            // before any message reaches the queue this loop drains. A single
+            // consumer therefore serialises the decompression of every
+            // partition it owns, which is most of what a browse of a wide
+            // compressed topic spends its time on. See `fetch_shard_count`
+            // for the measurements and for what bounds the count.
+            //
+            // Shard 0 is the consumer already built above for the watermark
+            // walk, so a topic narrow enough for one shard builds nothing
+            // extra and behaves exactly as it did before.
+            let shard_count = fetch_shard_count(working.len(), max_message_size_bytes);
+            let mut shards: Vec<ObservedClient> = Vec::with_capacity(shard_count);
+            // Built concurrently, because building them is the one part of
+            // sharding the user waits for. Creating a consumer is ~6 ms of
+            // librdkafka setup that does not overlap with anything else in
+            // this closure, so seven of them in series put ~45 ms in front of
+            // every fetch — enough to lose the whole benefit on a topic that
+            // was fast to begin with. In parallel it is roughly the cost of
+            // one.
+            //
+            // Each shard keeps its own prefetch queue, so the size
+            // `shard_config` carries is per consumer — `fetch_shard_count` is
+            // what keeps the total of them bounded.
+            if shard_count > 1 {
+                if stopped() {
+                    return Ok(MessageFetchResult::default());
                 }
+                let built: Vec<Result<ObservedClient, AppError>> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = (1..shard_count)
+                        .map(|_| scope.spawn(|| ObservedClient::create(&shard_config)))
+                        .collect();
+                    handles.into_iter().map(|handle| handle.join().expect("shard builder panicked")).collect()
+                });
+                for shard in built {
+                    shards.push(shard?);
+                }
+            }
+            let consumers: Vec<Arc<ObservedConsumer>> = std::iter::once(Arc::clone(&consumer))
+                .chain(shards.iter().map(|shard| Arc::clone(&shard.consumer)))
+                .collect();
+
+            // Dealt round-robin rather than in contiguous blocks: adjacent
+            // partition ids tend to share a leader, so slicing the list into
+            // runs would hand one shard several partitions from one broker
+            // while another shard sat idle.
+            let mut assignments = vec![TopicPartitionList::new(); consumers.len()];
+            for (position, &partition) in working.iter().enumerate() {
+                let start = start_offsets.get(&partition).copied().unwrap_or(0);
+                assignments[position % consumers.len()]
+                    .add_partition_offset(&topic, partition, Offset::Offset(start))
+                    .change_context(AppError::Kafka)
+                    .attach_printable("failed to build partition assignment")?;
             }
             if stopped() {
                 return Ok(MessageFetchResult::default());
             }
-            consumer
-                .assign(&assign_tpl)
-                .change_context(AppError::Kafka)
-                .attach_printable("failed to assign partitions")?;
+            for (shard, assignment) in consumers.iter().zip(&assignments) {
+                if assignment.count() == 0 {
+                    continue;
+                }
+                shard
+                    .assign(assignment)
+                    .change_context(AppError::Kafka)
+                    .attach_printable("failed to assign partitions")?;
+            }
 
             let total_target: i64 = limits.values().sum();
+            // How many assigned partitions still have reading left to do.
+            //
+            // The fetch is finished when every partition is, and *that* is
+            // what ends the poll loop — not `collected.len() == total_target`
+            // on its own. `total_target` comes from `high - low`, which
+            // counts offsets rather than messages: a transaction's commit
+            // marker and a compacted-away record both occupy an offset that
+            // no consumer is ever handed. On such a topic the count is
+            // unreachable and the loop used to sit out its full ten-second
+            // `IDLE_TIMEOUT` on every fetch, having already collected
+            // everything there was. See `finished` below for the three ways
+            // a partition completes.
+            let mut unfinished = limits.values().filter(|&&limit| limit > 0).count();
+            let mut finished: HashSet<i32> = HashSet::with_capacity(unfinished);
             let mut remaining = limits;
             // Reserving up front keeps the repeated grow-and-copy off every
             // ordinary fetch. Bounded rather than reserving `total_target`
@@ -1228,6 +1300,17 @@ impl KafkaClient for RdKafkaClient {
             let mut collected = Vec::with_capacity(total_target.clamp(0, PREALLOCATED_MESSAGES) as usize);
             const POLL_TIMEOUT: Duration = Duration::from_millis(500);
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+            // How long one blocking wait may last. A blocking poll wakes for
+            // *its own* consumer's queue and nothing else, so with several
+            // shards a long wait is latency: the loop can sit on one quiet
+            // shard while another already has messages ready. Sweeping them
+            // often costs a few non-blocking polls per millisecond and is far
+            // cheaper than that. A single shard has nothing to miss and keeps
+            // the full timeout.
+            const SHARDED_POLL_SLICE: Duration = Duration::from_millis(5);
+            let poll_slice =
+                if consumers.len() == 1 { POLL_TIMEOUT } else { SHARDED_POLL_SLICE };
+            let mut next_shard = 0usize;
             let mut idle_elapsed = Duration::ZERO;
             let mut last_poll_error: Option<String> = None;
             // Counted only over payloads this fetch actually keeps — see the
@@ -1235,12 +1318,39 @@ impl KafkaClient for RdKafkaClient {
             let mut payload_bytes_read: u64 = 0;
             let mut stopped_at_byte_budget = false;
 
-            while (collected.len() as i64) < total_target
+            while unfinished > 0
+                && (collected.len() as i64) < total_target
                 && idle_elapsed < IDLE_TIMEOUT
                 && !stopped_at_byte_budget
                 && !cancelled.load(Ordering::Relaxed)
             {
-                match consumer.poll(POLL_TIMEOUT) {
+                // One non-blocking sweep of every shard, then a blocking
+                // wait on the next one in turn if the whole sweep was empty.
+                // Blocking on a single shard for the full `POLL_TIMEOUT`
+                // would let one quiet consumer hold up another that already
+                // has messages queued, so the wait is divided between them —
+                // and with a single shard this is exactly the blocking poll
+                // it has always been.
+                let polled = {
+                    let mut ready = None;
+                    for _ in 0..consumers.len() {
+                        let shard = &consumers[next_shard % consumers.len()];
+                        next_shard = next_shard.wrapping_add(1);
+                        if let Some(message) = shard.poll(Duration::ZERO) {
+                            ready = Some(message);
+                            break;
+                        }
+                    }
+                    match ready {
+                        Some(message) => Some(message),
+                        None => {
+                            let shard = &consumers[next_shard % consumers.len()];
+                            next_shard = next_shard.wrapping_add(1);
+                            shard.poll(poll_slice)
+                        }
+                    }
+                };
+                match polled {
                     Some(Ok(borrowed)) => {
                         idle_elapsed = Duration::ZERO;
                         let partition = borrowed.partition();
@@ -1255,6 +1365,24 @@ impl KafkaClient for RdKafkaClient {
                         };
                         if *budget <= 0 {
                             continue;
+                        }
+                        // Past the end of what the filter asked for. With no
+                        // to-timestamp filter this is the high watermark and
+                        // so never triggers, but a to-timestamp fetch has a
+                        // real end offset part-way down the partition — and
+                        // its budget alone cannot be trusted to stop there,
+                        // for the same reason `total_target` cannot be
+                        // trusted to end the loop: any offset in the range
+                        // that carries no message leaves budget over, and the
+                        // messages that budget then admits are the ones after
+                        // the To time the user set.
+                        if let Some(&end) = end_offsets.get(&partition) {
+                            if borrowed.offset() >= end {
+                                if finished.insert(partition) {
+                                    unfinished -= 1;
+                                }
+                                continue;
+                            }
                         }
                         let payload = borrowed.payload().unwrap_or(&[]);
                         payload_bytes_read += budgeted_payload_bytes(payload.len(), filter.include_payload);
@@ -1283,16 +1411,30 @@ impl KafkaClient for RdKafkaClient {
                         }
                         collected.push(message);
                         *budget -= 1;
+                        if *budget <= 0 && finished.insert(partition) {
+                            unfinished -= 1;
+                        }
                         // After taking the message, never before — see
                         // `byte_budget_reached`.
                         stopped_at_byte_budget = byte_budget_reached(payload_bytes_read, max_total_payload_bytes);
                     }
+                    // Reaching the end of a partition is how a fetch finishes,
+                    // not something that went wrong with it. `enable.partition
+                    // .eof` is set precisely so this arrives (see
+                    // `fetch_consumer_config`), so it neither counts towards
+                    // the idle timeout nor becomes a `poll_error` the Data tab
+                    // would show the user as a failed read.
+                    Some(Err(KafkaError::PartitionEOF(partition))) => {
+                        if remaining.contains_key(&partition) && finished.insert(partition) {
+                            unfinished -= 1;
+                        }
+                    }
                     Some(Err(err)) => {
-                        idle_elapsed += POLL_TIMEOUT;
+                        idle_elapsed += poll_slice;
                         last_poll_error = Some(describe_poll_error(&err));
                     }
                     None => {
-                        idle_elapsed += POLL_TIMEOUT;
+                        idle_elapsed += poll_slice;
                     }
                 }
             }
@@ -1327,7 +1469,9 @@ impl KafkaClient for RdKafkaClient {
             // close inline. They are not worth the same treatment: they run
             // when the user has already given up on this fetch, so there is
             // no latency there to save.
-            let teardown = (client, consumer);
+            // Every shard, not just the first: each one carries the same
+            // ~99 ms group-machinery close described above.
+            let teardown = (client, consumer, consumers, shards);
             runtime.spawn_blocking(move || drop(teardown));
 
             Ok(result)
