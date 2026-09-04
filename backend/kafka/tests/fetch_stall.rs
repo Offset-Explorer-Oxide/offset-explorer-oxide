@@ -86,6 +86,7 @@ fn browse_filter() -> MessageFilter {
         from_timestamp_ms: None,
         to_timestamp_ms: None,
         offset: None,
+        key: None,
         include_payload: true,
         max_payload_preview_bytes: Some(4096),
     }
@@ -99,6 +100,7 @@ fn filter(include_payload: bool) -> MessageFilter {
         from_timestamp_ms: None,
         to_timestamp_ms: None,
         offset: None,
+        key: None,
         include_payload,
         max_payload_preview_bytes: Some(4096),
     }
@@ -119,6 +121,7 @@ async fn fetch(include_payload: bool) -> Option<(Duration, usize)> {
             1_048_576,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed");
@@ -207,6 +210,7 @@ async fn repeated_small_browses_do_not_pay_a_coordinator_query_each() {
                 1_048_576,
                 None,
                 Arc::new(AtomicBool::new(false)),
+                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await
             .expect("fetch failed");

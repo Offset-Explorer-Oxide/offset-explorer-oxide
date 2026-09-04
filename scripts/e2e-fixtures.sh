@@ -107,6 +107,39 @@ printf 'trace-id:abc123,content-type:application/json\tkey-1:body-1\ntrace-id:de
   | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-headers \
       --property parse.headers=true --property parse.key=true --property key.separator=: >/dev/null 2>&1
 
+# --- cluster_reads.rs key filter -------------------------------------------
+# One key deliberately repeated, because a key filter's contract is "every
+# message with this key in the range", not "the first one". Single-partition
+# so the expected offsets are stable, and the `dup` records are interleaved
+# with others so a filter that ignored the key would return the wrong set.
+echo "==> key-filter fixture (e2e-keys)"
+topic e2e-keys 1
+printf 'dup:v1\nother:x1\ndup:v2\nother:x2\ndup:v3\n' \
+  | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-keys \
+      --property parse.key=true --property key.separator=: >/dev/null 2>&1
+
+# --- key_filter_perf.rs ----------------------------------------------------
+# 200,000 records, deliberately more than one `INITIAL_SCAN_SLICE` (50,000), so
+# a capped key search that stops after its first backwards slice is
+# distinguishable from one that read the whole topic. The ten `needle` records
+# sit at the very end, which is the case the cap exists to make fast.
+#
+# Skipped when the topic already holds its records: producing 200,000 of them
+# takes a while, and re-running would double the count and break the tests'
+# exact `scanned` assertions.
+echo "==> key-search perf fixture (perf-keys, 200k records)"
+topic perf-keys 1
+PERF_COUNT=$(kexec "$K/kafka-get-offsets.sh" --bootstrap-server "$BOOTSTRAP" --topic perf-keys 2>/dev/null \
+  | awk -F: '{print $3}' | head -1)
+if [ "${PERF_COUNT:-0}" -ne 200000 ]; then
+  kexec sh -c 'seq 1 199990 | sed "s/^/filler-:value-/" > /tmp/perfkeys.txt;
+    for i in $(seq 1 10); do echo "needle:hit-$i" >> /tmp/perfkeys.txt; done'
+  kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic perf-keys \
+    --property parse.key=true --property key.separator=: < /tmp/perfkeys.txt" >/dev/null 2>&1
+else
+  echo "    perf-keys already holds 200,000 records, skipping"
+fi
+
 # Two consumer groups, because the lag path behaves differently for each:
 # `e2e-group` is left idle (Kafka reports it `Empty`, members array NULL) and
 # `e2e-live` keeps a consumer running so its members carry the partition

@@ -18,6 +18,16 @@ export interface FilterFormState {
    * partition's watermarks rather than rejected.
    */
   offset: string;
+  /**
+   * An exact message key.
+   *
+   * When set, the backend ignores `maxMessagesPerPartition` and scans the whole
+   * resolved date range instead, keeping only messages whose key is exactly
+   * this text. `maxTotalMessages` stays in force but changes meaning to a cap
+   * on *matches*, newest first — which is why it is the one cap left enabled in
+   * the UI while this is non-empty.
+   */
+  key: string;
   /** The "Fetch message payload" checkbox below Fetch. */
   includePayload: boolean;
 }
@@ -48,6 +58,7 @@ export function emptyFilterForm(): FilterFormState {
     fromDate: "",
     toDate: "",
     offset: "",
+    key: "",
     includePayload: false,
   };
 }
@@ -113,15 +124,36 @@ export function validateMaxMessagesPerPartition(form: FilterFormState): string |
   return null;
 }
 
+/**
+ * Local midnight this morning, as epoch milliseconds.
+ *
+ * The default bound for a key search: it reads every message in its range and
+ * keeps only the matches, so an unbounded one would scan the entire topic.
+ * Local rather than UTC for the same reason every other timestamp in the app
+ * is (see `parseDate` and `formatLocalTimestamp`) — "today" has to mean the
+ * user's today, or the grid shows rows from before the boundary they asked
+ * for.
+ */
+export function startOfTodayMs(): number {
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  return midnight.getTime();
+}
+
 /** Converts the filter form into the wire-format MessageFilter — a blank field becomes `null` (no filter) for every field except `maxMessagesPerPartition`, which `validateMaxMessagesPerPartition` requires to always be set before this is called from the Fetch flow. */
 export function toMessageFilter(form: FilterFormState): MessageFilter {
   return {
     partitions: parsePartitions(form.partitions),
     maxMessagesPerPartition: parsePositiveInt(form.maxMessagesPerPartition),
     maxTotalMessages: parsePositiveInt(form.maxTotalMessages),
-    fromTimestampMs: parseDate(form.fromDate),
+    // A key search with no From would read the whole topic. `DataTab` fills the
+    // visible From input at the same moment, so the field and the value on the
+    // wire never disagree — this is the backstop for a form restored from
+    // storage with a key but no date.
+    fromTimestampMs: parseDate(form.fromDate) ?? (form.key.trim() ? startOfTodayMs() : null),
     toTimestampMs: parseDate(form.toDate),
     offset: parsePositiveInt(form.offset),
+    key: form.key.trim() || null,
     includePayload: form.includePayload,
     // Never the whole payload — that is what killed the webview — but enough
     // of one that opening a message doesn't have to go back to the broker

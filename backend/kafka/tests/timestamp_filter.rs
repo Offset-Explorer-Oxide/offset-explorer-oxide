@@ -72,6 +72,7 @@ fn filter(from_timestamp_ms: Option<i64>, to_timestamp_ms: Option<i64>) -> Messa
         from_timestamp_ms,
         to_timestamp_ms,
         offset: None,
+        key: None,
         include_payload: false,
         max_payload_preview_bytes: None,
     }
@@ -88,6 +89,7 @@ async fn fetch(client: &RdKafkaClient, connection: &Connection, topic: &str, fil
             1024 * 1024,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed")
