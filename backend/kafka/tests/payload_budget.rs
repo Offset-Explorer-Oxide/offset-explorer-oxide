@@ -78,7 +78,6 @@ fn filter(include_payload: bool) -> MessageFilter {
         from_timestamp_ms: None,
         to_timestamp_ms: None,
         offset: None,
-        key: None,
         include_payload,
         max_payload_preview_bytes: None,
     }
@@ -110,7 +109,6 @@ async fn the_byte_budget_charges_only_for_payloads_the_fetch_keeps() {
                     12 * 1024 * 1024,
                     Some(BUDGET_BYTES),
                     Arc::new(AtomicBool::new(false)),
-                    Arc::new(kafkaoxide_core::ScanProgress::default()),
                 )
                 .await
                 .expect("fetch failed")

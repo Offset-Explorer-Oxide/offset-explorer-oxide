@@ -28,8 +28,8 @@ use crate::assignment::decode_consumer_protocol_assignment;
 use crate::config::{build_client_config, client_config, fetch_consumer_config, BrokerSslConfig};
 use crate::messages::{
     budgeted_payload_bytes, byte_budget_reached, clamp_offset, combined_start_offset, distribute_total_budget,
-    fetch_shard_count, key_filter_bytes, key_matches, newest_first_start_offset, newest_matches, next_slice_size,
-    partition_limits, payload_preview_slice, receding_window, scan_window_per_partition, INITIAL_SCAN_SLICE,
+    effective_max_messages_per_partition, fetch_shard_count, newest_first_start_offset, partition_limits,
+    payload_preview_slice,
 };
 
 const TCP_PING_TIMEOUT: Duration = Duration::from_secs(3);
@@ -251,12 +251,6 @@ pub trait KafkaClient: Send + Sync {
     /// message count — see `byte_budget_reached`. `None` leaves it unbounded.
     /// It counts only payloads the fetch keeps, so a `filter` with
     /// `include_payload` off is never bounded by it.
-    ///
-    /// `progress` is written once per polled message so a caller can show how
-    /// far a fetch has got. It matters for a `filter.key` search and almost
-    /// nowhere else: such a fetch reads its whole range and keeps only the
-    /// matches, so it can run for a long time with no rows to stream and no
-    /// other sign that it is working.
     #[allow(clippy::too_many_arguments)]
     async fn fetch_messages(
         &self,
@@ -268,7 +262,6 @@ pub trait KafkaClient: Send + Sync {
         max_message_size_bytes: u32,
         max_total_payload_bytes: Option<u64>,
         cancelled: Arc<AtomicBool>,
-        progress: Arc<kafkaoxide_core::ScanProgress>,
     ) -> Result<MessageFetchResult, AppError>;
 
     /// Backs the topic detail panel's Partitions tab: id, leader, replicas,
@@ -955,7 +948,6 @@ impl KafkaClient for RdKafkaClient {
         max_message_size_bytes: u32,
         max_total_payload_bytes: Option<u64>,
         cancelled: Arc<AtomicBool>,
-        progress: Arc<kafkaoxide_core::ScanProgress>,
     ) -> Result<MessageFetchResult, AppError> {
         let config = fetch_consumer_config(connection, max_message_size_bytes);
         // Identical to `config`; a separate handle only because the closure
@@ -967,14 +959,6 @@ impl KafkaClient for RdKafkaClient {
         let metadata_client = self.metadata_client(connection)?;
         let topic = topic.to_string();
         let filter = filter.clone();
-        // Encoded once, not per message: an exact byte filter is only cheap if
-        // testing it against a message is a single comparison.
-        let wanted_key = key_filter_bytes(&filter.key);
-        // `max_total_messages` means something different for a key search: not
-        // "how many messages to read" but "how many *matches* to return,
-        // newest first". `None` here — no key, or no cap — keeps the single
-        // forward pass every other fetch has always been.
-        let match_cap: Option<u32> = wanted_key.as_ref().and(filter.max_total_messages.as_ref()).copied();
         // Captured here rather than reached for inside the blocking closure,
         // so the deferred teardown at the end of it cannot depend on a
         // runtime context being present on a blocking-pool thread.
@@ -1171,7 +1155,6 @@ impl KafkaClient for RdKafkaClient {
                 .values()
                 .map(|&available| available.max(0) as u64)
                 .sum();
-            progress.set_total(total_matching);
 
             // Two independent limits, both honoured. "Max messages per
             // partition" is a window — never read further back than this in
@@ -1188,18 +1171,9 @@ impl KafkaClient for RdKafkaClient {
             let windows = partition_limits(
                 &filter_start_offsets,
                 &end_offsets,
-                scan_window_per_partition(filter.max_messages_per_partition, wanted_key.is_some()),
+                Some(effective_max_messages_per_partition(filter.max_messages_per_partition)),
             );
-            // A key search has no *read* budget to distribute. `max_total_messages`
-            // still applies to it, but as a cap on matches rather than on
-            // messages read, and spreading it over the partitions would stop
-            // each one five messages into a range of millions and call that
-            // "not found".
-            let limits = if wanted_key.is_some() {
-                windows
-            } else {
-                distribute_total_budget(&windows, filter.max_total_messages)
-            };
+            let limits = distribute_total_budget(&windows, filter.max_total_messages);
 
             // The start offsets to actually assign. When the filter pinned a
             // start, reading begins there. Otherwise the fetch is
@@ -1243,11 +1217,7 @@ impl KafkaClient for RdKafkaClient {
             // Shard 0 is the consumer already built above for the watermark
             // walk, so a topic narrow enough for one shard builds nothing
             // extra and behaves exactly as it did before.
-            let shard_count = fetch_shard_count(
-                working.len(),
-                max_message_size_bytes,
-                std::thread::available_parallelism().map_or(1, |cores| cores.get()),
-            );
+            let shard_count = fetch_shard_count(working.len(), max_message_size_bytes);
             let mut shards: Vec<ObservedClient> = Vec::with_capacity(shard_count);
             // Built concurrently, because building them is the one part of
             // sharding the user waits for. Creating a consumer is ~6 ms of
@@ -1278,15 +1248,56 @@ impl KafkaClient for RdKafkaClient {
                 .chain(shards.iter().map(|shard| Arc::clone(&shard.consumer)))
                 .collect();
 
+            // Dealt round-robin rather than in contiguous blocks: adjacent
+            // partition ids tend to share a leader, so slicing the list into
+            // runs would hand one shard several partitions from one broker
+            // while another shard sat idle.
+            let mut assignments = vec![TopicPartitionList::new(); consumers.len()];
+            for (position, &partition) in working.iter().enumerate() {
+                let start = start_offsets.get(&partition).copied().unwrap_or(0);
+                assignments[position % consumers.len()]
+                    .add_partition_offset(&topic, partition, Offset::Offset(start))
+                    .change_context(AppError::Kafka)
+                    .attach_printable("failed to build partition assignment")?;
+            }
+            if stopped() {
+                return Ok(MessageFetchResult::default());
+            }
+            for (shard, assignment) in consumers.iter().zip(&assignments) {
+                if assignment.count() == 0 {
+                    continue;
+                }
+                shard
+                    .assign(assignment)
+                    .change_context(AppError::Kafka)
+                    .attach_printable("failed to assign partitions")?;
+            }
+
+            let total_target: i64 = limits.values().sum();
+            // How many assigned partitions still have reading left to do.
+            //
+            // The fetch is finished when every partition is, and *that* is
+            // what ends the poll loop — not `collected.len() == total_target`
+            // on its own. `total_target` comes from `high - low`, which
+            // counts offsets rather than messages: a transaction's commit
+            // marker and a compacted-away record both occupy an offset that
+            // no consumer is ever handed. On such a topic the count is
+            // unreachable and the loop used to sit out its full ten-second
+            // `IDLE_TIMEOUT` on every fetch, having already collected
+            // everything there was. See `finished` below for the three ways
+            // a partition completes.
+            let mut unfinished = limits.values().filter(|&&limit| limit > 0).count();
+            let mut finished: HashSet<i32> = HashSet::with_capacity(unfinished);
+            let mut remaining = limits;
             // Reserving up front keeps the repeated grow-and-copy off every
-            // ordinary fetch. Bounded rather than reserving the whole target
+            // ordinary fetch. Bounded rather than reserving `total_target`
             // outright: that figure comes from the user's own filter (per
             // partition cap x partitions, or an explicit total budget), so
             // an extreme value would otherwise reserve that many message
             // slots before a single message had been read. Beyond the bound
-            // the vector still grows normally. A key search reserves nothing:
-            // it is expected to keep almost none of what it reads.
+            // the vector still grows normally.
             const PREALLOCATED_MESSAGES: i64 = 8192;
+            let mut collected = Vec::with_capacity(total_target.clamp(0, PREALLOCATED_MESSAGES) as usize);
             const POLL_TIMEOUT: Duration = Duration::from_millis(500);
             const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
             // How long one blocking wait may last. A blocking poll wakes for
@@ -1299,324 +1310,138 @@ impl KafkaClient for RdKafkaClient {
             const SHARDED_POLL_SLICE: Duration = Duration::from_millis(5);
             let poll_slice =
                 if consumers.len() == 1 { POLL_TIMEOUT } else { SHARDED_POLL_SLICE };
-
-            // Everything below this point is accumulated across every round of
-            // the walk. An ordinary fetch — and an uncapped key search — has
-            // exactly one round, and these are then the same single-pass
-            // variables they have always been.
-            let mut collected: Vec<TopicMessage> = Vec::new();
-            if wanted_key.is_none() {
-                collected.reserve(limits.values().sum::<i64>().clamp(0, PREALLOCATED_MESSAGES) as usize);
-            }
-            // Every message this fetch looked at, matching or not.
-            let mut scanned: u64 = 0;
+            let mut next_shard = 0usize;
+            let mut idle_elapsed = Duration::ZERO;
             let mut last_poll_error: Option<String> = None;
             // Counted only over payloads this fetch actually keeps — see the
             // `include_payload` guard below.
             let mut payload_bytes_read: u64 = 0;
             let mut stopped_at_byte_budget = false;
-            // Where the next round's window ends, per partition. The first
-            // round ends at the end of the range the filter resolved to.
-            let mut round_ends: BTreeMap<i32, i64> = end_offsets.clone();
-            let mut slice = INITIAL_SCAN_SLICE;
 
-            // The walk. `max_total_messages` on a key search means "the newest
-            // N matches", and a consumer can only read forward — so reading
-            // forward from the start of the range would find the *oldest* N.
-            // Instead the newest slice of the range is read first, and the
-            // window steps backwards (doubling each time) only if that slice
-            // did not yield enough matches. A key near the end of the range —
-            // the common case — costs exactly one round.
-            'walk: loop {
-                // This round's window per partition. Without a match cap there
-                // is one round over the offsets the filter already resolved,
-                // which is precisely the fetch this has always been.
-                let (round_starts, round_ends_now): (BTreeMap<i32, i64>, BTreeMap<i32, i64>) =
-                    if match_cap.is_some() {
-                        let mut starts = BTreeMap::new();
-                        let mut ends = BTreeMap::new();
-                        for (&partition, &range_start) in &start_offsets {
-                            let round_end = round_ends.get(&partition).copied().unwrap_or(range_start);
-                            if let Some((window_start, window_end)) =
-                                receding_window(range_start, round_end, slice)
-                            {
-                                starts.insert(partition, window_start);
-                                ends.insert(partition, window_end);
-                            }
+            while unfinished > 0
+                && (collected.len() as i64) < total_target
+                && idle_elapsed < IDLE_TIMEOUT
+                && !stopped_at_byte_budget
+                && !cancelled.load(Ordering::Relaxed)
+            {
+                // One non-blocking sweep of every shard, then a blocking
+                // wait on the next one in turn if the whole sweep was empty.
+                // Blocking on a single shard for the full `POLL_TIMEOUT`
+                // would let one quiet consumer hold up another that already
+                // has messages queued, so the wait is divided between them —
+                // and with a single shard this is exactly the blocking poll
+                // it has always been.
+                let polled = {
+                    let mut ready = None;
+                    for _ in 0..consumers.len() {
+                        let shard = &consumers[next_shard % consumers.len()];
+                        next_shard = next_shard.wrapping_add(1);
+                        if let Some(message) = shard.poll(Duration::ZERO) {
+                            ready = Some(message);
+                            break;
                         }
-                        (starts, ends)
-                    } else {
-                        (start_offsets.clone(), end_offsets.clone())
-                    };
-
-                // Every partition has been walked back to the range start.
-                if round_starts.is_empty() {
-                    break 'walk;
-                }
-
-                // Recomputed per round for the walk, because a round's window
-                // is not the whole range. Without a cap the limits computed
-                // once above still stand — they carry the per-partition cap
-                // and the distributed total budget, neither of which can be
-                // rebuilt from the window alone.
-                let round_limits = if match_cap.is_some() {
-                    partition_limits(&round_starts, &round_ends_now, None)
-                } else {
-                    limits.clone()
-                };
-
-                // Dealt round-robin rather than in contiguous blocks: adjacent
-                // partition ids tend to share a leader, so slicing the list into
-                // runs would hand one shard several partitions from one broker
-                // while another shard sat idle.
-                let round_partitions: Vec<i32> =
-                    working.iter().copied().filter(|p| round_starts.contains_key(p)).collect();
-                let mut assignments = vec![TopicPartitionList::new(); consumers.len()];
-                for (position, &partition) in round_partitions.iter().enumerate() {
-                    let start = round_starts.get(&partition).copied().unwrap_or(0);
-                    assignments[position % consumers.len()]
-                        .add_partition_offset(&topic, partition, Offset::Offset(start))
-                        .change_context(AppError::Kafka)
-                        .attach_printable("failed to build partition assignment")?;
-                }
-                if stopped() {
-                    return Ok(MessageFetchResult::default());
-                }
-                for (shard, assignment) in consumers.iter().zip(&assignments) {
-                    if assignment.count() == 0 {
-                        continue;
                     }
-                    // Unassigned first, deliberately. librdkafka treats a
-                    // partition present in both the old and the new assignment
-                    // as unchanged and leaves its fetch position alone — so on
-                    // the second round of a walk, re-assigning the same
-                    // partition at an earlier offset would silently keep
-                    // reading forward from where the previous round stopped.
-                    // Clearing the assignment first makes each round a real
-                    // reposition, and bumps librdkafka's fetch version so
-                    // anything still queued from the previous window is
-                    // discarded rather than delivered into this one.
-                    if match_cap.is_some() {
-                        shard
-                            .unassign()
-                            .change_context(AppError::Kafka)
-                            .attach_printable("failed to clear the previous round's assignment")?;
-                    }
-                    shard
-                        .assign(assignment)
-                        .change_context(AppError::Kafka)
-                        .attach_printable("failed to assign partitions")?;
-                }
-
-                let total_target: i64 = round_limits.values().sum();
-                // How many assigned partitions still have reading left to do.
-                //
-                // The round is finished when every partition is, and *that* is
-                // what ends the poll loop — not `collected.len() == total_target`
-                // on its own. `total_target` comes from `high - low`, which
-                // counts offsets rather than messages: a transaction's commit
-                // marker and a compacted-away record both occupy an offset that
-                // no consumer is ever handed. On such a topic the count is
-                // unreachable and the loop used to sit out its full ten-second
-                // `IDLE_TIMEOUT` on every fetch, having already collected
-                // everything there was. See `finished` below for the three ways
-                // a partition completes.
-                let mut unfinished = round_limits.values().filter(|&&limit| limit > 0).count();
-                let mut finished: HashSet<i32> = HashSet::with_capacity(unfinished);
-                let mut remaining = round_limits;
-                // Counted from the start of this round, so a walk's earlier
-                // rounds do not make a later one look already satisfied.
-                let collected_before_round = collected.len();
-                let mut next_shard = 0usize;
-                let mut idle_elapsed = Duration::ZERO;
-
-                while unfinished > 0
-                    && ((collected.len() - collected_before_round) as i64) < total_target
-                    && idle_elapsed < IDLE_TIMEOUT
-                    && !stopped_at_byte_budget
-                    && !cancelled.load(Ordering::Relaxed)
-                {
-                    // One non-blocking sweep of every shard, then a blocking
-                    // wait on the next one in turn if the whole sweep was empty.
-                    // Blocking on a single shard for the full `POLL_TIMEOUT`
-                    // would let one quiet consumer hold up another that already
-                    // has messages queued, so the wait is divided between them —
-                    // and with a single shard this is exactly the blocking poll
-                    // it has always been.
-                    let polled = {
-                        let mut ready = None;
-                        for _ in 0..consumers.len() {
+                    match ready {
+                        Some(message) => Some(message),
+                        None => {
                             let shard = &consumers[next_shard % consumers.len()];
                             next_shard = next_shard.wrapping_add(1);
-                            if let Some(message) = shard.poll(Duration::ZERO) {
-                                ready = Some(message);
-                                break;
-                            }
-                        }
-                        match ready {
-                            Some(message) => Some(message),
-                            None => {
-                                let shard = &consumers[next_shard % consumers.len()];
-                                next_shard = next_shard.wrapping_add(1);
-                                shard.poll(poll_slice)
-                            }
-                        }
-                    };
-                    match polled {
-                        Some(Ok(borrowed)) => {
-                            idle_elapsed = Duration::ZERO;
-                            let partition = borrowed.partition();
-                            // One map lookup per message rather than two (a
-                            // `get` to read the budget, then an `insert` to
-                            // write it back): the same borrow that reads it
-                            // decrements it in place below. A partition with no
-                            // entry is one this fetch never assigned, and is
-                            // skipped exactly as an exhausted budget is.
-                            let Some(budget) = remaining.get_mut(&partition) else {
-                                continue;
-                            };
-                            if *budget <= 0 {
-                                continue;
-                            }
-                            // Past the end of what the filter asked for. With no
-                            // to-timestamp filter this is the high watermark and
-                            // so never triggers, but a to-timestamp fetch has a
-                            // real end offset part-way down the partition — and
-                            // its budget alone cannot be trusted to stop there,
-                            // for the same reason `total_target` cannot be
-                            // trusted to end the loop: any offset in the range
-                            // that carries no message leaves budget over, and the
-                            // messages that budget then admits are the ones after
-                            // the To time the user set.
-                            if let Some(&end) = round_ends_now.get(&partition) {
-                                if borrowed.offset() >= end {
-                                    if finished.insert(partition) {
-                                        unfinished -= 1;
-                                    }
-                                    continue;
-                                }
-                            }
-                            // Counted here, past every reason this message would
-                            // have been skipped anyway: `scanned` is what the user
-                            // is told was examined, so it must mean messages this
-                            // fetch actually looked at.
-                            scanned += 1;
-                            progress.set_scanned(scanned);
-                            // Before `borrowed.payload()`, deliberately. This is
-                            // the whole economics of a key search: a non-match
-                            // costs one byte comparison and is never encoded,
-                            // never sent down the stream, never charged to the
-                            // byte budget, and never held by the webview. Moving
-                            // this below the payload read would turn a scan of a
-                            // topic of 3 MB records back into the multi-gigabyte
-                            // transfer that killed the renderer in v0.42.0.
-                            if !key_matches(borrowed.key(), wanted_key.as_deref()) {
-                                continue;
-                            }
-                            let payload = borrowed.payload().unwrap_or(&[]);
-                            payload_bytes_read += budgeted_payload_bytes(payload.len(), filter.include_payload);
-                            let message = TopicMessage {
-                                partition,
-                                offset: borrowed.offset(),
-                                timestamp_ms: borrowed.timestamp().to_millis(),
-                                key_base64: borrowed.key().map(|k| BASE64.encode(k)),
-                                // Only ever the slice the caller asked for. This
-                                // is the difference between a 1,000-row fetch of
-                                // 3 MB records costing a few MB of base64 and
-                                // costing ~4 GB of it — twice over, once streamed
-                                // and once in this result.
-                                payload_base64: filter
-                                    .include_payload
-                                    .then(|| BASE64.encode(payload_preview_slice(payload, filter.max_payload_preview_bytes))),
-                                // Sent whether or not the payload itself is,
-                                // so a row can report a message's real size and
-                                // the viewer can tell a cut preview from a whole
-                                // payload that happened to be short.
-                                payload_size_bytes: borrowed.payload().map(|p| p.len() as u64),
-                                headers: extract_headers(&borrowed),
-                            };
-                            // A row found in round 1 can be pushed out of the
-                            // newest-N by a later round, and a grid that paints
-                            // six rows and then drops one reads as a bug. A
-                            // capped search is bounded by design, so it returns
-                            // its matches whole instead of streaming them. The
-                            // result already carries "whatever the stream did
-                            // not deliver", so the frontend needs no change —
-                            // and the progress line still moves, because the
-                            // heartbeat batches carrying it are emitted with or
-                            // without rows.
-                            if match_cap.is_none() {
-                                if let Some(sender) = &on_message {
-                                    let _ = sender.send(message.clone());
-                                }
-                            }
-                            collected.push(message);
-                            *budget -= 1;
-                            if *budget <= 0 && finished.insert(partition) {
-                                unfinished -= 1;
-                            }
-                            // After taking the message, never before — see
-                            // `byte_budget_reached`.
-                            stopped_at_byte_budget = byte_budget_reached(payload_bytes_read, max_total_payload_bytes);
-                        }
-                        // Reaching the end of a partition is how a fetch finishes,
-                        // not something that went wrong with it. `enable.partition
-                        // .eof` is set precisely so this arrives (see
-                        // `fetch_consumer_config`), so it neither counts towards
-                        // the idle timeout nor becomes a `poll_error` the Data tab
-                        // would show the user as a failed read.
-                        Some(Err(KafkaError::PartitionEOF(partition))) => {
-                            if remaining.contains_key(&partition) && finished.insert(partition) {
-                                unfinished -= 1;
-                            }
-                        }
-                        Some(Err(err)) => {
-                            idle_elapsed += poll_slice;
-                            last_poll_error = Some(describe_poll_error(&err));
-                        }
-                        None => {
-                            idle_elapsed += poll_slice;
+                            shard.poll(poll_slice)
                         }
                     }
+                };
+                match polled {
+                    Some(Ok(borrowed)) => {
+                        idle_elapsed = Duration::ZERO;
+                        let partition = borrowed.partition();
+                        // One map lookup per message rather than two (a
+                        // `get` to read the budget, then an `insert` to
+                        // write it back): the same borrow that reads it
+                        // decrements it in place below. A partition with no
+                        // entry is one this fetch never assigned, and is
+                        // skipped exactly as an exhausted budget is.
+                        let Some(budget) = remaining.get_mut(&partition) else {
+                            continue;
+                        };
+                        if *budget <= 0 {
+                            continue;
+                        }
+                        // Past the end of what the filter asked for. With no
+                        // to-timestamp filter this is the high watermark and
+                        // so never triggers, but a to-timestamp fetch has a
+                        // real end offset part-way down the partition — and
+                        // its budget alone cannot be trusted to stop there,
+                        // for the same reason `total_target` cannot be
+                        // trusted to end the loop: any offset in the range
+                        // that carries no message leaves budget over, and the
+                        // messages that budget then admits are the ones after
+                        // the To time the user set.
+                        if let Some(&end) = end_offsets.get(&partition) {
+                            if borrowed.offset() >= end {
+                                if finished.insert(partition) {
+                                    unfinished -= 1;
+                                }
+                                continue;
+                            }
+                        }
+                        let payload = borrowed.payload().unwrap_or(&[]);
+                        payload_bytes_read += budgeted_payload_bytes(payload.len(), filter.include_payload);
+                        let message = TopicMessage {
+                            partition,
+                            offset: borrowed.offset(),
+                            timestamp_ms: borrowed.timestamp().to_millis(),
+                            key_base64: borrowed.key().map(|k| BASE64.encode(k)),
+                            // Only ever the slice the caller asked for. This
+                            // is the difference between a 1,000-row fetch of
+                            // 3 MB records costing a few MB of base64 and
+                            // costing ~4 GB of it — twice over, once streamed
+                            // and once in this result.
+                            payload_base64: filter
+                                .include_payload
+                                .then(|| BASE64.encode(payload_preview_slice(payload, filter.max_payload_preview_bytes))),
+                            // Sent whether or not the payload itself is,
+                            // so a row can report a message's real size and
+                            // the viewer can tell a cut preview from a whole
+                            // payload that happened to be short.
+                            payload_size_bytes: borrowed.payload().map(|p| p.len() as u64),
+                            headers: extract_headers(&borrowed),
+                        };
+                        if let Some(sender) = &on_message {
+                            let _ = sender.send(message.clone());
+                        }
+                        collected.push(message);
+                        *budget -= 1;
+                        if *budget <= 0 && finished.insert(partition) {
+                            unfinished -= 1;
+                        }
+                        // After taking the message, never before — see
+                        // `byte_budget_reached`.
+                        stopped_at_byte_budget = byte_budget_reached(payload_bytes_read, max_total_payload_bytes);
+                    }
+                    // Reaching the end of a partition is how a fetch finishes,
+                    // not something that went wrong with it. `enable.partition
+                    // .eof` is set precisely so this arrives (see
+                    // `fetch_consumer_config`), so it neither counts towards
+                    // the idle timeout nor becomes a `poll_error` the Data tab
+                    // would show the user as a failed read.
+                    Some(Err(KafkaError::PartitionEOF(partition))) => {
+                        if remaining.contains_key(&partition) && finished.insert(partition) {
+                            unfinished -= 1;
+                        }
+                    }
+                    Some(Err(err)) => {
+                        idle_elapsed += poll_slice;
+                        last_poll_error = Some(describe_poll_error(&err));
+                    }
+                    None => {
+                        idle_elapsed += poll_slice;
+                    }
                 }
-
-                // An uncapped fetch is a single pass, exactly as before.
-                let Some(cap) = match_cap else { break 'walk };
-                // Enough matches in hand. The newest are necessarily among
-                // them: rounds move strictly backwards, so everything still
-                // unread is older than everything already collected.
-                if collected.len() >= cap as usize {
-                    break 'walk;
-                }
-                // Checked between rounds as well as inside the poll loop, so a
-                // Stop pressed mid-walk never has to wait out a whole slice.
-                if stopped() || stopped_at_byte_budget {
-                    break 'walk;
-                }
-                // Step back: this round's start is the next round's end.
-                round_ends = round_starts;
-                slice = next_slice_size(slice);
             }
 
             let result = MessageFetchResult {
-                // Sorted and cut here rather than in the loop: a match found in
-                // round 1 is newer than one found in round 2, but *within* the
-                // accumulated set the ordering across partitions is only
-                // knowable by timestamp. A round that overshoots the cap (five
-                // matches in a slice when two were asked for) is normal — the
-                // slice is a read window, not a result window.
-                //
-                // Only when a cap is actually set. `newest_matches` reorders as
-                // well as truncates, and every other fetch returns its messages
-                // in the order they were polled — reordering those would change
-                // what the Data tab shows for every browse in the app, not just
-                // for a key search.
-                messages: match match_cap {
-                    Some(_) => newest_matches(collected, match_cap),
-                    None => collected,
-                },
+                messages: collected,
                 total_matching,
-                scanned,
                 poll_error: last_poll_error,
                 stopped_at_byte_budget,
                 payload_bytes_read,
@@ -2654,7 +2479,6 @@ mod tests {
                 TEST_MAX_MESSAGE_SIZE_BYTES,
                 None,
                 Arc::new(AtomicBool::new(true)),
-                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await;
 
@@ -2676,7 +2500,6 @@ mod tests {
                 TEST_MAX_MESSAGE_SIZE_BYTES,
                 None,
                 Arc::new(AtomicBool::new(false)),
-                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await;
         assert!(result.is_err());
@@ -2701,7 +2524,6 @@ mod tests {
                 TEST_MAX_MESSAGE_SIZE_BYTES,
                 None,
                 Arc::new(AtomicBool::new(false)),
-                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await
             .expect_err("expected a metadata-fetch failure against a closed port");
@@ -2732,7 +2554,6 @@ mod tests {
                 TEST_MAX_MESSAGE_SIZE_BYTES,
                 None,
                 Arc::new(AtomicBool::new(false)),
-                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await;
         assert!(result.is_err());

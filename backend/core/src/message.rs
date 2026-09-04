@@ -18,23 +18,6 @@ pub struct MessageFilter {
     /// partition's watermark range rather than erroring on a stale/
     /// out-of-range value.
     pub offset: Option<i64>,
-    /// An exact message-key filter, as typed into the Data tab's Key field.
-    ///
-    /// Kafka has no key index — the Fetch API is offset-ranged only — so this
-    /// is a *scan*: `fetch_messages` reads the range the other filters resolve
-    /// to and keeps only the messages whose key is exactly these bytes. The
-    /// comparison is made before the message's payload is touched, so a
-    /// non-match costs one byte comparison and nothing else.
-    ///
-    /// When this is set, `max_messages_per_partition` is ignored — the
-    /// resolved From/To offset range is the bound instead — while
-    /// `max_total_messages` changes meaning from "messages to read" to
-    /// "*matches* to return, newest first", and the fetch walks backwards in
-    /// slices until it has that many. Blank, it returns every match in the
-    /// range. See `scan_window_per_partition` and `receding_window`.
-    ///
-    /// Blank or whitespace-only is treated as absent (`key_filter_bytes`).
-    pub key: Option<String>,
     /// The Data tab's "Load message payload" checkbox — when false
     /// (the default), `TopicMessage::payload_base64` comes back `None` for
     /// every row, so a metadata-only browse doesn't pay for encoding/
@@ -101,16 +84,6 @@ pub struct MessageHeader {
 pub struct MessagesBatchEvent {
     pub request_id: String,
     pub messages: Vec<TopicMessage>,
-    /// How many messages the fetch has examined so far, matching or not, and
-    /// how many lie in its whole range.
-    ///
-    /// Carried on the batch rather than sent as an event of its own because
-    /// the Data tab wants them together: the rows and the progress line update
-    /// on the same repaint. On a key search a batch is frequently empty and
-    /// these two numbers are its entire content — that is the case they exist
-    /// for, since a scan can run for minutes without a single row to show.
-    pub scanned: u64,
-    pub scan_total: u64,
 }
 
 /// One row in the Data tab's AG Grid. `payload_base64` is `None` unless the
@@ -177,14 +150,6 @@ pub struct MessageFetchResult {
     /// before any preview truncation — what the budget above measures, and
     /// what the Data tab reports back to the user.
     pub payload_bytes_read: u64,
-    /// How many messages this fetch examined, matching or not.
-    ///
-    /// Equal to `messages.len()` on an ordinary browse, which keeps everything
-    /// it reads. On a key search it is the whole scanned range, and the gap
-    /// between the two is the point: "3 found — scanned 1,240,000" is the only
-    /// honest way to report a result whose emptiness might mean either "no
-    /// such key" or "not there yet".
-    pub scanned: u64,
 }
 
 #[cfg(test)]
@@ -211,8 +176,6 @@ mod tests {
                 payload_size_bytes: None,
                 headers: Vec::new(),
             }],
-            scanned: 1,
-            scan_total: 1,
         };
 
         let json = serde_json::to_value(&event).unwrap();
@@ -244,8 +207,6 @@ mod tests {
         let event = MessagesBatchEvent {
             request_id: "req-1".to_string(),
             messages: vec![message.clone(), message],
-            scanned: 2,
-            scan_total: 2,
         };
 
         let json = serde_json::to_value(&event).unwrap();
@@ -262,7 +223,7 @@ mod tests {
         let json = serde_json::to_string(&filter).unwrap();
         assert_eq!(
             json,
-            r#"{"partitions":null,"maxMessagesPerPartition":null,"maxTotalMessages":null,"fromTimestampMs":null,"toTimestampMs":null,"offset":null,"key":null,"includePayload":false,"maxPayloadPreviewBytes":null}"#
+            r#"{"partitions":null,"maxMessagesPerPartition":null,"maxTotalMessages":null,"fromTimestampMs":null,"toTimestampMs":null,"offset":null,"includePayload":false,"maxPayloadPreviewBytes":null}"#
         );
     }
 
@@ -357,7 +318,6 @@ mod tests {
             poll_error: None,
             stopped_at_byte_budget: false,
             payload_bytes_read: 0,
-            scanned: 1,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains(r#""totalMatching":150"#));

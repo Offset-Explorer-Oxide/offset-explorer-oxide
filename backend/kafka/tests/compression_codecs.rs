@@ -95,7 +95,6 @@ fn filter() -> MessageFilter {
         from_timestamp_ms: None,
         to_timestamp_ms: None,
         offset: None,
-        key: None,
         include_payload: true,
         // Asserts on the decompressed payload itself, so it needs all of it.
         max_payload_preview_bytes: None,
@@ -130,7 +129,6 @@ async fn every_compression_codec_can_be_fetched() {
                 1_048_576,
                 None,
                 Arc::new(AtomicBool::new(false)),
-                Arc::new(kafkaoxide_core::ScanProgress::default()),
             )
             .await;
 
