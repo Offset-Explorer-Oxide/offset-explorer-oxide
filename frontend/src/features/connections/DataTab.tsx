@@ -27,6 +27,7 @@ import { APP_GRID_THEME } from "./agGridTheme";
 import {
   emptyFilterForm,
   FilterFormState,
+  startOfTodayMs,
   toMessageFilter,
   validateDateRange,
   validateMaxMessagesPerPartition,
@@ -47,7 +48,7 @@ import {
   VALUE_PREVIEW_BYTES,
 } from "./payloadDecoding";
 import { api } from "../../lib/tauri";
-import { formatLocalTimestamp, localTimeZoneLabel } from "../../lib/time";
+import { formatLocalTimestamp, localTimeZoneLabel, toDateTimeLocalValue } from "../../lib/time";
 import { useFetchMessages } from "./useClusterResources";
 import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
 import { useLogsStore } from "../bottom-panel/useLogsStore";
@@ -288,8 +289,16 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
   const evictToFit = useTabDataStore((s) => s.evictToFit);
   const touchTab = useTabDataStore((s) => s.touchTab);
   const setTabTotalMatching = useTabDataStore((s) => s.setTabTotalMatching);
+  const setTabScanProgress = useTabDataStore((s) => s.setTabScanProgress);
+  const setTabKeyScan = useTabDataStore((s) => s.setTabKeyScan);
+  const scanProgress = useTabDataStore((s) => s.scanProgressByTab[tabKey]);
+  const isKeyScan = useTabDataStore((s) => s.keyScanByTab[tabKey] ?? false);
   const setTabFetchDurationMs = useTabDataStore((s) => s.setTabFetchDurationMs);
   /** How many messages match the last Fetch's filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller when those caps trimmed the result. `undefined` before any Fetch has run for this tab. */
+  // A key search is bounded by its date range rather than by a per-partition
+  // window, and its "Total max messages" counts *matches* rather than messages
+  // read — see the note under the filter row.
+  const hasKeyFilter = form.key.trim().length > 0;
   const totalMatching = useTabDataStore((s) => s.totalMatchingByTab[tabKey]);
   const fetchDurationMs = useTabDataStore((s) => s.fetchDurationMsByTab[tabKey]);
   const appendTabMessages = useTabDataStore((s) => s.appendTabMessages);
@@ -300,6 +309,12 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
    */
   const addTabPayloadBytesRef = useRef(addTabPayloadBytes);
   addTabPayloadBytesRef.current = addTabPayloadBytes;
+  // Same reason as the refs around it: the "messages-batch" listener below is
+  // registered once and never re-registered, so anything it reaches for out of
+  // a render must come through a ref or it writes to whichever view was open
+  // when the effect first ran.
+  const setTabScanProgressRef = useRef(setTabScanProgress);
+  setTabScanProgressRef.current = setTabScanProgress;
   // Wrapped rather than assigned directly: `enforceRetentionLimit` is
   // declared further down, and the arrow defers reaching it until the
   // listener actually fires.
@@ -405,7 +420,15 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     const unlisten = listen<MessagesBatchEvent>("messages-batch", (event) => {
       if (stoppedRef.current) return;
       if (event.payload.requestId !== activeRequestIdRef.current) return;
-      // One event, many rows — see `MessagesBatchEvent`.
+      // One event, many rows — see `MessagesBatchEvent`. On a key search the
+      // batch is frequently empty and these two counters are its whole
+      // content: the fetch is reading its range and finding nothing, and this
+      // is the only sign of it that reaches the user.
+      setTabScanProgressRef.current(tabKeyRef.current, {
+        scanned: event.payload.scanned,
+        scanTotal: event.payload.scanTotal,
+      });
+      if (event.payload.messages.length === 0) return;
       streamBufferRef.current.push(...event.payload.messages);
       if (streamFlushHandleRef.current === null) {
         streamFlushHandleRef.current = setTimeout(flush, STREAM_FLUSH_MS);
@@ -561,6 +584,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
     // from an earlier, unrelated fetch on screen next to the new one's rows
     // until (if) this fetch resolves successfully.
     clearTabMessages(tabKey);
+    // Recorded before the fetch runs, because it decides which count line the
+    // streamed rows are described by while the fetch is still in flight.
+    setTabKeyScan(tabKey, form.key.trim().length > 0);
     setByteBudgetBytesRead(null);
     setPayloadBudgetSpent(false);
     // The grid is about to go blank/loading for a new result set, so a
@@ -611,6 +637,13 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         activeRequestIdRef.current = null;
         retiredHere = true;
         setTabTotalMatching(tabKey, result.totalMatching);
+        // The authoritative final figures. The streamed ones stop at whatever
+        // the last batch tick saw, which on a fast fetch can be short of the
+        // whole scan.
+        setTabScanProgress(tabKey, {
+          scanned: result.scanned ?? result.totalMatching,
+          scanTotal: result.totalMatching,
+        });
         // Recorded on this branch only — the branch that has the
         // authoritative result. A stopped or superseded fetch leaves the
         // view with no timing rather than one that describes a fetch the
@@ -704,6 +737,9 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         fromTimestampMs: null,
         toTimestampMs: null,
         offset: row.offset,
+        // Never a key filter: this addresses one exact offset, and a key
+        // filter here would turn a single-row lookup into a scan.
+        key: null,
         includePayload: true,
         // Bounded, but at the whole-row bound rather than the grid cell's:
         // this is one message, so the retention budget the grid fetch
@@ -755,7 +791,11 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
             inputMode="numeric"
             value={form.maxMessagesPerPartition}
             onChange={(e) => updateForm({ maxMessagesPerPartition: e.target.value })}
-            disabled={isPlaying}
+            // A key search's bound is its date range; a per-partition window
+            // would stop it 100 messages into a range of millions. Left visible
+            // rather than removed so the row does not reflow as the user types
+            // — the note below is what reconciles the stale value on screen.
+            disabled={isPlaying || hasKeyFilter}
           />
         </label>
         <label>
@@ -787,6 +827,24 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           />
         </label>
         <label>
+          Key
+          <input
+            value={form.key}
+            onChange={(e) => {
+              const key = e.target.value;
+              // Filled here, not only on the wire, so the bound about to be
+              // applied is visible and editable. Only on the transition into a
+              // non-empty key, and only when From is empty: a date the user
+              // chose is theirs, and clearing the key later must not wipe out
+              // a date that is now an ordinary field value.
+              const shouldDefaultFrom = key.trim().length > 0 && form.key.trim().length === 0 && !form.fromDate;
+              updateForm(shouldDefaultFrom ? { key, fromDate: toDateTimeLocalValue(startOfTodayMs()) } : { key });
+            }}
+            placeholder="e.g. order-123"
+            disabled={isPlaying}
+          />
+        </label>
+        <label>
           {FROM_LABEL}
           <input
             type="datetime-local"
@@ -805,6 +863,17 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           />
         </label>
       </div>
+
+      {hasKeyFilter && (
+        // The disabled cap stays on screen so the row does not reflow as the
+        // user types, which leaves a value visibly contradicting what the fetch
+        // is about to do. This reconciles it — and tells the user that the
+        // *other* cap has quietly changed meaning.
+        <p className="data-tab-search-notice">
+          Max messages per partition doesn't apply to a key search — Total max messages caps the matches, and the
+          date range bounds the scan.
+        </p>
+      )}
 
       <div className="data-tab-controls">
         <button type="button" aria-label="Fetch" onClick={handlePlay} disabled={isPlaying}>
@@ -891,7 +960,25 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           gap is what tells you more are there. Separators because a bare
           600000 is hard to size at a glance.
         */}
-        {visibleMessageCount.toLocaleString()} loaded of {(totalMatching ?? messages.length).toLocaleString()} matching
+        {isKeyScan && scanProgress ? (
+          <>
+            {/*
+              Not "N loaded of M matching": M comes from offset arithmetic and
+              cannot know about a key predicate, so on a key search it would
+              report the size of the range as though every message in it had
+              matched. Same class of mistake as the stale total fixed in
+              v0.47.0 — a number that is right for one fetch shape and a lie
+              for another.
+            */}
+            {visibleMessageCount.toLocaleString()} found — scanned {scanProgress.scanned.toLocaleString()} of{" "}
+            {scanProgress.scanTotal.toLocaleString()} messages
+          </>
+        ) : (
+          <>
+            {visibleMessageCount.toLocaleString()} loaded of{" "}
+            {(totalMatching ?? messages.length).toLocaleString()} matching
+          </>
+        )}
         {/*
           Omitted entirely rather than shown as 0 ms while a fetch is still
           running or after one was stopped: the number is how long the fetch

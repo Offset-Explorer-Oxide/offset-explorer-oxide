@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { formatLocalTimestamp, localTimeZoneLabel } from "./time";
+import { formatLocalTimestamp, localTimeZoneLabel, toDateTimeLocalValue } from "./time";
 
 const LOCAL_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/;
 
@@ -104,5 +104,23 @@ describe("localTimeZoneLabel", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("toDateTimeLocalValue", () => {
+  it("formats epoch milliseconds for a datetime-local input in local time", () => {
+    const local = new Date(2026, 0, 2, 3, 4);
+    expect(toDateTimeLocalValue(local.getTime())).toBe("2026-01-02T03:04");
+  });
+
+  // The whole reason this exists rather than `toISOString().slice(0, 16)`:
+  // just after local midnight, UTC can still be on the previous day.
+  it("keeps the local date at midnight rather than shifting to UTC's", () => {
+    const midnight = new Date(2026, 5, 15, 0, 0);
+    expect(toDateTimeLocalValue(midnight.getTime())).toBe("2026-06-15T00:00");
+  });
+
+  it("zero-pads single-digit months, days, hours and minutes", () => {
+    expect(toDateTimeLocalValue(new Date(2026, 8, 4, 7, 5).getTime())).toBe("2026-09-04T07:05");
   });
 });

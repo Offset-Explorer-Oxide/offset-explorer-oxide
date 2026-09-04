@@ -610,6 +610,11 @@ pub async fn connection_fetch_messages(
         }
     };
     crate::logging::emit_log(&app, "info", format!("Fetching messages for topic \"{topic}\"..."));
+    // How far the fetch has got through its range. Shared with the forwarding
+    // task below, which reads it on every batch flush — including the empty
+    // ones, which exist precisely to carry it: a key search can run a long
+    // time with no rows to show, and this is the only thing that moves.
+    let progress = std::sync::Arc::new(kafkaoxide_core::ScanProgress::default());
     // Only when the caller is streaming. Handing the fetch a sender it does
     // not need would have it clone every message into a channel nobody reads.
     //
@@ -625,6 +630,7 @@ pub async fn connection_fetch_messages(
         let emit_request_id = request_id.clone();
         let progress_app = app.clone();
         let progress_topic = topic.clone();
+        let emit_progress = std::sync::Arc::clone(&progress);
         // Returns how many messages it actually emitted, which is what lets
         // the result below carry the remainder and nothing more.
         let task = tokio::spawn(async move {
@@ -635,11 +641,18 @@ pub async fn connection_fetch_messages(
                 STREAM_BATCH_INTERVAL,
                 PROGRESS_LOG_INTERVAL,
                 move |messages| {
+                    // Read at emit time rather than passed in: this closure runs
+                    // on the batch flush, so it always carries the freshest
+                    // figures — and on a key search finding nothing, an empty
+                    // batch carrying only these is the whole event.
+                    let (scanned, scan_total) = emit_progress.snapshot();
                     let _ = emit_app.emit(
                         "messages-batch",
                         MessagesBatchEvent {
                             request_id: emit_request_id.clone(),
                             messages,
+                            scanned,
+                            scan_total,
                         },
                     );
                 },
@@ -673,6 +686,7 @@ pub async fn connection_fetch_messages(
             max_message_size_bytes,
             max_total_payload_bytes,
             cancelled,
+            std::sync::Arc::clone(&progress),
         )
         .await;
     // A panicked forwarding task counts as having emitted nothing, so the

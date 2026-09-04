@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { emptyFilterForm, toMessageFilter, validateDateRange, validateMaxMessagesPerPartition } from "./dataFilters";
+import {
+  emptyFilterForm,
+  startOfTodayMs,
+  toMessageFilter,
+  validateDateRange,
+  validateMaxMessagesPerPartition,
+} from "./dataFilters";
 import { MAX_INLINE_PAYLOAD_BYTES, PAYLOAD_RETENTION_BUDGET_BYTES, VALUE_PREVIEW_BYTES } from "./payloadDecoding";
 import { formatLocalTimestamp } from "../../lib/time";
 
@@ -27,6 +33,7 @@ describe("toMessageFilter", () => {
       fromTimestampMs: null,
       toTimestampMs: null,
       offset: null,
+      key: null,
       includePayload: false,
       maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
     });
@@ -230,5 +237,56 @@ describe("validateMaxMessagesPerPartition", () => {
   it("fails when only whitespace", () => {
     const form = { ...emptyFilterForm(), maxMessagesPerPartition: "   " };
     expect(validateMaxMessagesPerPartition(form)).toBe('"Max messages per partition" is required');
+  });
+});
+
+describe("the key filter", () => {
+  it("sends no key filter when the key field is blank or whitespace", () => {
+    expect(toMessageFilter(emptyFilterForm()).key).toBeNull();
+    expect(toMessageFilter({ ...emptyFilterForm(), key: "   " }).key).toBeNull();
+  });
+
+  // The field is typed by hand and a trailing space is invisible in the input
+  // but fatal to an exact match.
+  it("trims the typed key", () => {
+    expect(toMessageFilter({ ...emptyFilterForm(), key: "  order-123 " }).key).toBe("order-123");
+  });
+
+  // A key search reads its whole range, so an unbounded one would scan the
+  // entire topic. Today is the default bound.
+  it("defaults From to local midnight today when a key is set and From is blank", () => {
+    const filter = toMessageFilter({ ...emptyFilterForm(), key: "order-123" });
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    expect(filter.fromTimestampMs).toBe(midnight.getTime());
+  });
+
+  it("leaves an explicit From alone when a key is set", () => {
+    const filter = toMessageFilter({
+      ...emptyFilterForm(),
+      key: "order-123",
+      fromDate: "2026-01-02T03:04",
+    });
+    expect(filter.fromTimestampMs).toBe(new Date("2026-01-02T03:04").getTime());
+  });
+
+  // Without a key the tab is a bounded browse and a blank From still means
+  // "newest first", not "since midnight".
+  it("does not default From when no key is set", () => {
+    expect(toMessageFilter(emptyFilterForm()).fromTimestampMs).toBeNull();
+  });
+
+  // The backend, not the form, is what ignores the per-partition cap — and it
+  // honours maxTotalMessages as a cap on matches, so both still go on the wire.
+  it("still sends both count caps alongside a key", () => {
+    const filter = toMessageFilter({ ...emptyFilterForm(), key: "order-123", maxTotalMessages: "5" });
+    expect(filter.maxTotalMessages).toBe(5);
+    expect(filter.maxMessagesPerPartition).toBe(100);
+  });
+
+  it("returns local midnight today as epoch milliseconds", () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    expect(startOfTodayMs()).toBe(midnight.getTime());
   });
 });

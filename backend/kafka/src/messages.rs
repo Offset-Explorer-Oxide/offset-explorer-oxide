@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use kafkaoxide_core::TopicMessage;
+
 /// Per-partition message count used whenever the caller hasn't set an
 /// explicit "max messages per partition" — see
 /// `effective_max_messages_per_partition`'s doc comment for why this must
@@ -20,6 +22,116 @@ pub const DEFAULT_MESSAGE_CAP: u32 = 100;
 /// needs this same fallback cap applied downstream.
 pub fn effective_max_messages_per_partition(max_messages_per_partition: Option<u32>) -> u32 {
     max_messages_per_partition.unwrap_or(DEFAULT_MESSAGE_CAP)
+}
+
+/// The Data tab's Key filter as the bytes to compare against, or `None` for
+/// "no key filter".
+///
+/// Trimmed because the field is typed by hand and a trailing space is
+/// invisible in the input yet fatal to an exact match; encoded once here
+/// rather than per message, since the whole point of an exact byte filter is
+/// that testing it against a message costs a single comparison.
+pub fn key_filter_bytes(key: &Option<String>) -> Option<Vec<u8>> {
+    let trimmed = key.as_deref()?.trim();
+    (!trimmed.is_empty()).then(|| trimmed.as_bytes().to_vec())
+}
+
+/// Whether a message's key satisfies the fetch's key filter.
+///
+/// Exact, byte-for-byte: a Kafka key is an arbitrary byte string, so this
+/// neither decodes nor case-folds — a binary or Avro-serialized key simply
+/// will not match typed text, which is the same thing the Key column already
+/// shows by rendering those bytes lossily.
+///
+/// A message with *no* key never matches a set filter. That is deliberately
+/// not `message_key.unwrap_or(&[])`, which would make a keyless message match
+/// an empty filter string — a different question from "no filter at all",
+/// which is what `wanted: None` means.
+pub fn key_matches(message_key: Option<&[u8]>, wanted: Option<&[u8]>) -> bool {
+    match wanted {
+        None => true,
+        Some(wanted) => message_key == Some(wanted),
+    }
+}
+
+/// The per-partition window `partition_limits` should apply for this fetch.
+///
+/// A plain browse keeps the cap it has always had (see
+/// `effective_max_messages_per_partition` for why `None` is never passed
+/// through). A key search must not: its bound is the resolved From/To offset
+/// range, and a 100-message window would search only the newest 100 messages
+/// of each partition and then report "not found" for a key sitting one
+/// message further back. Uncapped here means "the whole range the date filter
+/// resolved to", which is finite.
+///
+/// Takes the cap and the flag rather than the whole `MessageFilter` so this
+/// module stays free of the wire types and trivially testable.
+pub fn scan_window_per_partition(max_messages_per_partition: Option<u32>, key_filter_set: bool) -> Option<u32> {
+    if key_filter_set {
+        return None;
+    }
+    Some(effective_max_messages_per_partition(max_messages_per_partition))
+}
+
+/// How many offsets one partition gives up to the first round of a backwards
+/// key walk.
+///
+/// Small enough that a key near the end of the range is found in one cheap
+/// round — the common case, and the whole reason the walk exists — and large
+/// enough to be a real read rather than a round-trip for a handful of
+/// messages. It only ever bounds the *first* round; `next_slice_size` takes
+/// over from there.
+pub const INITIAL_SCAN_SLICE: i64 = 50_000;
+
+/// One round's window for a partition, walking backwards from `round_end`
+/// towards `range_start`, or `None` once the walk has reached the start.
+///
+/// Windows abut exactly: each round's end is the previous round's start, so no
+/// message is skipped (which would lose a match) and none is read twice (which
+/// would return a duplicate row). The start is clamped at `range_start`
+/// because that boundary is the user's From date, not a suggestion.
+pub fn receding_window(range_start: i64, round_end: i64, slice: i64) -> Option<(i64, i64)> {
+    if round_end <= range_start {
+        return None;
+    }
+    Some(((round_end.saturating_sub(slice)).max(range_start), round_end))
+}
+
+/// The next round's slice: double the last one.
+///
+/// A round costs a broker round-trip per shard, so the number of rounds is
+/// what the user actually waits on. A fixed slice would take 800 rounds to
+/// reach 40 million offsets; doubling reaches it in ten, while keeping the
+/// first round — the one that answers the common case — small.
+///
+/// Saturating, because a slice wide enough to overflow would wrap negative and
+/// turn `receding_window` into a window that reads forward.
+pub fn next_slice_size(previous: i64) -> i64 {
+    previous.saturating_mul(2)
+}
+
+/// The `cap` newest matches, newest first.
+///
+/// Sorted by timestamp because that is the only ordering meaningful *across*
+/// partitions: an offset is a position within one partition's log and says
+/// nothing about another's. Partition and offset break ties so the order is
+/// total and the result deterministic.
+///
+/// A message with no timestamp sorts oldest. A broker can legitimately produce
+/// one, and the alternative — treating "unknown" as "now" — would let it
+/// displace a real, newer match from the result.
+pub fn newest_matches(mut matches: Vec<TopicMessage>, cap: Option<u32>) -> Vec<TopicMessage> {
+    matches.sort_by(|a, b| {
+        b.timestamp_ms
+            .unwrap_or(i64::MIN)
+            .cmp(&a.timestamp_ms.unwrap_or(i64::MIN))
+            .then(b.partition.cmp(&a.partition))
+            .then(b.offset.cmp(&a.offset))
+    });
+    if let Some(cap) = cap {
+        matches.truncate(cap as usize);
+    }
+    matches
 }
 
 /// For each partition, how many messages to pull: `min(available, cap)`,
@@ -249,19 +361,36 @@ const SHARD_PREFETCH_CEILING_BYTES: u64 = 128 * 1024 * 1024;
 /// concurrently, and the poll loop never blocks long on any one of them (see
 /// `fetch_messages`). Both were measured regressions before they were fixed.
 ///
-/// Two things bound it. A shard cannot be given less than one partition, and
-/// each shard carries its own prefetch queue — which has to stay large enough
-/// for one maximum-size record (see `fetch_consumer_config`), so on a
-/// large-message topic the shards' queues are what caps the count rather than
-/// [`MAX_FETCH_SHARDS`].
-pub fn fetch_shard_count(partitions_with_work: usize, max_message_size_bytes: u32) -> usize {
+/// Three things bound it.
+///
+/// A shard cannot be given less than one partition. Each shard carries its own
+/// prefetch queue — which has to stay large enough for one maximum-size record
+/// (see `fetch_consumer_config`), so on a large-message topic the shards'
+/// queues cap the count rather than [`MAX_FETCH_SHARDS`].
+///
+/// And a shard is not free to *exist*: every consumer instance brings its own
+/// set of librdkafka threads, so asking for more shards than the machine has
+/// cores stops buying parallel decompression and starts buying contention for
+/// the cores that would have done it. On a two-core machine, six shards took
+/// five 100-message browses of a 6-partition topic from **41 ms to 1,595 ms**
+/// — individual fetches stalling half a second while the threads fought over
+/// the cores. That is why `available_parallelism` is a bound and not merely a
+/// hint: the failure mode is far worse than the win it would have bought.
+pub fn fetch_shard_count(
+    partitions_with_work: usize,
+    max_message_size_bytes: u32,
+    available_parallelism: usize,
+) -> usize {
     if partitions_with_work == 0 {
         return 1;
     }
     // Mirrors the queue each shard will be configured with.
     let per_shard_prefetch = (u64::from(max_message_size_bytes) * 2).max(8 * 1024 * 1024);
     let affordable = (SHARD_PREFETCH_CEILING_BYTES / per_shard_prefetch).max(1) as usize;
-    partitions_with_work.min(MAX_FETCH_SHARDS).min(affordable)
+    partitions_with_work
+        .min(MAX_FETCH_SHARDS)
+        .min(affordable)
+        .min(available_parallelism.max(1))
 }
 
 
@@ -281,8 +410,8 @@ mod tests {
     /// measured win grows with the fan-out — see the table on the function.
     #[test]
     fn a_wide_topic_is_spread_across_every_shard_available() {
-        assert_eq!(fetch_shard_count(50, 1_048_576), MAX_FETCH_SHARDS);
-        assert_eq!(fetch_shard_count(24, 1_048_576), MAX_FETCH_SHARDS);
+        assert_eq!(fetch_shard_count(50, 1_048_576, 16), MAX_FETCH_SHARDS);
+        assert_eq!(fetch_shard_count(24, 1_048_576, 16), MAX_FETCH_SHARDS);
     }
 
     /// A shard with no partition to read is a consumer, a connection and a
@@ -291,7 +420,7 @@ mod tests {
     fn a_narrow_topic_never_builds_more_shards_than_it_has_partitions() {
         for partitions in 1..=MAX_FETCH_SHARDS {
             assert_eq!(
-                fetch_shard_count(partitions, 1_048_576),
+                fetch_shard_count(partitions, 1_048_576, 16),
                 partitions,
                 "{partitions} partitions should not be split more ways than that"
             );
@@ -301,7 +430,7 @@ mod tests {
     /// A fetch that matched nothing still has to build one consumer, not zero.
     #[test]
     fn a_fetch_with_no_work_still_reports_a_usable_shard_count() {
-        assert_eq!(fetch_shard_count(0, 1_048_576), 1);
+        assert_eq!(fetch_shard_count(0, 1_048_576, 16), 1);
     }
 
     /// Each shard keeps a prefetch queue big enough for one maximum-size
@@ -310,7 +439,7 @@ mod tests {
     /// count, are the binding constraint.
     #[test]
     fn a_large_message_topic_trades_shards_away_to_bound_prefetch_memory() {
-        let shards = fetch_shard_count(50, 32 * 1_048_576);
+        let shards = fetch_shard_count(50, 32 * 1_048_576, 16);
 
         assert!(
             shards < MAX_FETCH_SHARDS,
@@ -320,12 +449,30 @@ mod tests {
         assert!(shards >= 1, "there is always at least one consumer");
     }
 
+    /// A shard brings its own librdkafka threads, so more of them than the
+    /// machine has cores buys contention rather than parallelism. Measured on
+    /// two cores, six shards took five small browses from 41 ms to 1,595 ms —
+    /// so this bound is load-bearing, not a tidy-up.
+    #[test]
+    fn a_small_machine_gets_no_more_shards_than_it_has_cores() {
+        assert_eq!(fetch_shard_count(50, 1_048_576, 2), 2);
+        assert_eq!(fetch_shard_count(50, 1_048_576, 4), 4);
+    }
+
+    /// `available_parallelism` can fail, and the caller passes 1 when it does.
+    /// One shard is the unsharded path, which must stay reachable.
+    #[test]
+    fn an_unknown_core_count_falls_back_to_a_single_consumer() {
+        assert_eq!(fetch_shard_count(50, 1_048_576, 1), 1);
+        assert_eq!(fetch_shard_count(50, 1_048_576, 0), 1);
+    }
+
     /// The ceiling binds on the queue size, never on the number of shards
     /// alone — a topic of ordinary records must not be throttled by a limit
     /// meant for multi-megabyte ones.
     #[test]
     fn an_enormous_maximum_message_size_falls_back_to_a_single_consumer() {
-        assert_eq!(fetch_shard_count(50, 200 * 1_048_576), 1);
+        assert_eq!(fetch_shard_count(50, 200 * 1_048_576, 16), 1);
     }
 
     use super::*;
@@ -575,4 +722,182 @@ mod tests {
         let bytes_read = budgeted_payload_bytes(8 * 1024 * 1024, true);
         assert!(byte_budget_reached(bytes_read, Some(1_024 * 1_024)));
     }
+
+    #[test]
+    fn no_key_filter_matches_every_message() {
+        assert!(key_matches(Some(b"anything"), None));
+        assert!(key_matches(None, None));
+    }
+
+    #[test]
+    fn a_key_filter_matches_only_the_exact_same_bytes() {
+        assert!(key_matches(Some(b"order-123"), Some(b"order-123")));
+        assert!(!key_matches(Some(b"order-1234"), Some(b"order-123")));
+        // A prefix is not a match: the filter is exact, not "starts with".
+        assert!(!key_matches(Some(b"order-123"), Some(b"order-1")));
+    }
+
+    /// A keyless message can never satisfy a key filter — it has nothing to
+    /// compare. Worth pinning because the tempting `unwrap_or(&[])` would make
+    /// a keyless message match an empty-string filter, which is a different
+    /// question from "no filter".
+    #[test]
+    fn a_message_with_no_key_never_matches_a_key_filter() {
+        assert!(!key_matches(None, Some(b"order-123")));
+        assert!(!key_matches(None, Some(b"")));
+    }
+
+    /// Keys are arbitrary byte strings, not text — a non-UTF-8 key must be
+    /// comparable without panicking or being lossily decoded first.
+    #[test]
+    fn binary_keys_are_compared_as_bytes() {
+        let key = [0xff_u8, 0x00, 0xfe];
+        assert!(key_matches(Some(&key), Some(&key)));
+        assert!(!key_matches(Some(&key), Some(&[0xff_u8, 0x00])));
+    }
+
+    #[test]
+    fn a_blank_key_filter_is_no_filter_at_all() {
+        assert_eq!(key_filter_bytes(&None), None);
+        assert_eq!(key_filter_bytes(&Some(String::new())), None);
+        assert_eq!(key_filter_bytes(&Some("   ".into())), None);
+    }
+
+    /// Trimmed, because the field is typed by hand and a trailing space is
+    /// invisible in the input but fatal to an exact match.
+    #[test]
+    fn a_key_filter_is_trimmed_and_utf8_encoded() {
+        assert_eq!(key_filter_bytes(&Some("  order-123 ".into())), Some(b"order-123".to_vec()));
+        assert_eq!(key_filter_bytes(&Some("kü".into())), Some(vec![b'k', 0xc3, 0xbc]));
+    }
+
+    /// With no key filter the fetch is a bounded browse and keeps the cap it
+    /// has always had.
+    #[test]
+    fn without_a_key_filter_the_window_is_the_usual_per_partition_cap() {
+        assert_eq!(scan_window_per_partition(Some(25), false), Some(25));
+        assert_eq!(scan_window_per_partition(None, false), Some(DEFAULT_MESSAGE_CAP));
+    }
+
+    /// With a key filter the date range is the bound, so the per-partition
+    /// window must be uncapped — a 100-message window would search only the
+    /// newest 100 messages and report "not found" for a key that is there.
+    #[test]
+    fn a_key_filter_uncaps_the_per_partition_window() {
+        assert_eq!(scan_window_per_partition(Some(25), true), None);
+        assert_eq!(scan_window_per_partition(None, true), None);
+    }
+
+
+    fn message_at(partition: i32, offset: i64, timestamp_ms: Option<i64>) -> kafkaoxide_core::TopicMessage {
+        kafkaoxide_core::TopicMessage {
+            partition,
+            offset,
+            timestamp_ms,
+            key_base64: None,
+            payload_base64: None,
+            payload_size_bytes: None,
+            headers: Vec::new(),
+        }
+    }
+
+    /// The first round reads the newest slice of the range; each later round
+    /// abuts the previous one exactly — no gap (which would skip messages) and
+    /// no overlap (which would return duplicates).
+    #[test]
+    fn rounds_walk_backwards_without_gaps_or_overlap() {
+        assert_eq!(receding_window(0, 1_000, 400), Some((600, 1_000)));
+        assert_eq!(receding_window(0, 600, 400), Some((200, 600)));
+    }
+
+    /// A window never reads past the start of the range the date filter
+    /// resolved to — that boundary is the user's From.
+    #[test]
+    fn the_last_round_is_clamped_to_the_range_start() {
+        assert_eq!(receding_window(100, 300, 400), Some((100, 300)));
+    }
+
+    /// Once the walk has reached the range start there is nothing left to read,
+    /// and the caller must stop rather than assign an empty window forever.
+    #[test]
+    fn an_exhausted_walk_has_no_window_left() {
+        assert_eq!(receding_window(100, 100, 400), None);
+        assert_eq!(receding_window(100, 50, 400), None);
+    }
+
+    /// Doubling, so a key 40M messages back costs about ten rounds instead of
+    /// eight hundred. A round is a broker round-trip per shard, so the count is
+    /// what the user waits on.
+    #[test]
+    fn the_slice_doubles_each_round() {
+        assert_eq!(next_slice_size(50_000), 100_000);
+        assert_eq!(next_slice_size(100_000), 200_000);
+    }
+
+    #[test]
+    fn ten_doublings_cover_a_forty_million_offset_range() {
+        let mut slice = INITIAL_SCAN_SLICE;
+        let mut covered = 0i64;
+        let mut rounds = 0;
+        while covered < 40_000_000 {
+            covered += slice;
+            slice = next_slice_size(slice);
+            rounds += 1;
+        }
+        assert!(rounds <= 10, "expected at most 10 rounds, took {rounds}");
+    }
+
+    /// A slice big enough to overflow would wrap to a negative window and read
+    /// the whole partition backwards. Saturating keeps a very deep walk merely
+    /// large.
+    #[test]
+    fn the_slice_never_overflows_into_a_negative_window() {
+        assert_eq!(next_slice_size(i64::MAX), i64::MAX);
+        assert_eq!(receding_window(0, 1_000, i64::MAX), Some((0, 1_000)));
+    }
+
+    /// Offsets are only comparable within a partition, so the sort that decides
+    /// which matches are "newest" across a topic has to be by timestamp.
+    #[test]
+    fn matches_are_ordered_newest_first_across_partitions() {
+        let matches = vec![message_at(0, 10, Some(100)), message_at(3, 1, Some(300)), message_at(1, 7, Some(200))];
+        let newest = newest_matches(matches, None);
+        assert_eq!(newest.iter().map(|m| m.partition).collect::<Vec<_>>(), vec![3, 1, 0]);
+    }
+
+    #[test]
+    fn only_the_newest_matches_survive_the_cap() {
+        let matches = vec![message_at(0, 10, Some(100)), message_at(1, 7, Some(300)), message_at(2, 5, Some(200))];
+        let newest = newest_matches(matches, Some(2));
+        assert_eq!(newest.iter().map(|m| m.timestamp_ms).collect::<Vec<_>>(), vec![Some(300), Some(200)]);
+    }
+
+    #[test]
+    fn no_cap_keeps_every_match() {
+        let matches = vec![message_at(0, 10, Some(100)), message_at(1, 7, Some(300))];
+        assert_eq!(newest_matches(matches, None).len(), 2);
+    }
+
+    /// A broker with `log.message.timestamp.type` unset, or a very old record,
+    /// can carry no timestamp at all. Such a message sorts oldest rather than
+    /// panicking or jumping to the front.
+    #[test]
+    fn a_message_without_a_timestamp_sorts_oldest() {
+        let matches = vec![message_at(0, 10, None), message_at(1, 7, Some(100))];
+        let newest = newest_matches(matches, None);
+        assert_eq!(newest[0].partition, 1);
+    }
+
+    /// Two messages sharing a timestamp — common on a fast producer — must
+    /// still come out in a stable, total order rather than an arbitrary one.
+    #[test]
+    fn matches_with_equal_timestamps_are_ordered_by_partition_then_offset() {
+        let matches = vec![message_at(1, 5, Some(100)), message_at(1, 9, Some(100)), message_at(0, 7, Some(100))];
+        let newest = newest_matches(matches, None);
+        assert_eq!(
+            newest.iter().map(|m| (m.partition, m.offset)).collect::<Vec<_>>(),
+            vec![(1, 9), (1, 5), (0, 7)]
+        );
+    }
+
 }

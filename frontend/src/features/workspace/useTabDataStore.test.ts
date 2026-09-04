@@ -375,3 +375,62 @@ describe("tabDataPrefix", () => {
     expect(useTabDataStore.getState().evictedTabs.cold).toBeUndefined();
   });
 });
+
+describe("scan progress", () => {
+  it("records how far a fetch got through its range, per view", () => {
+    useTabDataStore.getState().setTabScanProgress("tab-a", { scanned: 1_200, scanTotal: 40_000 });
+    expect(useTabDataStore.getState().scanProgressByTab["tab-a"]).toEqual({ scanned: 1_200, scanTotal: 40_000 });
+  });
+
+  it("records whether the fetch that produced a view's rows was a key search", () => {
+    useTabDataStore.getState().setTabKeyScan("tab-a", true);
+    expect(useTabDataStore.getState().keyScanByTab["tab-a"]).toBe(true);
+  });
+
+  // A new fetch's progress must not start from the last one's figures — the
+  // same trap that left a stale "matching" total on screen in v0.47.0.
+  it("clears scan progress along with the view's messages", () => {
+    useTabDataStore.getState().setTabScanProgress("tab-a", { scanned: 1_200, scanTotal: 40_000 });
+    useTabDataStore.getState().setTabKeyScan("tab-a", true);
+
+    useTabDataStore.getState().clearTabMessages("tab-a");
+
+    expect(useTabDataStore.getState().scanProgressByTab["tab-a"]).toBeUndefined();
+    expect(useTabDataStore.getState().keyScanByTab["tab-a"]).toBeUndefined();
+  });
+
+  it("keeps other views' scan progress when one view is cleared", () => {
+    useTabDataStore.getState().setTabScanProgress("tab-a", { scanned: 1, scanTotal: 2 });
+    useTabDataStore.getState().setTabScanProgress("tab-b", { scanned: 3, scanTotal: 4 });
+
+    useTabDataStore.getState().clearTabMessages("tab-a");
+
+    expect(useTabDataStore.getState().scanProgressByTab["tab-b"]).toEqual({ scanned: 3, scanTotal: 4 });
+  });
+
+  // An evicted view shows an empty grid; a surviving "scanned 1,200,000" over
+  // it would describe a fetch whose results are gone.
+  it("drops scan progress for a view evicted to stay under the ceiling", () => {
+    const key = "tab-a:conn-1:orders:all";
+    useTabDataStore.getState().setTabScanProgress(key, { scanned: 1_200, scanTotal: 40_000 });
+    useTabDataStore.getState().setTabKeyScan(key, true);
+    useTabDataStore.getState().setTabPayloadBytes(key, 5_000);
+
+    const evicted = useTabDataStore.getState().evictToFit(100, "other-tab");
+
+    expect(evicted).toContain(key);
+    expect(useTabDataStore.getState().scanProgressByTab[key]).toBeUndefined();
+    expect(useTabDataStore.getState().keyScanByTab[key]).toBeUndefined();
+  });
+
+  it("forgets a connection's scan progress along with its rows", () => {
+    const key = "tab-a:conn-1:orders:all";
+    useTabDataStore.getState().setTabScanProgress(key, { scanned: 1, scanTotal: 2 });
+    useTabDataStore.getState().setTabKeyScan(key, true);
+
+    useTabDataStore.getState().clearForConnection("conn-1");
+
+    expect(useTabDataStore.getState().scanProgressByTab[key]).toBeUndefined();
+    expect(useTabDataStore.getState().keyScanByTab[key]).toBeUndefined();
+  });
+});

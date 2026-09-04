@@ -23,6 +23,7 @@ use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol, TopicMessage}
 use kafkaoxide_kafka::{BrokerSslConfig, KafkaClient, RdKafkaClient};
 
 const TOPIC: &str = "e2e-basic";
+const KEYS_TOPIC: &str = "e2e-keys";
 const HEADERS_TOPIC: &str = "e2e-headers";
 const GROUP: &str = "e2e-group";
 /// A group with a consumer actually running, so its members carry partition
@@ -97,6 +98,7 @@ async fn fetch(client: &RdKafkaClient, connection: &Connection, topic: &str, fil
             MAX_MESSAGE_SIZE,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed")
@@ -443,6 +445,7 @@ async fn every_message_is_streamed_as_it_is_polled_as_well_as_returned() {
             MAX_MESSAGE_SIZE,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed");
@@ -477,6 +480,7 @@ async fn an_already_cancelled_fetch_returns_without_reading_the_topic() {
             MAX_MESSAGE_SIZE,
             None,
             Arc::new(AtomicBool::new(true)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("a cancelled fetch is not an error");
@@ -502,6 +506,7 @@ async fn a_message_cap_bounds_the_rows_without_hiding_how_many_matched() {
             MAX_MESSAGE_SIZE,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed");
@@ -555,4 +560,262 @@ async fn test_connection_succeeds_against_a_reachable_cluster() {
 fn base64_of(value: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(value)
+}
+
+/// Decodes a base64 payload back to the text the fixture produced.
+fn text_of(message: &TopicMessage) -> String {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(message.payload_base64.as_deref().unwrap_or_default())
+        .expect("payload is base64");
+    String::from_utf8(bytes).expect("fixture payloads are utf8")
+}
+
+/// A key filter's contract is "every message with this key in the range", not
+/// "the first one" — a key normally repeats, and its whole history is the
+/// answer. `e2e-keys` interleaves `dup` with other keys precisely so a filter
+/// that ignored the key would return a different set.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_filter_returns_every_message_with_that_exact_key() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let messages = fetch(
+        &client,
+        &connection,
+        KEYS_TOPIC,
+        MessageFilter { key: Some("dup".into()), include_payload: true, ..MessageFilter::default() },
+    )
+    .await;
+
+    let mut values: Vec<String> = messages.iter().map(text_of).collect();
+    values.sort();
+    assert_eq!(values, vec!["v1", "v2", "v3"]);
+}
+
+/// Exact, not "contains" and not "starts with".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_filter_does_not_match_a_prefix_of_a_longer_key() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let messages = fetch(
+        &client,
+        &connection,
+        KEYS_TOPIC,
+        MessageFilter { key: Some("du".into()), include_payload: true, ..MessageFilter::default() },
+    )
+    .await;
+
+    assert!(messages.is_empty(), "a prefix must not match, got {messages:?}");
+}
+
+/// A key nothing carries comes back empty rather than erroring — and the result
+/// says how much was examined to establish that, which is the only thing
+/// separating "no such key" from "gave up early".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_that_matches_nothing_returns_an_empty_result_that_says_what_it_scanned() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            KEYS_TOPIC,
+            &all_of(MessageFilter { key: Some("no-such-key".into()), ..MessageFilter::default() }),
+            None,
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    assert!(result.messages.is_empty(), "expected no matches, got {:?}", result.messages);
+    assert_eq!(result.scanned, 5, "every record in the topic should have been examined");
+}
+
+/// With a total cap the answer is the *newest* N matches, not the first N a
+/// forward read happens upon. `dup` was produced as v1, v2, v3, so the newest
+/// two are v3 and v2 — in that order.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capped_key_search_returns_the_newest_matches_first() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            KEYS_TOPIC,
+            &MessageFilter {
+                key: Some("dup".into()),
+                max_total_messages: Some(2),
+                include_payload: true,
+                ..MessageFilter::default()
+            },
+            None,
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    let values: Vec<String> = result.messages.iter().map(text_of).collect();
+    assert_eq!(values, vec!["v3", "v2"]);
+}
+
+/// A cap larger than the number of matches is not an error and does not send
+/// the walk looking for messages that are not there — it returns what exists.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cap_larger_than_the_match_count_returns_every_match() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            KEYS_TOPIC,
+            &MessageFilter {
+                key: Some("dup".into()),
+                max_total_messages: Some(50),
+                include_payload: true,
+                ..MessageFilter::default()
+            },
+            None,
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    let values: Vec<String> = result.messages.iter().map(text_of).collect();
+    assert_eq!(values, vec!["v3", "v2", "v1"]);
+}
+
+/// The economics of the whole feature: a non-matching message must never have
+/// its payload read. `payload_bytes_read` counts only payloads the fetch keeps,
+/// so a scan of a topic of 512 KB records that matches nothing must cost zero —
+/// if the predicate ever moves below `borrowed.payload()`, this is what fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_scan_reads_no_payload_bytes_for_messages_it_discards() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            "big-msgs",
+            &all_of(MessageFilter {
+                key: Some("no-such-key".into()),
+                include_payload: true,
+                ..MessageFilter::default()
+            }),
+            None,
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    assert!(result.messages.is_empty());
+    assert!(result.scanned > 0, "the scan should have examined the topic");
+    assert_eq!(result.payload_bytes_read, 0, "a discarded message must never have its payload read");
+}
+
+/// A key search leaves every other filter working: the partition filter still
+/// narrows it, and `e2e-basic` spreads k1..k60 over three partitions.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_filter_still_honours_the_partition_filter() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+
+    let everywhere =
+        fetch(&client, &connection, TOPIC, MessageFilter { key: Some("k7".into()), ..MessageFilter::default() })
+            .await;
+    assert_eq!(everywhere.len(), 1, "k7 is produced exactly once");
+    let home = everywhere[0].partition;
+
+    let elsewhere: Vec<i32> = (0..3).filter(|p| *p != home).collect();
+    let missed = fetch(
+        &client,
+        &connection,
+        TOPIC,
+        MessageFilter { key: Some("k7".into()), partitions: Some(elsewhere), ..MessageFilter::default() },
+    )
+    .await;
+    assert!(missed.is_empty(), "the key lives only in partition {home}");
+}
+
+/// An **uncapped** key search still streams: its matches are final the moment
+/// they are found, so painting them as they arrive is free.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_uncapped_key_search_streams_its_matches_as_it_finds_them() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            KEYS_TOPIC,
+            &MessageFilter { key: Some("dup".into()), ..MessageFilter::default() },
+            Some(sender),
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    let mut streamed = Vec::new();
+    while let Ok(message) = receiver.try_recv() {
+        streamed.push(message);
+    }
+    assert_eq!(streamed.len(), 3, "every match should have been streamed");
+    assert_eq!(result.messages.len(), 3);
+}
+
+/// A **capped** key search must not stream.
+///
+/// Its result is not final until the walk stops: a match found in an early
+/// round can be pushed out of the newest-N by a later one, and a grid that
+/// paints a row and then removes it reads as a bug. The result carries the
+/// matches whole instead — which the command layer already handles, because it
+/// sends back "whatever the stream did not deliver".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_capped_key_search_returns_its_matches_whole_instead_of_streaming_them() {
+    let client = RdKafkaClient::new();
+    let connection = connection(broker!());
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    let result = client
+        .fetch_messages(
+            &connection,
+            KEYS_TOPIC,
+            &MessageFilter { key: Some("dup".into()), max_total_messages: Some(2), ..MessageFilter::default() },
+            Some(sender),
+            READ_TIMEOUT,
+            MAX_MESSAGE_SIZE,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
+        )
+        .await
+        .expect("fetch failed");
+
+    assert!(receiver.try_recv().is_err(), "a capped key search must not stream partial results");
+    assert_eq!(result.messages.len(), 2, "the matches come back on the result instead");
 }

@@ -82,6 +82,7 @@ fn filter() -> MessageFilter {
         from_timestamp_ms: None,
         to_timestamp_ms: None,
         offset: None,
+        key: None,
         include_payload: true,
         max_payload_preview_bytes: None,
     }
@@ -99,6 +100,7 @@ async fn fetch_payloads(bootstrap: String) -> Vec<Vec<u8>> {
             12 * 1024 * 1024,
             None,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(kafkaoxide_core::ScanProgress::default()),
         )
         .await
         .expect("fetch failed");

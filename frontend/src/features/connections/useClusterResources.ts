@@ -160,6 +160,9 @@ export function useFullPayload(
           fromTimestampMs: null,
           toTimestampMs: null,
           offset: offset!,
+          // Never a key filter: this addresses one exact offset, and a key
+          // filter here would turn a single-message lookup into a scan.
+          key: null,
           includePayload: true,
           // The whole point of this fetch — the only caller that asks for it.
           maxPayloadPreviewBytes: null,

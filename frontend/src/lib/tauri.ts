@@ -172,6 +172,19 @@ export interface MessageFilter {
   fromTimestampMs: number | null;
   toTimestampMs: number | null;
   offset: number | null;
+  /**
+   * An exact message-key filter. `null` means no key filter.
+   *
+   * Kafka cannot query by key — the backend scans the offset range the date
+   * filters resolve to and keeps only exact byte matches, discarding the rest
+   * before their payloads are ever read.
+   *
+   * When this is set the backend ignores `maxMessagesPerPartition` (the date
+   * range is the bound), while `maxTotalMessages` becomes a cap on *matches*:
+   * set it to 5 and the fetch returns the newest 5 messages with this key and
+   * stops. Left null, every match in the range comes back.
+   */
+  key: string | null;
   includePayload: boolean;
   /**
    * How many payload bytes to carry back per message; `null` means the whole
@@ -218,6 +231,10 @@ export interface TopicMessage {
 export interface MessagesBatchEvent {
   requestId: string;
   messages: TopicMessage[];
+  /** Messages examined so far by this fetch, matching or not. A key search emits batches with no messages at all, carrying only this and `scanTotal` — that is what moves the progress line while a long scan finds nothing. */
+  scanned: number;
+  /** How many messages lie in this fetch's whole resolved range. */
+  scanTotal: number;
 }
 
 /** `totalMatching` is how many messages satisfy the fetch's partition/offset/timestamp filter in total, uncapped by "max messages per partition"/"total max messages" — `messages.length` can be smaller than this when those caps trimmed the result, telling the Data tab more remain beyond what was actually loaded. */
@@ -229,6 +246,8 @@ export interface MessageFetchResult {
   stoppedAtByteBudget?: boolean;
   /** Payload bytes read from the broker during this fetch, before any preview truncation. */
   payloadBytesRead?: number;
+  /** Messages examined by this fetch, matching or not. Equal to `messages.length` on an ordinary browse; on a key search it is the size of the scanned range. */
+  scanned?: number;
 }
 
 export interface ImportSummary {
