@@ -7,7 +7,6 @@ mod fetch_cancellation;
 mod message;
 mod message_stream;
 mod registry;
-mod scan_progress;
 
 pub use cluster::{
     BrokerSummary, ConfigEntry, ConsumerGroupLag, ConsumerGroupSummary, PartitionLag,
@@ -15,7 +14,6 @@ pub use cluster::{
 };
 pub use message::{MessageFetchResult, MessageFilter, MessageHeader, MessagesBatchEvent, TopicMessage};
 pub use message_stream::forward_in_batches;
-pub use scan_progress::ScanProgress;
 pub use connection::{
     Connection, ConnectionStatus, NewConnection, SaslMechanism, SecurityProtocol,
 };

@@ -30,11 +30,12 @@ function countLine(): string {
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-type BatchPayload = { requestId: string; messages: unknown[]; scanned: number; scanTotal: number };
-let capturedMessagesBatchHandler: ((event: { payload: BatchPayload }) => void) | null = null;
+let capturedMessagesBatchHandler:
+  | ((event: { payload: { requestId: string; messages: unknown[] } }) => void)
+  | null = null;
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(
-    (_event: string, handler: (event: { payload: BatchPayload }) => void) => {
+    (_event: string, handler: (event: { payload: { requestId: string; messages: unknown[] } }) => void) => {
       capturedMessagesBatchHandler = handler;
       return Promise.resolve(() => {});
     },
@@ -161,145 +162,6 @@ describe("DataTab", () => {
     expect(screen.getByLabelText(/^From/)).toBeInTheDocument();
     expect(screen.getByLabelText(/^To(\s|$)/)).toBeInTheDocument();
     expect(screen.getByLabelText("Offset")).toBeInTheDocument();
-  });
-
-  it("renders the Key filter input", () => {
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    expect(screen.getByLabelText("Key")).toBeInTheDocument();
-  });
-
-  // The per-partition window is meaningless for a scan bounded by a date
-  // range; "Total max messages" stays live because it becomes the cap on
-  // *matches* that lets the backend stop early.
-  it("disables only the per-partition cap once a key is typed, and says why", async () => {
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    expect(screen.getByLabelText("Max messages per partition")).toBeEnabled();
-    expect(screen.queryByText(/doesn't apply to a key search/i)).not.toBeInTheDocument();
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-
-    expect(screen.getByLabelText("Max messages per partition")).toBeDisabled();
-    expect(screen.getByLabelText("Total max messages")).toBeEnabled();
-    expect(screen.getByText(/doesn't apply to a key search/i)).toBeInTheDocument();
-  });
-
-  // A key search reads its whole range, so the bound is real and the user has
-  // to be able to see and change it — it goes into the field, not just onto
-  // the wire.
-  it("fills From with today's date when a key is typed into a blank form", async () => {
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    const pad = (value: number) => String(value).padStart(2, "0");
-    const expected = `${midnight.getFullYear()}-${pad(midnight.getMonth() + 1)}-${pad(midnight.getDate())}T00:00`;
-    expect(screen.getByLabelText(/^From/)).toHaveValue(expected);
-  });
-
-  it("leaves a From the user already chose alone", async () => {
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    fireEvent.change(screen.getByLabelText(/^From/), { target: { value: "2026-01-02T03:04" } });
-    await user.type(screen.getByLabelText("Key"), "order-123");
-
-    expect(screen.getByLabelText(/^From/)).toHaveValue("2026-01-02T03:04");
-  });
-
-  // Silently undoing a date the user can see would be worse than leaving it:
-  // once filled, it is an ordinary field value they clear themselves.
-  it("does not revert the filled From when the key is cleared again", async () => {
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-    const filled = (screen.getByLabelText(/^From/) as HTMLInputElement).value;
-    expect(filled).not.toBe("");
-
-    await user.clear(screen.getByLabelText("Key"));
-
-    expect(screen.getByLabelText(/^From/)).toHaveValue(filled);
-    expect(screen.getByLabelText("Max messages per partition")).toBeEnabled();
-    expect(screen.queryByText(/doesn't apply to a key search/i)).not.toBeInTheDocument();
-  });
-
-  it("sends the typed key on the wire, with today as the From bound", async () => {
-    const fetchMessages = vi.fn((_args: { filter: { key: string | null; fromTimestampMs: number | null } }) =>
-      Promise.resolve({ messages: [], totalMatching: 0, scanned: 0 }),
-    );
-    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-    await user.click(screen.getByRole("button", { name: "Fetch" }));
-
-    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    const sent = fetchMessages.mock.calls[0][0].filter;
-    expect(sent.key).toBe("order-123");
-    expect(sent.fromTimestampMs).toBe(midnight.getTime());
-  });
-
-  it("reports found and scanned counts for a key search", async () => {
-    const fetchMessages = vi.fn((_args: { requestId: string }) => new Promise(() => {}));
-    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-    await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
-    const requestId = fetchMessages.mock.calls[0][0].requestId;
-
-    // An empty batch: the scan is reading its range and finding nothing, which
-    // is exactly when the user most needs to see it is still working.
-    act(() => {
-      capturedMessagesBatchHandler?.({
-        payload: { requestId, messages: [], scanned: 1_200_000, scanTotal: 39_800_000 },
-      });
-    });
-
-    await waitFor(() => expect(countLine()).toMatch(/0 found — scanned 1,200,000 of 39,800,000 messages/));
-  });
-
-  it("keeps the ordinary loaded/matching line when no key was used", async () => {
-    const fetchMessages = vi.fn((_args: { requestId: string }) =>
-      Promise.resolve({ messages: [], totalMatching: 12, scanned: 12 }),
-    );
-    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.click(screen.getByRole("button", { name: "Fetch" }));
-
-    await waitFor(() => expect(countLine()).toMatch(/0 loaded of 12 matching/));
-  });
-
-  // The count line describes the fetch that produced the rows on screen, so
-  // clearing the key without re-fetching must not switch it back mid-result.
-  it("keeps the key-search line until the next fetch replaces it", async () => {
-    const fetchMessages = vi.fn((_args: { requestId: string }) =>
-      Promise.resolve({ messages: [], totalMatching: 100, scanned: 50 }),
-    );
-    setInvokeHandlers({ connection_fetch_messages: fetchMessages });
-    const user = userEvent.setup();
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-
-    await user.type(screen.getByLabelText("Key"), "order-123");
-    await user.click(screen.getByRole("button", { name: "Fetch" }));
-    await waitFor(() => expect(countLine()).toMatch(/0 found — scanned 50 of 100 messages/));
-
-    await user.clear(screen.getByLabelText("Key"));
-
-    expect(countLine()).toMatch(/0 found — scanned 50 of 100 messages/);
   });
 
   it("pre-fills and disables the partition filter when partitionId is given", () => {
@@ -450,7 +312,6 @@ describe("DataTab", () => {
           fromTimestampMs: null,
           toTimestampMs: null,
           offset: null,
-          key: null,
           includePayload: false,
           maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
         },
@@ -612,7 +473,7 @@ describe("DataTab", () => {
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
     const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
 
     await waitFor(() => expect(lastGridProps?.rowData).toEqual([streamed]));
 
@@ -644,7 +505,7 @@ describe("DataTab", () => {
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
     const streamed = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
     await user.click(screen.getByRole("button", { name: "Stop" }));
 
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -794,7 +655,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(lastGridProps?.loading).toBe(false));
 
     const stale = { partition: 0, offset: 1, timestampMs: null, keyBase64: null, payloadBase64: null };
-    capturedMessagesBatchHandler?.({ payload: { requestId: "some-other-request", messages: [stale], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId: "some-other-request", messages: [stale] } });
 
     expect(lastGridProps?.rowData).toEqual([]);
   });
@@ -1368,7 +1229,6 @@ describe("DataTab", () => {
         fromTimestampMs: null,
         toTimestampMs: null,
         offset: 1,
-        key: null,
         includePayload: true,
         maxPayloadPreviewBytes: MAX_INLINE_PAYLOAD_BYTES,
       },
@@ -1902,8 +1762,8 @@ describe("DataTab", () => {
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)], scanned: 0, scanTotal: 0 } });
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(2));
 
     // Still mid-fetch, and already counted.
@@ -1934,7 +1794,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
     const requestId = fetchMessages.mock.calls[0][0].requestId;
     const streamed = row(4_000, 4_000);
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
     await waitFor(() => expect(held()).toBe(4_000));
 
     resolveFetch({ messages: [], totalMatching: 1, payloadBytesRead: 4_000 });
@@ -1968,7 +1828,7 @@ describe("DataTab", () => {
     const streamed = row(4_000, 4_000);
     // Streamed and resolved inside the same flush window, so the buffer is
     // still pending when the fetch completes.
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [streamed] } });
     resolveFetch({ messages: [], totalMatching: 1, payloadBytesRead: 4_000 });
 
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
@@ -1999,7 +1859,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(fetchMessages).toHaveBeenCalled());
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
-    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)], scanned: 0, scanTotal: 0 } });
+    capturedMessagesBatchHandler?.({ payload: { requestId, messages: [row(4_000, 4_000)] } });
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(1));
 
     resolveFetch({ messages: [row(1_000, 1_000)], totalMatching: 2, payloadBytesRead: 5_000 });
@@ -2023,12 +1883,7 @@ describe("DataTab", () => {
     const requestId = fetchMessages.mock.calls[0][0].requestId;
 
     capturedMessagesBatchHandler?.({
-      payload: {
-        requestId,
-        messages: [row(1_000, 1_000), row(2_000, 2_000), row(3_000, 3_000)],
-        scanned: 0,
-        scanTotal: 0,
-      },
+      payload: { requestId, messages: [row(1_000, 1_000), row(2_000, 2_000), row(3_000, 3_000)] },
     });
 
     await waitFor(() => expect(lastGridProps?.rowData).toHaveLength(3));

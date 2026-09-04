@@ -76,18 +76,6 @@ interface TabDataState {
    */
   totalMatchingByTab: Record<string, number>;
   /**
-   * How far the last (or in-flight) fetch got through its range, per view.
-   *
-   * Only meaningful for a key search, which reads its whole range and keeps
-   * only the matches: "3 loaded of 40,000 matching" would describe such a
-   * fetch as having found 39,997 messages it did not show, when in truth it
-   * examined 40,000 and three of them matched. `undefined` means this view has
-   * no scan to report and the count line falls back to its ordinary form.
-   */
-  scanProgressByTab: Record<string, { scanned: number; scanTotal: number }>;
-  /** Whether the fetch that produced this view's rows used a key filter — which is what decides which count line it gets. */
-  keyScanByTab: Record<string, boolean>;
-  /**
    * How long the last Fetch into this view took, wall-clock, in
    * milliseconds — what the count line reports as "… in 2,000 ms".
    *
@@ -143,10 +131,6 @@ interface TabDataState {
   setTabFetchDurationMs: (tabId: string, durationMs: number) => void;
   /** Records the last Fetch's total-matching count separately from the row cache — a single-row payload patch (`fetchPayloadForRow`) replaces a tab's cached rows without knowing (or wanting to overwrite) the total the original Fetch found. */
   setTabTotalMatching: (tabId: string, totalMatching: number) => void;
-  /** Records how far a fetch has got through its range, for the key search's "N found — scanned X of Y" line. */
-  setTabScanProgress: (tabId: string, progress: { scanned: number; scanTotal: number }) => void;
-  /** Records whether the fetch producing this view's rows was a key search. */
-  setTabKeyScan: (tabId: string, isKeyScan: boolean) => void;
   /** Appends one streamed message onto a tab's rows — backs the Data tab's live-streaming Fetch, which paints rows in as they arrive instead of waiting for the whole fetch to finish. */
   appendTabMessage: (tabId: string, message: TopicMessage) => void;
   /**
@@ -198,8 +182,6 @@ export function totalRetainedPayloadBytes(payloadBytesByTab: Record<string, numb
 export const useTabDataStore = create<TabDataState>((set) => ({
   messagesByTab: {},
   totalMatchingByTab: {},
-  scanProgressByTab: {},
-  keyScanByTab: {},
   fetchDurationMsByTab: {},
   payloadBytesByTab: {},
   lastUsedByTab: {},
@@ -217,10 +199,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
     })),
   setTabTotalMatching: (tabId, totalMatching) =>
     set((state) => ({ totalMatchingByTab: { ...state.totalMatchingByTab, [tabId]: totalMatching } })),
-  setTabScanProgress: (tabId, progress) =>
-    set((state) => ({ scanProgressByTab: { ...state.scanProgressByTab, [tabId]: progress } })),
-  setTabKeyScan: (tabId, isKeyScan) =>
-    set((state) => ({ keyScanByTab: { ...state.keyScanByTab, [tabId]: isKeyScan } })),
   setTabFetchDurationMs: (tabId, durationMs) =>
     set((state) => ({ fetchDurationMsByTab: { ...state.fetchDurationMsByTab, [tabId]: durationMs } })),
   appendTabMessage: (tabId, message) =>
@@ -243,11 +221,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
     set((state) => {
       const { [tabId]: _removed, ...rest } = state.messagesByTab;
       const { [tabId]: _removedTotal, ...restTotal } = state.totalMatchingByTab;
-      // Scan progress describes the fetch that produced those rows, so it goes
-      // with them. Leaving it behind is the v0.47.0 mistake in a new place: a
-      // stale "scanned 1,200,000" beside a fresh fetch's empty grid.
-      const { [tabId]: _removedScan, ...restScan } = state.scanProgressByTab;
-      const { [tabId]: _removedKeyScan, ...restKeyScan } = state.keyScanByTab;
       // The timing describes the fetch that produced those rows, so it is
       // dropped with them — a stale "in 2,000 ms" next to a fresh fetch's
       // growing row count would be describing the fetch before it.
@@ -263,8 +236,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       return {
         messagesByTab: rest,
         totalMatchingByTab: restTotal,
-        scanProgressByTab: restScan,
-        keyScanByTab: restKeyScan,
         fetchDurationMsByTab: restDuration,
         payloadBytesByTab: restBytes,
         lastUsedByTab: restUsed,
@@ -280,12 +251,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const totalMatchingByTab = Object.fromEntries(
         Object.entries(state.totalMatchingByTab).filter(([key]) => !key.startsWith(prefix)),
       );
-      const scanProgressByTab = Object.fromEntries(
-        Object.entries(state.scanProgressByTab).filter(([key]) => !key.startsWith(prefix)),
-      );
-      const keyScanByTab = Object.fromEntries(
-        Object.entries(state.keyScanByTab).filter(([key]) => !key.startsWith(prefix)),
-      );
       const fetchDurationMsByTab = Object.fromEntries(
         Object.entries(state.fetchDurationMsByTab).filter(([key]) => !key.startsWith(prefix)),
       );
@@ -298,16 +263,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const evictedTabs = Object.fromEntries(
         Object.entries(state.evictedTabs).filter(([key]) => !key.startsWith(prefix)),
       );
-      return {
-        messagesByTab,
-        totalMatchingByTab,
-        scanProgressByTab,
-        keyScanByTab,
-        fetchDurationMsByTab,
-        payloadBytesByTab,
-        lastUsedByTab,
-        evictedTabs,
-      };
+      return { messagesByTab, totalMatchingByTab, fetchDurationMsByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
     }),
   clearForConnection: (connectionId) =>
     set((state) => {
@@ -316,8 +272,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       return {
         messagesByTab: keep(state.messagesByTab),
         totalMatchingByTab: keep(state.totalMatchingByTab),
-        scanProgressByTab: keep(state.scanProgressByTab),
-        keyScanByTab: keep(state.keyScanByTab),
         fetchDurationMsByTab: keep(state.fetchDurationMsByTab),
         payloadBytesByTab: keep(state.payloadBytesByTab),
         lastUsedByTab: keep(state.lastUsedByTab),
@@ -331,8 +285,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
       const payloadBytesByTab = { ...state.payloadBytesByTab };
       const messagesByTab = { ...state.messagesByTab };
       const totalMatchingByTab = { ...state.totalMatchingByTab };
-      const scanProgressByTab = { ...state.scanProgressByTab };
-      const keyScanByTab = { ...state.keyScanByTab };
       const fetchDurationMsByTab = { ...state.fetchDurationMsByTab };
       const lastUsedByTab = { ...state.lastUsedByTab };
       const evictedTabs = { ...state.evictedTabs };
@@ -351,11 +303,6 @@ export const useTabDataStore = create<TabDataState>((set) => ({
         delete payloadBytesByTab[coldest];
         delete messagesByTab[coldest];
         delete totalMatchingByTab[coldest];
-        // Evicted with the rows they describe, for the same reason the total
-        // and the timing are: an evicted view showing "scanned 1,200,000" over
-        // an empty grid describes a fetch whose results are gone.
-        delete scanProgressByTab[coldest];
-        delete keyScanByTab[coldest];
         delete fetchDurationMsByTab[coldest];
         delete lastUsedByTab[coldest];
         evictedTabs[coldest] = true;
@@ -364,16 +311,7 @@ export const useTabDataStore = create<TabDataState>((set) => ({
 
       return evicted.length === 0
         ? state
-        : {
-            messagesByTab,
-            totalMatchingByTab,
-            scanProgressByTab,
-            keyScanByTab,
-            fetchDurationMsByTab,
-            payloadBytesByTab,
-            lastUsedByTab,
-            evictedTabs,
-          };
+        : { messagesByTab, totalMatchingByTab, fetchDurationMsByTab, payloadBytesByTab, lastUsedByTab, evictedTabs };
     });
     return evicted;
   },

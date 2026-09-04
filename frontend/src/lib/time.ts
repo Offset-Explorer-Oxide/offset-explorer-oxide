@@ -66,20 +66,3 @@ export function localTimeZoneLabel(): string {
     return "";
   }
 }
-
-/**
- * Epoch milliseconds as the `YYYY-MM-DDTHH:mm` string an
- * `<input type="datetime-local">` accepts, in the system's own timezone.
- *
- * Deliberately not `toISOString().slice(0, 16)`, which is UTC: that would put
- * yesterday's date in the box for anyone east of Greenwich after midnight, and
- * `parseDate` would then read the value back as local time — shifting the
- * boundary twice.
- */
-export function toDateTimeLocalValue(ms: number): string {
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
-    date.getMinutes(),
-  )}`;
-}

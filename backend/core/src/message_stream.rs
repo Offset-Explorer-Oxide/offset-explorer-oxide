@@ -49,23 +49,16 @@ where
         // topic (or the tail of any fetch) would hold rows back until enough
         // of them existed, and a fetch returning fewer than `batch_size`
         // messages would never stream at all.
-        // Both branches are the same wait now. A partial batch has always
-        // waited at most `batch_interval` for the messages that would fill it;
-        // an *empty* one used to park here indefinitely, which was fine when a
-        // batch was the only thing an event carried. It no longer is: a key
-        // search reads its whole range and keeps only what matches, so the
-        // emit below is also the fetch's progress heartbeat, and parking on an
-        // empty batch froze the count line for the length of the scan.
-        //
-        // The empty batches this now emits cost one serialization per
-        // interval and carry no rows; `emitted` counts messages, so they add
-        // nothing to it and the caller's remainder accounting is unchanged.
-        let received = match tokio::time::timeout(batch_interval, messages.recv()).await {
-            Ok(received) => received,
-            Err(_elapsed) => {
-                emitted += batch.len();
-                emit(std::mem::take(&mut batch));
-                continue;
+        let received = if batch.is_empty() {
+            messages.recv().await
+        } else {
+            match tokio::time::timeout(batch_interval, messages.recv()).await {
+                Ok(received) => received,
+                Err(_elapsed) => {
+                    emitted += batch.len();
+                    emit(std::mem::take(&mut batch));
+                    continue;
+                }
             }
         };
 
@@ -133,12 +126,8 @@ mod tests {
     impl Collector {
         fn emitter(&self) -> impl FnMut(Vec<TopicMessage>) {
             let batches = Arc::clone(&self.batches);
-            // The assertion that used to stand here — "an empty batch is a
-            // wasted IPC hop" — was true while a batch was the only thing an
-            // event carried. An empty one now carries scan progress, which is
-            // the only thing that moves during a key search that is finding
-            // nothing, so it is the opposite of wasted.
             move |batch: Vec<TopicMessage>| {
+                assert!(!batch.is_empty(), "an empty batch is a wasted IPC hop");
                 batches.lock().unwrap().push(batch.iter().map(|m| m.offset).collect());
             }
         }
@@ -149,12 +138,6 @@ mod tests {
 
         fn offsets(&self) -> Vec<i64> {
             self.batches().into_iter().flatten().collect()
-        }
-
-        /// How many times `emit` was called, empty batches included — the
-        /// heartbeat is invisible to `offsets()`, which flattens them away.
-        fn emit_count(&self) -> usize {
-            self.batches.lock().unwrap().len()
         }
     }
 
@@ -380,36 +363,4 @@ mod tests {
         assert_eq!(emitted, 2);
         assert_eq!(collector.batches(), vec![vec![0], vec![1]]);
     }
-    /// A key search spends most of its time finding nothing. The batch flush
-    /// is what carries scan progress to the UI, so it has to keep ticking with
-    /// an empty batch — otherwise the count line freezes for the whole scan
-    /// and a fetch that is working perfectly looks hung.
-    #[tokio::test]
-    async fn an_empty_batch_is_still_emitted_on_the_interval() {
-        let (tx, rx) = unbounded_channel();
-        let collector = Collector::default();
-        let emitter = collector.emitter();
-
-        let handle = tokio::spawn(async move {
-            forward_in_batches(
-                rx,
-                Arc::new(AtomicBool::new(false)),
-                64,
-                Duration::from_millis(20),
-                0,
-                emitter,
-                |_| {},
-            )
-            .await
-        });
-
-        // Nothing sent at all, for several intervals.
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        assert!(collector.emit_count() >= 2, "expected heartbeats while idle, got {}", collector.emit_count());
-        assert!(collector.offsets().is_empty(), "a heartbeat must carry no rows");
-
-        drop(tx);
-        assert_eq!(handle.await.unwrap(), 0, "heartbeats are not messages");
-    }
-
 }
