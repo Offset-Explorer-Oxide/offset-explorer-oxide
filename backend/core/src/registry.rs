@@ -37,6 +37,16 @@ struct AuthFailures {
 pub struct ConnectionRegistry {
     connected: Mutex<HashSet<String>>,
     auth_failures: Mutex<HashMap<String, AuthFailures>>,
+    /// Topics this connection's principal has been refused *write* access to,
+    /// keyed by `(connection id, topic)`, with the broker's own reason.
+    ///
+    /// Separate from `auth_failures` on purpose. A rejected password is a fact
+    /// about the connection, so it blocks everything; a missing Write grant is
+    /// a fact about one topic, so it blocks only publishing to that topic —
+    /// reading it, and writing to others, must keep working. Mixing the two
+    /// would let a single denied publish take a working cluster offline inside
+    /// the app.
+    write_denials: Mutex<HashMap<(String, String), String>>,
 }
 
 impl ConnectionRegistry {
@@ -46,6 +56,14 @@ impl ConnectionRegistry {
 
     pub fn mark_disconnected(&self, connection_id: &str) {
         self.connected.lock().unwrap().remove(connection_id);
+        // A write denial is a verdict about a session that has just ended.
+        // Unlike a rejected password — which disconnect deliberately does not
+        // forget, so that disconnect/reconnect cannot become a way to keep
+        // dialling with credentials known to be wrong — re-asking the broker
+        // about an ACL costs one produce request that the broker was going to
+        // authorize or refuse anyway, and ACLs do get granted while the app is
+        // open.
+        self.clear_write_denials(connection_id);
     }
 
     pub fn is_connected(&self, connection_id: &str) -> bool {
@@ -86,6 +104,11 @@ impl ConnectionRegistry {
     /// explicitly ask to connect again.
     pub fn clear_auth_failures(&self, connection_id: &str) {
         self.auth_failures.lock().unwrap().remove(connection_id);
+        // Both of this method's callers — an explicit Connect/Reconnect, and a
+        // connection edit — are the user saying "try again with this". A
+        // per-topic write verdict from the previous session is no more valid
+        // than the credential verdict beside it.
+        self.clear_write_denials(connection_id);
     }
 
     /// The reason to refuse this connection's requests without dialling the
@@ -99,6 +122,40 @@ impl ConnectionRegistry {
             .get(connection_id)
             .filter(|failures| failures.attempts >= MAX_AUTH_ATTEMPTS)
             .map(|failures| failures.reason.clone())
+    }
+
+    /// Records that the broker refused to let this connection write to this
+    /// topic, with the reason it gave.
+    ///
+    /// One refusal is enough — unlike the credential breaker, which allows two
+    /// attempts because a single rejection can be a blip. An ACL check is not
+    /// a blip: the broker consulted its authorizer and said no, and it will
+    /// say no to every identical request until someone changes the ACL. Trying
+    /// again only asks the cluster to re-run an authorization check and log a
+    /// second denial.
+    pub fn record_write_denied(&self, connection_id: &str, topic: &str, reason: &str) {
+        self.write_denials
+            .lock()
+            .unwrap()
+            .insert((connection_id.to_string(), topic.to_string()), reason.to_string());
+    }
+
+    /// Why publishing to this topic is being refused without contacting the
+    /// broker, or `None` if it isn't.
+    pub fn write_denied_reason(&self, connection_id: &str, topic: &str) -> Option<String> {
+        self.write_denials
+            .lock()
+            .unwrap()
+            .get(&(connection_id.to_string(), topic.to_string()))
+            .cloned()
+    }
+
+    /// Forgets every write denial recorded against this connection.
+    pub fn clear_write_denials(&self, connection_id: &str) {
+        self.write_denials
+            .lock()
+            .unwrap()
+            .retain(|(id, _), _| id != connection_id);
     }
 }
 
@@ -254,4 +311,117 @@ mod tests {
 
         assert!(registry.auth_block_reason("conn-1").is_some());
     }
+
+    #[test]
+    fn a_topic_with_no_history_is_not_write_denied() {
+        let registry = ConnectionRegistry::default();
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+    }
+
+    #[test]
+    fn one_write_denial_is_enough_to_block_that_topic() {
+        // Unlike the credential breaker's two attempts: an ACL check is not a
+        // blip, and retrying only asks the cluster to log a second denial.
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "Broker: Topic authorization failed");
+        assert_eq!(
+            registry.write_denied_reason("conn-1", "orders"),
+            Some("Broker: Topic authorization failed".to_string())
+        );
+    }
+
+    #[test]
+    fn a_write_denial_blocks_only_the_topic_it_was_recorded_for() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "denied");
+        assert_eq!(registry.write_denied_reason("conn-1", "payments"), None);
+    }
+
+    #[test]
+    fn a_write_denial_blocks_only_the_connection_it_was_recorded_for() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "denied");
+        assert_eq!(registry.write_denied_reason("conn-2", "orders"), None);
+    }
+
+    #[test]
+    fn a_later_denial_replaces_the_reason_for_the_same_topic() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "first");
+        registry.record_write_denied("conn-1", "orders", "second");
+        assert_eq!(
+            registry.write_denied_reason("conn-1", "orders"),
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn a_write_denial_does_not_count_against_the_credential_breaker() {
+        // The whole reason AppError::Authorization exists separately: a
+        // principal that may read a topic but not write it has perfectly good
+        // credentials, and blocking the connection would stop topics, brokers
+        // and fetches from loading over a capability it never had.
+        let registry = ConnectionRegistry::default();
+        registry.mark_connected("conn-1");
+        for _ in 0..MAX_AUTH_ATTEMPTS + 2 {
+            registry.record_write_denied("conn-1", "orders", "Topic authorization failed");
+        }
+        assert_eq!(registry.auth_block_reason("conn-1"), None);
+        assert!(registry.is_connected("conn-1"));
+    }
+
+    #[test]
+    fn reconnecting_clears_write_denials_so_a_granted_acl_can_take_effect() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "denied");
+        registry.clear_auth_failures("conn-1");
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+    }
+
+    #[test]
+    fn disconnecting_clears_write_denials() {
+        let registry = ConnectionRegistry::default();
+        registry.mark_connected("conn-1");
+        registry.record_write_denied("conn-1", "orders", "denied");
+        registry.mark_disconnected("conn-1");
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+    }
+
+    #[test]
+    fn clearing_one_connections_denials_leaves_anothers_alone() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "denied");
+        registry.record_write_denied("conn-2", "orders", "denied");
+        registry.clear_write_denials("conn-1");
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+        assert_eq!(
+            registry.write_denied_reason("conn-2", "orders"),
+            Some("denied".to_string())
+        );
+    }
+
+    #[test]
+    fn clearing_denials_clears_every_topic_of_that_connection() {
+        let registry = ConnectionRegistry::default();
+        registry.record_write_denied("conn-1", "orders", "denied");
+        registry.record_write_denied("conn-1", "payments", "denied");
+        registry.clear_write_denials("conn-1");
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+        assert_eq!(registry.write_denied_reason("conn-1", "payments"), None);
+    }
+
+    #[test]
+    fn a_tripped_credential_breaker_does_not_leave_stale_write_denials_behind() {
+        // Tripping the breaker marks the connection disconnected, which clears
+        // them — so the reason the user is shown after fixing their password is
+        // the current one, not a verdict from the previous session.
+        let registry = ConnectionRegistry::default();
+        registry.mark_connected("conn-1");
+        registry.record_write_denied("conn-1", "orders", "denied");
+        for _ in 0..MAX_AUTH_ATTEMPTS {
+            registry.record_auth_failure("conn-1", "Authentication failed");
+        }
+        assert_eq!(registry.write_denied_reason("conn-1", "orders"), None);
+    }
+
 }

@@ -82,6 +82,16 @@ export interface Connection {
   sslKeystoreLocation: string | null;
   sslKeystorePassword: string | null;
   sslKeystoreKeyPassword: string | null;
+  /**
+   * Whether this connection may publish messages at all. Defaults to `false`
+   * for every connection — see the Rust `Connection::allow_publishing`.
+   *
+   * The Publish tab reads this to explain itself before the user types
+   * anything, but it is *not* what enforces it: the Rust command re-reads the
+   * column from SQLite on every publish, so this field is a hint and the
+   * backend is the gate.
+   */
+  allowPublishing: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +121,7 @@ export interface NewConnection {
   sslKeystoreLocation: string | null;
   sslKeystorePassword: string | null;
   sslKeystoreKeyPassword: string | null;
+  allowPublishing: boolean;
 }
 
 export interface Tab {
@@ -231,6 +242,60 @@ export interface MessageFetchResult {
   payloadBytesRead?: number;
 }
 
+
+/** How an entered key, value or header value becomes bytes. Mirrors the Rust `PayloadEncoding`. */
+export type PayloadEncoding = "null" | "text" | "json" | "base64";
+
+/** One entered field: what the user chose, and what they typed. */
+export interface PublishField {
+  encoding: PayloadEncoding;
+  text: string;
+}
+
+export interface PublishHeaderInput {
+  key: string;
+  value: PublishField;
+}
+
+/**
+ * One message to publish, as entered. Deliberately carries the *text* and the
+ * declared encoding rather than bytes: `encode_messages` in Rust is the only
+ * thing that turns one into the other, so a malformed payload is refused in one
+ * place regardless of how the command was called.
+ */
+export interface NewPublishMessage {
+  key: PublishField;
+  value: PublishField;
+  headers: PublishHeaderInput[];
+}
+
+export interface DeliveredRecord {
+  /** Zero-based index into the submitted message list. */
+  index: number;
+  partition: number;
+  offset: number;
+}
+
+/**
+ * Why a publish stopped. `authorization` is the one the UI treats specially: it
+ * means this principal may not write to the topic, so retrying is pointless and
+ * the tab disables itself.
+ */
+export type PublishFailureKind = "authorization" | "authentication" | "validation" | "transient";
+
+export interface PublishFailure {
+  index: number;
+  kind: PublishFailureKind;
+  reason: string;
+}
+
+/** What a publish did: what landed, what failed, and what was never tried. */
+export interface PublishOutcome {
+  delivered: DeliveredRecord[];
+  failure: PublishFailure | null;
+  notAttempted: number;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -333,6 +398,26 @@ export const api = {
       groupId,
       readTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
     }),
+  /**
+   * Publishes messages to one partition. Rejects when any of the backend's
+   * gates refuses (not connected, publishing not allowed for the connection, a
+   * cached broker denial, or a message that fails validation) — in which case
+   * nothing reached the cluster. Resolves with the outcome when the publish
+   * reached the broker, *including* when it failed part-way: the outcome then
+   * says which messages landed and at which offsets, which an error could not.
+   */
+  publishMessages: (id: string, topic: string, partition: number, messages: NewPublishMessage[]) =>
+    invoke<PublishOutcome>("connection_publish_messages", {
+      id,
+      topic,
+      partition,
+      messages,
+      maxMessageSizeBytes: useGeneralSettingsStore.getState().maxMessageSizeBytes,
+      writeTimeoutMs: useGeneralSettingsStore.getState().brokerReadTimeoutMs,
+    }),
+  /** Why publishing to this topic is blocked without asking the broker, or `null` if it isn't. */
+  writeDeniedReason: (id: string, topic: string) =>
+    invoke<string | null>("connection_write_denied_reason", { id, topic }),
   getTopicSchema: (connectionId: string, topic: string, format: SchemaFormat) =>
     invoke<string | null>("topic_schema_get", { connectionId, topic, format }),
   setTopicSchema: (connectionId: string, topic: string, format: SchemaFormat, schemaText: string) =>

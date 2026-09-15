@@ -4,8 +4,8 @@ use base64::Engine;
 use error_stack::{Result, ResultExt};
 use kafkaoxide_core::{
     AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
-    ConsumerGroupSummary, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag, PartitionSummary,
-    SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
+    ConsumerGroupSummary, EncodedRecord, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag,
+    PartitionSummary, PublishOutcome, SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
 };
 use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
 use rdkafka::client::{ClientContext, DefaultClientContext};
@@ -294,6 +294,32 @@ pub trait KafkaClient: Send + Sync {
         group_id: &str,
         read_timeout: Duration,
     ) -> Result<ConsumerGroupLag, AppError>;
+
+    /// Backs the partition detail panel's Publish tab: writes `records` to one
+    /// partition, in order, and reports what happened to each.
+    ///
+    /// The only write in this trait, and the only one whose caller must have
+    /// cleared a gate first — see `kafkaoxide_core::publish_refusal`, which the
+    /// command layer applies before calling this. `records` arrive already
+    /// encoded and size-checked by `kafkaoxide_core::encode_messages`, so this
+    /// method neither parses nor validates user input: whatever reaches here is
+    /// bytes that have already been agreed to.
+    ///
+    /// A broker's refusal to authorize the write is reported as
+    /// `AppError::Authorization` inside the returned `PublishOutcome`'s
+    /// `failure`, not as an `Err` — the outcome has to survive a partial
+    /// publish, and "which of my messages landed" is unanswerable otherwise.
+    /// See `crate::producer::publish_messages`.
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_messages(
+        &self,
+        connection: &Connection,
+        topic: &str,
+        partition: i32,
+        records: &[EncodedRecord],
+        max_message_size_bytes: u32,
+        write_timeout: Duration,
+    ) -> Result<PublishOutcome, AppError>;
 }
 
 /// The members of a consumer group, safely.
@@ -1687,6 +1713,32 @@ impl KafkaClient for RdKafkaClient {
         .change_context(AppError::Kafka)
         .attach_printable("fetch_consumer_group_lag task panicked")?
     }
+
+    async fn publish_messages(
+        &self,
+        connection: &Connection,
+        topic: &str,
+        partition: i32,
+        records: &[EncodedRecord],
+        max_message_size_bytes: u32,
+        write_timeout: Duration,
+    ) -> Result<PublishOutcome, AppError> {
+        // Deliberately *not* routed through `metadata_client`/`admin_client`'s
+        // pool. Every other client here is long-lived because it is read-only
+        // and reused constantly; a producer is neither. Building one per publish
+        // means no write-capable client exists on this machine except while an
+        // authorized publish is actually in flight, and the handshake it costs
+        // is paid once per deliberate human action rather than per request.
+        crate::producer::publish_messages(
+            connection,
+            topic,
+            partition,
+            records,
+            max_message_size_bytes,
+            write_timeout,
+        )
+        .await
+    }
 }
 
 /// Turns a poll failure into a line that explains itself.
@@ -1806,6 +1858,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
             created_at: "now".into(),
             updated_at: "2026-08-27T00:00:00Z".into(),
         }
@@ -2118,6 +2171,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
             created_at: "now".into(),
             updated_at: "now".into(),
         }

@@ -27,6 +27,7 @@ export function sampleNewConnection(overrides: Partial<NewConnection> = {}): New
     sslKeystoreLocation: null,
     sslKeystorePassword: null,
     sslKeystoreKeyPassword: null,
+    allowPublishing: false,
     ...overrides,
   };
 }

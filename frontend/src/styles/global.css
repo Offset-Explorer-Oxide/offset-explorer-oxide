@@ -1353,6 +1353,13 @@ body {
   gap: 6px !important;
 }
 
+.connection-modal-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--color-fg-muted);
+  line-height: 1.5;
+}
+
 .connection-modal-fieldset {
   border: none;
   margin: 0;
@@ -1441,5 +1448,202 @@ body {
   grid-column: 1 / -1;
   margin: 4px 0 0;
   font-size: 12px;
+  color: var(--color-fg-muted);
+}
+
+/* --- Publish tab ---------------------------------------------------------- */
+
+/* The gated states: a cluster that is not connected, a connection without
+   "Allow publishing", or a topic the broker has already refused. Deliberately
+   styled as the whole panel — no form is rendered at all in these states, so
+   there is nothing to type that was never going to be sent. */
+.publish-gate {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 16px;
+  background: var(--color-bg-elevated);
+  max-width: 640px;
+}
+.publish-gate h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.publish-gate p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-fg-muted);
+  line-height: 1.6;
+}
+
+.publish-target {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--color-fg-muted);
+}
+
+.publish-message {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+/* Marked after a partial publish, so the rows that already reached the topic
+   are visibly distinct from the ones that did not. */
+.publish-message--delivered {
+  border-color: var(--color-status-green);
+}
+.publish-message-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.publish-message-header h3 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.publish-message-size {
+  font-size: 11px;
+  color: var(--color-fg-muted);
+  margin-right: auto;
+}
+.publish-message-delivered {
+  font-size: 11px;
+  color: var(--color-status-green);
+}
+.publish-message-problem,
+.publish-problem,
+.publish-error,
+.publish-result-failure {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--color-status-red);
+}
+
+.publish-field {
+  margin-bottom: 8px;
+}
+/* The encoding chooser holds four short words — full width made it read as the
+   field itself rather than as a modifier of the box below it. */
+.publish-field .dropdown-field {
+  max-width: 160px;
+}
+.publish-field--compact {
+  flex: 1;
+  margin-bottom: 0;
+}
+.publish-field textarea {
+  width: 100%;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.publish-headers h4 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-fg-muted);
+}
+.publish-header-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.publish-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.publish-footer .publish-button {
+  margin-left: auto;
+}
+.publish-button {
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.publish-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.publish-confirm {
+  margin-top: 12px;
+  border: 1px solid var(--color-status-amber);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--color-bg-elevated);
+  max-width: 480px;
+}
+.publish-confirm h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.publish-confirm-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.publish-confirm-details dt {
+  color: var(--color-fg-muted);
+}
+.publish-confirm-details dd {
+  margin: 0;
+}
+.publish-confirm-warning {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-status-amber);
+}
+.publish-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.publish-result {
+  margin-top: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 12px;
+}
+.publish-result--ok {
+  border-color: var(--color-status-green);
+}
+.publish-result--failed {
+  border-color: var(--color-status-red);
+}
+.publish-result h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+.publish-result-table {
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.publish-result-table th,
+.publish-result-table td {
+  text-align: left;
+  padding: 2px 12px 2px 0;
+}
+.publish-result-table th {
+  color: var(--color-fg-muted);
+  font-weight: normal;
+}
+.publish-result-skipped {
+  margin: 8px 0 0;
+  font-size: 11px;
   color: var(--color-fg-muted);
 }

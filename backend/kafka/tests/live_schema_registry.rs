@@ -68,6 +68,7 @@ fn connection(bootstrap_servers: String, schema_registry_endpoint: Option<String
         ssl_keystore_location: None,
         ssl_keystore_password: None,
         ssl_keystore_key_password: None,
+        allow_publishing: false,
         created_at: "now".into(),
         updated_at: "now".into(),
     }

@@ -173,6 +173,8 @@ fn main() {
             commands::connections::connection_list_partitions,
             commands::connections::connection_describe_topic_config,
             commands::connections::connection_fetch_consumer_group_lag,
+            commands::publish::connection_publish_messages,
+            commands::publish::connection_write_denied_reason,
             commands::schema::topic_schema_get,
             commands::schema::topic_schema_set,
             commands::schema::topic_schema_delete,

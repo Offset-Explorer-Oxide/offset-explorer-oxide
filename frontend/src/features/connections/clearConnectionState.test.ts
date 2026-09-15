@@ -8,6 +8,8 @@ import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { useDataTabGridStateStore } from "./useDataTabGridStateStore";
 import { useTreeUiStore } from "./useTreeUiStore";
 import { emptyFilterForm } from "./dataFilters";
+import { emptyMessage } from "./publishMessages";
+import { usePublishDraftStore } from "./usePublishDraftStore";
 
 const GONE = "conn-gone";
 const KEPT = "conn-kept";
@@ -69,6 +71,13 @@ function seedState() {
     stateByTab: {
       [`tab-1:${GONE}:orders:all`]: { sortModel: [], filterModel: {}, searchText: "x" },
       [`tab-1:${KEPT}:ships:all`]: { sortModel: [], filterModel: {}, searchText: "y" },
+    },
+  });
+  usePublishDraftStore.setState({
+    messagesByTab: {
+      [`tab-1:${GONE}:orders:0`]: [emptyMessage()],
+      [`tab-2:${GONE}:orders:1`]: [emptyMessage()],
+      [`tab-1:${KEPT}:ships:0`]: [emptyMessage()],
     },
   });
   for (const id of [GONE, KEPT]) {
@@ -134,6 +143,18 @@ describe("clearConnectionState", () => {
     expect(useTabDataStore.getState().payloadBytesByTab).toEqual({ [`tab-1:${KEPT}:ships:all`]: 99 });
     expect(Object.keys(useDataTabFiltersStore.getState().formByTab)).toEqual([`tab-1:${KEPT}:ships:all`]);
     expect(Object.keys(useDataTabGridStateStore.getState().stateByTab)).toEqual([`tab-1:${KEPT}:ships:all`]);
+  });
+
+  it("drops the cluster's unsent publish drafts, in every tab, and keeps other clusters'", () => {
+    // A draft can only be published to a connected cluster, so one that outlived
+    // the session it was composed in could never be sent as-is — and finding a
+    // half-written message to a production topic waiting after a reconnect is
+    // worse than retyping it.
+    clearConnectionState(queryClient, GONE);
+
+    expect(Object.keys(usePublishDraftStore.getState().messagesByTab)).toEqual([
+      `tab-1:${KEPT}:ships:0`,
+    ]);
   });
 
   it("removes every cached listing read from the cluster", () => {

@@ -207,6 +207,7 @@ function sampleConnection(overrides: Partial<Connection> = {}): Connection {
     sslKeystoreLocation: "/etc/broker-ks.p12",
     sslKeystorePassword: "broker-ks-secret",
     sslKeystoreKeyPassword: "broker-ks-key-secret",
+    allowPublishing: true,
     createdAt: "2026-08-18T00:00:00Z",
     updatedAt: "2026-08-18T00:00:00Z",
     ...overrides,
@@ -298,5 +299,37 @@ describe("draftsEqual", () => {
     const draft = { ...original, name: "Changed" };
     const reverted = { ...draft, name: original.name };
     expect(draftsEqual(original, reverted)).toBe(true);
+  });
+});
+
+describe("allowPublishing through the draft", () => {
+  it("starts off in a new draft, so a connection created here cannot publish", () => {
+    expect(emptyDraft().allowPublishing).toBe(false);
+  });
+
+  it("carries the saved connection's flag into the draft", () => {
+    expect(connectionToDraft(sampleConnection({ allowPublishing: true })).allowPublishing).toBe(true);
+    expect(connectionToDraft(sampleConnection({ allowPublishing: false })).allowPublishing).toBe(
+      false,
+    );
+  });
+
+  it("treats a connection with no flag at all as not allowed", () => {
+    // A row written before the column existed, or an older backend: the absence
+    // of permission must read as "no", never as undefined.
+    const legacy = sampleConnection();
+    delete (legacy as { allowPublishing?: boolean }).allowPublishing;
+    expect(connectionToDraft(legacy).allowPublishing).toBe(false);
+  });
+
+  it("sends the flag on save", () => {
+    expect(toNewConnection({ ...emptyDraft(), allowPublishing: true }).allowPublishing).toBe(true);
+    expect(toNewConnection(emptyDraft()).allowPublishing).toBe(false);
+  });
+
+  it("counts as a change, so Update becomes available when it is toggled", () => {
+    const before = emptyDraft();
+    const after = { ...before, allowPublishing: true };
+    expect(draftsEqual(before, after)).toBe(false);
   });
 });

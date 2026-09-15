@@ -56,6 +56,29 @@ export function PropertiesTab({ draft, onChange, disabled = false }: ConnectionT
         </fieldset>
       </section>
 
+      <section className="connection-modal-section">
+        <h3>Publishing</h3>
+        {/* Deliberately outside the `disabled` fieldsets around it. Those are
+            disabled while the cluster is connected because changing a
+            connection's *identity* mid-session would leave the live client
+            describing settings it was not built from. This flag changes nothing
+            about the client — it is read fresh by the publish command every
+            time — and being able to grant or revoke publishing on a cluster you
+            are currently looking at is the point of it. */}
+        <label className="connection-modal-checkbox-label">
+          <input
+            type="checkbox"
+            checked={draft.allowPublishing}
+            onChange={(e) => onChange({ allowPublishing: e.target.checked })}
+          />
+          Allow publishing messages to this cluster
+        </label>
+        <p className="connection-modal-hint">
+          Off by default. The broker&apos;s own permissions always apply — this cannot grant write
+          access you do not have, but leaving it off prevents publishing to this cluster by mistake.
+        </p>
+      </section>
+
       <fieldset disabled={disabled} className="connection-modal-fieldset">
         <section className="connection-modal-section">
           <h3>Zookeeper</h3>

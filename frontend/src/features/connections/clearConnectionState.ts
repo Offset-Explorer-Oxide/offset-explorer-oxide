@@ -4,6 +4,7 @@ import { useTabDataStore } from "../workspace/useTabDataStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useDataTabFiltersStore } from "./useDataTabFiltersStore";
 import { useDataTabGridStateStore } from "./useDataTabGridStateStore";
+import { usePublishDraftStore } from "./usePublishDraftStore";
 import { useTreeUiStore } from "./useTreeUiStore";
 
 /**
@@ -70,6 +71,14 @@ export function clearConnectionState(queryClient: QueryClient, connectionId: str
   useTabDataStore.getState().clearForConnection(connectionId);
   useDataTabFiltersStore.getState().clearForConnection(connectionId);
   useDataTabGridStateStore.getState().clearForConnection(connectionId);
+
+  // And anything typed into the Publish tab for this cluster. Dropped rather
+  // than kept because the gate that let it be composed is gone: publishing
+  // requires a connected cluster, so a surviving draft could only be sent after
+  // a reconnect — by which point the user has said what they want to do, and
+  // re-typing a message is a better outcome than finding one waiting from a
+  // session they ended.
+  usePublishDraftStore.getState().clearForConnection(connectionId);
 
   // `removeQueries`, not `invalidateQueries`: invalidating marks the data
   // stale and refetches it the moment anything observes it, which against a

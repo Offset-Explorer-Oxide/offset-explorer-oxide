@@ -6,6 +6,7 @@ import { setInvokeHandlers } from "../../lib/testInvoke";
 import { ClusterResourceTree } from "./ClusterResourceTree";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { useTreeUiStore } from "./useTreeUiStore";
+import { usePartitionPanelTabStore } from "./usePartitionPanelTabStore";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -18,6 +19,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useWorkspaceSelectionStore.setState({ selection: null });
   useTreeUiStore.setState({ expanded: {}, searchText: {}, hideEmptyConsumerGroups: {} });
+  usePartitionPanelTabStore.setState({ activeByTab: {} });
 });
 
 describe("ClusterResourceTree", () => {
@@ -278,6 +280,77 @@ describe("ClusterResourceTree", () => {
       topicName: "orders",
       partitionId: 0,
     });
+  });
+
+  it("offers Publish messages… on a partition's context menu", async () => {
+    setInvokeHandlers({
+      connection_list_topics: () => [{ name: "orders", partitionCount: 3 }],
+      connection_list_partitions: () => [
+        { id: 0, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 10 },
+        { id: 1, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 10 },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+    await user.click(screen.getByTestId("category-Topics"));
+    await screen.findByText("orders");
+    await user.click(screen.getByLabelText("Expand orders"));
+    await screen.findByText("Partition 1");
+
+    fireEvent.contextMenu(screen.getByText("Partition 1"));
+
+    expect(await screen.findByRole("menuitem", { name: "Publish messages…" })).toBeInTheDocument();
+  });
+
+  it("selects the right-clicked partition and opens its Publish tab", async () => {
+    // Both halves matter: without the sub-tab, the menu item would select a
+    // partition and leave the panel on Data — doing half of what it says.
+    setInvokeHandlers({
+      connection_list_topics: () => [{ name: "orders", partitionCount: 3 }],
+      connection_list_partitions: () => [
+        { id: 0, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 10 },
+        { id: 1, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 10 },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+    await user.click(screen.getByTestId("category-Topics"));
+    await screen.findByText("orders");
+    await user.click(screen.getByLabelText("Expand orders"));
+    await screen.findByText("Partition 1");
+
+    fireEvent.contextMenu(screen.getByText("Partition 1"));
+    await user.click(await screen.findByRole("menuitem", { name: "Publish messages…" }));
+
+    expect(useWorkspaceSelectionStore.getState().selection).toEqual({
+      type: "partition",
+      connectionId: "1",
+      topicName: "orders",
+      partitionId: 1,
+    });
+    expect(usePartitionPanelTabStore.getState().get(null)).toBe("publish");
+  });
+
+  it("closes the partition context menu after the item is chosen", async () => {
+    setInvokeHandlers({
+      connection_list_topics: () => [{ name: "orders", partitionCount: 1 }],
+      connection_list_partitions: () => [
+        { id: 0, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 10 },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithClient(<ClusterResourceTree connectionId="1" />);
+    await user.click(screen.getByTestId("category-Topics"));
+    await screen.findByText("orders");
+    await user.click(screen.getByLabelText("Expand orders"));
+    await screen.findByText("Partition 0");
+
+    fireEvent.contextMenu(screen.getByText("Partition 0"));
+    await user.click(await screen.findByRole("menuitem", { name: "Publish messages…" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("menuitem", { name: "Publish messages…" })).not.toBeInTheDocument(),
+    );
   });
 
   it("marks the selected partition row visually", async () => {

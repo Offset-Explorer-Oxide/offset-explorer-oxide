@@ -30,6 +30,13 @@ export interface ConnectionDraft {
   sslKeystoreLocation: string;
   sslKeystorePassword: string;
   sslKeystoreKeyPassword: string;
+  /**
+   * The Properties tab's "Allow publishing" checkbox. Off in `emptyDraft`, so a
+   * connection created through this modal cannot publish until someone
+   * deliberately ticks it — matching the column's `DEFAULT 0` and the backend
+   * gate that reads it back on every publish.
+   */
+  allowPublishing: boolean;
 }
 
 export function emptyDraft(): ConnectionDraft {
@@ -58,6 +65,7 @@ export function emptyDraft(): ConnectionDraft {
     sslKeystoreLocation: "",
     sslKeystorePassword: "",
     sslKeystoreKeyPassword: "",
+    allowPublishing: false,
   };
 }
 
@@ -113,6 +121,7 @@ export function toNewConnection(draft: ConnectionDraft): NewConnection {
     sslKeystoreLocation: nullableTrim(draft.sslKeystoreLocation),
     sslKeystorePassword: nullableTrim(draft.sslKeystorePassword),
     sslKeystoreKeyPassword: nullableTrim(draft.sslKeystoreKeyPassword),
+    allowPublishing: draft.allowPublishing,
   };
 }
 
@@ -148,6 +157,11 @@ export function connectionToDraft(connection: Connection): ConnectionDraft {
     sslKeystoreLocation: connection.sslKeystoreLocation ?? "",
     sslKeystorePassword: connection.sslKeystorePassword ?? "",
     sslKeystoreKeyPassword: connection.sslKeystoreKeyPassword ?? "",
+    // `?? false` rather than a bare read: a connection row written before this
+    // column existed, or an older backend, must mean "not allowed" rather than
+    // `undefined` — which would render the checkbox as unchecked while sending
+    // `undefined` back on save.
+    allowPublishing: connection.allowPublishing ?? false,
   };
 }
 

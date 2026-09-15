@@ -33,6 +33,7 @@ struct ConnectionRow {
     ssl_keystore_location: Option<String>,
     ssl_keystore_password: Option<String>,
     ssl_keystore_key_password: Option<String>,
+    allow_publishing: bool,
     created_at: String,
     updated_at: String,
 }
@@ -75,6 +76,7 @@ impl ConnectionRow {
             ssl_keystore_location: self.ssl_keystore_location,
             ssl_keystore_password: self.ssl_keystore_password,
             ssl_keystore_key_password: self.ssl_keystore_key_password,
+            allow_publishing: self.allow_publishing,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -97,9 +99,10 @@ pub async fn create(pool: &SqlitePool, new_conn: &NewConnection) -> Result<Conne
              schema_registry_keystore_location, schema_registry_keystore_password, schema_registry_keystore_key_password,
              ssl_truststore_location, ssl_truststore_password,
              ssl_keystore_location, ssl_keystore_password, ssl_keystore_key_password,
+             allow_publishing,
              created_at, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?26)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?27)",
     )
     .bind(&id)
     .bind(&new_conn.name)
@@ -126,6 +129,7 @@ pub async fn create(pool: &SqlitePool, new_conn: &NewConnection) -> Result<Conne
     .bind(&new_conn.ssl_keystore_location)
     .bind(&new_conn.ssl_keystore_password)
     .bind(&new_conn.ssl_keystore_key_password)
+    .bind(new_conn.allow_publishing)
     .bind(&now)
     .execute(pool)
     .await
@@ -179,8 +183,9 @@ pub async fn update(pool: &SqlitePool, id: &str, new_conn: &NewConnection) -> Re
              schema_registry_keystore_location = ?17, schema_registry_keystore_password = ?18, schema_registry_keystore_key_password = ?19,
              ssl_truststore_location = ?20, ssl_truststore_password = ?21,
              ssl_keystore_location = ?22, ssl_keystore_password = ?23, ssl_keystore_key_password = ?24,
-             updated_at = ?25
-         WHERE id = ?26",
+             allow_publishing = ?25,
+             updated_at = ?26
+         WHERE id = ?27",
     )
     .bind(&new_conn.name)
     .bind(&new_conn.bootstrap_servers)
@@ -206,6 +211,7 @@ pub async fn update(pool: &SqlitePool, id: &str, new_conn: &NewConnection) -> Re
     .bind(&new_conn.ssl_keystore_location)
     .bind(&new_conn.ssl_keystore_password)
     .bind(&new_conn.ssl_keystore_key_password)
+    .bind(new_conn.allow_publishing)
     .bind(&now)
     .bind(id)
     .execute(pool)
@@ -277,6 +283,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
         }
     }
 
@@ -421,4 +428,60 @@ mod tests {
         let connections = list(&pool).await.unwrap();
         assert!(connections.is_empty());
     }
+
+    #[tokio::test]
+    async fn a_new_connection_starts_unable_to_publish() {
+        // The default the whole publish gate rests on: nothing a user creates,
+        // and nothing an older client sends (`allow_publishing` is
+        // `#[serde(default)]`), arrives able to write to a cluster.
+        let pool = test_pool().await;
+        let created = create(&pool, &plaintext_connection("Local")).await.unwrap();
+        assert!(!created.allow_publishing);
+    }
+
+    #[tokio::test]
+    async fn allow_publishing_persists_when_explicitly_enabled() {
+        let pool = test_pool().await;
+        let mut new_conn = plaintext_connection("Local");
+        new_conn.allow_publishing = true;
+        let created = create(&pool, &new_conn).await.unwrap();
+        assert!(created.allow_publishing);
+
+        // Re-read rather than trusting `create`'s return value: the publish
+        // command reads this column back on every publish, so what matters is
+        // what a fresh `get` reports.
+        let fetched = get(&pool, &created.id).await.unwrap();
+        assert!(fetched.allow_publishing);
+    }
+
+    #[tokio::test]
+    async fn allow_publishing_can_be_turned_on_and_off_by_an_update() {
+        let pool = test_pool().await;
+        let created = create(&pool, &plaintext_connection("Local")).await.unwrap();
+
+        let mut enabled = plaintext_connection("Local");
+        enabled.allow_publishing = true;
+        let updated = update(&pool, &created.id, &enabled).await.unwrap();
+        assert!(updated.allow_publishing);
+
+        let disabled = plaintext_connection("Local");
+        let updated = update(&pool, &created.id, &disabled).await.unwrap();
+        assert!(
+            !updated.allow_publishing,
+            "revoking permission to publish must actually revoke it"
+        );
+    }
+
+    #[tokio::test]
+    async fn allow_publishing_is_tracked_per_connection() {
+        let pool = test_pool().await;
+        let mut writable = plaintext_connection("Writable");
+        writable.allow_publishing = true;
+        let writable = create(&pool, &writable).await.unwrap();
+        let readonly = create(&pool, &plaintext_connection("Readonly")).await.unwrap();
+
+        assert!(get(&pool, &writable.id).await.unwrap().allow_publishing);
+        assert!(!get(&pool, &readonly.id).await.unwrap().allow_publishing);
+    }
+
 }
