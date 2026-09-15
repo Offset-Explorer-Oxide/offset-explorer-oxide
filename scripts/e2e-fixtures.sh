@@ -123,6 +123,13 @@ if ! kexec "$K/kafka-consumer-groups.sh" --bootstrap-server "$BOOTSTRAP" --descr
   sleep 12
 fi
 
+# --- publish_roundtrip.rs ---------------------------------------------------
+# Deliberately left empty: `publish_roundtrip.rs` fills it itself, which is the
+# point of it. Three partitions so a publish can prove it reached the partition
+# it was aimed at rather than the one a key happened to hash to.
+echo "==> publish target (e2e-publish, empty)"
+topic e2e-publish 3
+
 echo
 echo "==> topics"
 kexec "$K/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" --list

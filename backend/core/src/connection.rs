@@ -70,6 +70,21 @@ pub struct Connection {
     pub ssl_keystore_location: Option<String>,
     pub ssl_keystore_password: Option<String>,
     pub ssl_keystore_key_password: Option<String>,
+    /// Whether this connection may publish messages to its topics at all.
+    ///
+    /// Defaults to `false` for every connection, existing and new (see the
+    /// `0006_allow_publishing` migration), so publishing is something the user
+    /// switches on per cluster after deciding they intend to write to it —
+    /// never something a fresh install, or a connections file someone sent
+    /// them, can do on its own. Re-read from the database inside the publish
+    /// command on every publish, so this is a gate and not a UI hint: the
+    /// frontend's opinion about it is never consulted.
+    ///
+    /// It is not, and cannot be, a substitute for the broker's ACLs — a
+    /// principal with no Write grant is refused whatever this says. It guards
+    /// the other direction: a principal that *does* have write access, against
+    /// publishing to the wrong cluster by accident.
+    pub allow_publishing: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -106,6 +121,11 @@ pub struct NewConnection {
     pub ssl_keystore_location: Option<String>,
     pub ssl_keystore_password: Option<String>,
     pub ssl_keystore_key_password: Option<String>,
+    /// See [`Connection::allow_publishing`]. `#[serde(default)]` so a payload
+    /// that omits it — an older frontend, or an imported connection — means
+    /// "not allowed" rather than failing to parse.
+    #[serde(default)]
+    pub allow_publishing: bool,
 }
 
 impl fmt::Debug for NewConnection {
@@ -160,6 +180,7 @@ impl fmt::Debug for NewConnection {
                 "ssl_keystore_key_password",
                 &redacted(&self.ssl_keystore_key_password),
             )
+            .field("allow_publishing", &self.allow_publishing)
             .finish()
     }
 }
@@ -229,6 +250,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -260,6 +282,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
         }
     }
 

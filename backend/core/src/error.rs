@@ -16,6 +16,18 @@ pub enum AppError {
     /// same way, so this is the one failure the app treats as a reason to
     /// stop dialling until the user acts (see `ConnectionRegistry`).
     Authentication,
+    /// The broker refused an operation because this connection's principal
+    /// lacks the ACL for it — e.g. `TOPIC_AUTHORIZATION_FAILED` on a publish
+    /// to a topic the user may only read.
+    ///
+    /// Deliberately **not** `Authentication`: the credentials are fine, and
+    /// counting this against the connection's attempt allowance (see
+    /// `ConnectionRegistry`) would take an otherwise-working cluster offline
+    /// inside the app over one capability the principal was never granted.
+    /// Same reasoning as the consumer-group listing's success-only breaker
+    /// path. It is also not `Kafka`, because retrying cannot help: the answer
+    /// changes only when someone changes an ACL.
+    Authorization,
 }
 
 impl fmt::Display for AppError {
@@ -30,6 +42,7 @@ impl fmt::Display for AppError {
             AppError::SchemaRegistry => write!(f, "schema registry error"),
             AppError::Decode => write!(f, "payload decode error"),
             AppError::Authentication => write!(f, "authentication error"),
+            AppError::Authorization => write!(f, "authorization error"),
         }
     }
 }
@@ -51,5 +64,6 @@ mod tests {
         );
         assert_eq!(AppError::Decode.to_string(), "payload decode error");
         assert_eq!(AppError::Authentication.to_string(), "authentication error");
+        assert_eq!(AppError::Authorization.to_string(), "authorization error");
     }
 }

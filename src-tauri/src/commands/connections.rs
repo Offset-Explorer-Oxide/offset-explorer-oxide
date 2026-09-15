@@ -38,7 +38,7 @@ fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> Str
 /// `AppError` heading — for callers that already say what went wrong and
 /// only need the detail (e.g. the reason stored against a connection whose
 /// credentials were rejected, which is shown under its name in the tree).
-fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
+pub(crate) fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
     use error_stack::{AttachmentKind, FrameKind};
 
     report
@@ -67,7 +67,7 @@ fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> St
 /// `connection_update`) or by an explicit Reconnect (see
 /// `connection_connect`, which clears it before calling this) — both are
 /// deliberate acts by a user who has had a chance to fix the credentials.
-async fn connection_for_request(state: &AppState, id: &str) -> Result<Connection, CommandError> {
+pub(crate) async fn connection_for_request(state: &AppState, id: &str) -> Result<Connection, CommandError> {
     if let Some(reason) = state.connections.auth_block_reason(id) {
         return Err(CommandError {
             message: format!(
@@ -141,7 +141,7 @@ fn record_auth_success_only<T>(
 /// asks why listing topics on a freshly connected cluster isn't instant,
 /// this is the number that answers it, per call, from their own machine and
 /// their own cluster.
-fn log_broker_call(app: &AppHandle, what: &str, started: std::time::Instant, outcome: &str) {
+pub(crate) fn log_broker_call(app: &AppHandle, what: &str, started: std::time::Instant, outcome: &str) {
     crate::logging::emit_log(app, "info", format!("{what} {outcome} in {} ms", started.elapsed().as_millis()));
 }
 

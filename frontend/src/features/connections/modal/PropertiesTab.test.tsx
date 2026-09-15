@@ -126,4 +126,51 @@ describe("PropertiesTab", () => {
     expect(screen.getByRole("button", { name: "Ping bootstrap servers" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Ping zookeeper" })).toBeDisabled();
   });
+
+  describe("Publishing", () => {
+    it("starts with publishing switched off", () => {
+      renderWithClient(<PropertiesTab draft={emptyDraft()} onChange={vi.fn()} />);
+      expect(
+        screen.getByLabelText("Allow publishing messages to this cluster"),
+      ).not.toBeChecked();
+    });
+
+    it("reports the flag to the draft when ticked", async () => {
+      const onChange = vi.fn();
+      const user = userEvent.setup();
+      renderWithClient(<PropertiesTab draft={emptyDraft()} onChange={onChange} />);
+
+      await user.click(screen.getByLabelText("Allow publishing messages to this cluster"));
+
+      expect(onChange).toHaveBeenCalledWith({ allowPublishing: true });
+    });
+
+    it("shows the flag as ticked when the draft says so", () => {
+      renderWithClient(
+        <PropertiesTab draft={{ ...emptyDraft(), allowPublishing: true }} onChange={vi.fn()} />,
+      );
+      expect(screen.getByLabelText("Allow publishing messages to this cluster")).toBeChecked();
+    });
+
+    it("says that the broker's permissions still apply", () => {
+      // The checkbox must not read as though it grants write access — it cannot.
+      renderWithClient(<PropertiesTab draft={emptyDraft()} onChange={vi.fn()} />);
+      expect(
+        screen.getByText(/broker's own permissions always apply/i),
+      ).toBeInTheDocument();
+    });
+
+    it("stays editable while the cluster is connected, unlike the identity fields", () => {
+      // `disabled` freezes the fields that define *which* cluster this is,
+      // because a live client cannot be re-described mid-session. This flag
+      // changes no client — it is re-read on every publish — and granting or
+      // revoking publishing on the cluster you are looking at is the point.
+      renderWithClient(<PropertiesTab draft={emptyDraft()} onChange={vi.fn()} disabled />);
+
+      expect(screen.getByLabelText("Bootstrap servers")).toBeDisabled();
+      expect(
+        screen.getByLabelText("Allow publishing messages to this cluster"),
+      ).toBeEnabled();
+    });
+  });
 });

@@ -6,6 +6,7 @@ mod error;
 mod fetch_cancellation;
 mod message;
 mod message_stream;
+mod publish;
 mod registry;
 
 pub use cluster::{
@@ -14,6 +15,11 @@ pub use cluster::{
 };
 pub use message::{MessageFetchResult, MessageFilter, MessageHeader, MessagesBatchEvent, TopicMessage};
 pub use message_stream::forward_in_batches;
+pub use publish::{
+    encode_messages, publish_refusal, DeliveredRecord, EncodedRecord, NewPublishMessage,
+    PayloadEncoding, PublishFailure, PublishFailureKind, PublishField, PublishHeaderInput, PublishLimits,
+    PublishOutcome, PublishRefusal, MAX_PUBLISH_BATCH_BYTES, MAX_PUBLISH_BATCH_MESSAGES,
+};
 pub use connection::{
     Connection, ConnectionStatus, NewConnection, SaslMechanism, SecurityProtocol,
 };

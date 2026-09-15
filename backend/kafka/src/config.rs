@@ -368,10 +368,80 @@ pub fn fetch_consumer_config(connection: &Connection, max_message_size_bytes: u3
     config
 }
 
+/// The producer a publish uses, on top of [`client_config`].
+///
+/// Separate from the produce call itself for the same reason
+/// [`fetch_consumer_config`] is: these properties decide what publishing is
+/// *allowed to do*, and the produce path needs a real broker to exercise,
+/// while this can be pinned by a unit test that runs everywhere.
+///
+/// Inherits from `client_config` — bootstrap servers, security protocol, SSL
+/// material, the client id the broker logs, the connection-attempt limits, and
+/// `allow.auto.create.topics=false`, which is what stops a publish to a
+/// mistyped topic name from *creating* that topic on a cluster whose brokers
+/// allow auto-creation.
+///
+/// `write_timeout` is the user's General settings > Brokers > Read Timeout.
+/// Naming aside, it is the only "how long am I willing to wait for this
+/// cluster" number the app has, and a publish that outlives it has stopped
+/// being an interactive action.
+pub fn publish_config(
+    connection: &Connection,
+    max_message_size_bytes: u32,
+    write_timeout: std::time::Duration,
+) -> ClientConfig {
+    let mut config = client_config(connection);
+
+    // The broker must confirm the write to every in-sync replica before this
+    // counts as delivered. librdkafka's default is already `all`, but a
+    // publish is the one action in this app that cannot be undone, so the
+    // guarantee it relies on is stated here rather than inherited: `acks=1`
+    // would report success for a record the leader had accepted and not yet
+    // replicated, which a leader failover can then lose.
+    config.set("acks", "all");
+
+    // Off deliberately, and not merely left at librdkafka's default.
+    //
+    // The idempotent producer needs `IdempotentWrite` on the *cluster*
+    // resource (pre-2.8 brokers) as well as `Write` on the topic. A principal
+    // with exactly the grant this feature is about — write access to one topic
+    // — can therefore be refused for reasons that have nothing to do with the
+    // topic, and the refusal arrives as a fatal client error rather than as a
+    // per-record authorization failure this code can explain. Since records
+    // are sent one at a time and each acknowledgement is awaited before the
+    // next (see `producer::publish_messages`), there is no in-flight window
+    // for idempotence to protect: a duplicate would need a retry of an
+    // already-acknowledged record, which cannot happen here.
+    config.set("enable.idempotence", "false");
+
+    // The largest record this producer will hand to the broker. `encode_messages`
+    // has already refused anything over the same ceiling, so this is the second
+    // of the two checks rather than the only one — it also covers librdkafka's
+    // own framing, which the byte count in core cannot see.
+    config.set("message.max.bytes", max_message_size_bytes.to_string());
+
+    // The total time a record may spend in the producer — queueing, sending,
+    // and retrying — before its delivery report comes back as a timeout. This
+    // is the bound that makes a publish answerable: without it librdkafka
+    // retries a record for its default five minutes, so a publish to a broker
+    // that has gone away would leave the dialog locked with no outcome.
+    config.set(
+        "message.timeout.ms",
+        write_timeout.as_millis().max(1).to_string(),
+    );
+
+    // Nothing is batched across records anyway (one record, one await), so
+    // waiting to fill a batch only adds latency to every single message.
+    config.set("linger.ms", "0");
+
+    config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use kafkaoxide_core::{SaslMechanism, SecurityProtocol};
+    use std::time::Duration;
 
     fn sample_connection() -> Connection {
         Connection {
@@ -400,6 +470,7 @@ mod tests {
             ssl_keystore_location: None,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            allow_publishing: false,
             created_at: "now".into(),
             updated_at: "now".into(),
         }
@@ -825,4 +896,67 @@ mod tests {
 
         assert_eq!(config.get("ssl.ca.pem"), None);
     }
+
+    #[test]
+    fn a_publish_waits_for_every_in_sync_replica_to_confirm() {
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(30));
+        assert_eq!(config.get("acks"), Some("all"));
+    }
+
+    #[test]
+    fn a_publish_never_asks_for_the_idempotence_acls_it_does_not_need() {
+        // `IdempotentWrite` on the cluster resource is a grant separate from
+        // topic Write, so enabling this would refuse principals that hold
+        // exactly the access this feature is about.
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(30));
+        assert_eq!(config.get("enable.idempotence"), Some("false"));
+    }
+
+    #[test]
+    fn a_publish_cannot_create_the_topic_it_is_publishing_to() {
+        // Inherited from `client_config`, and asserted here because a publish
+        // to a mistyped topic name is exactly when it matters.
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(30));
+        assert_eq!(config.get("allow.auto.create.topics"), Some("false"));
+    }
+
+    #[test]
+    fn a_publish_carries_the_users_max_message_size() {
+        let config = publish_config(&sample_connection(), 2_097_152, Duration::from_secs(30));
+        assert_eq!(config.get("message.max.bytes"), Some("2097152"));
+    }
+
+    #[test]
+    fn a_publish_gives_up_inside_the_users_timeout_rather_than_retrying_for_minutes() {
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(12));
+        assert_eq!(config.get("message.timeout.ms"), Some("12000"));
+    }
+
+    #[test]
+    fn a_publish_timeout_is_never_zero_however_short_the_setting() {
+        // librdkafka rejects `message.timeout.ms=0` as invalid, which would
+        // turn a too-small timeout setting into a client that cannot be built
+        // at all rather than one that times out quickly.
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_millis(0));
+        assert_eq!(config.get("message.timeout.ms"), Some("1"));
+    }
+
+    #[test]
+    fn a_publish_does_not_wait_to_fill_a_batch() {
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(30));
+        assert_eq!(config.get("linger.ms"), Some("0"));
+    }
+
+    #[test]
+    fn a_publish_identifies_itself_and_secures_itself_the_same_way_every_other_client_does() {
+        // The inheritance from `client_config` is the point: a producer built
+        // from scratch would be the one client that reached a cluster without
+        // the app's client id or the connection's SASL/SSL settings.
+        let config = publish_config(&sample_connection(), 1_048_576, Duration::from_secs(30));
+        assert_eq!(config.get("bootstrap.servers"), Some("localhost:9092"));
+        assert_eq!(config.get("security.protocol"), Some("sasl_ssl"));
+        assert_eq!(config.get("sasl.username"), Some("kafka-user"));
+        assert_eq!(config.get("client.id"), Some(broker_client_id()));
+    }
+
 }

@@ -1,9 +1,11 @@
-import { MouseEvent as ReactMouseEvent } from "react";
+import { MouseEvent as ReactMouseEvent, useState } from "react";
+import { ContextMenu } from "../../components/ContextMenu";
 import { TopicSummary } from "../../lib/tauri";
 import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionStore";
 import { usePartitions } from "./useClusterResources";
+import { usePartitionPanelTabStore } from "./usePartitionPanelTabStore";
 import { treeKey, useTreeUiStore } from "./useTreeUiStore";
 
 export interface TopicCategoryProps {
@@ -105,6 +107,9 @@ function TopicRow({ connectionId, topic, isSelected, onSelect }: TopicRowProps) 
   const partitions = usePartitions(connectionId, topic.name, expanded);
   const selection = useWorkspaceSelectionStore((s) => s.selection);
   const selectPartition = useWorkspaceSelectionStore((s) => s.selectPartition);
+  const setPartitionTab = usePartitionPanelTabStore((s) => s.set);
+  /** Which partition's context menu is open, and where — `null` when none is. */
+  const [menu, setMenu] = useState<{ partitionId: number; x: number; y: number } | null>(null);
 
   function toggleExpand(e: ReactMouseEvent) {
     e.stopPropagation();
@@ -145,11 +150,34 @@ function TopicRow({ connectionId, topic, isSelected, onSelect }: TopicRowProps) 
               data-testid={`resource-item-partition-${topic.name}-${partition.id}`}
               className={`topic-partition-item${isPartitionSelected(partition.id) ? " topic-partition-item--selected" : ""}`}
               onClick={() => selectPartition(connectionId, topic.name, partition.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenu({ partitionId: partition.id, x: e.clientX, y: e.clientY });
+              }}
             >
               Partition {partition.id}
             </li>
           ))}
         </ul>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[
+            {
+              label: "Publish messages…",
+              onSelect: () => {
+                // Selects the partition *and* opens its Publish tab. Right-clicking
+                // a partition you were not already looking at otherwise opened the
+                // panel on Data, leaving the menu item half-done.
+                selectPartition(connectionId, topic.name, menu.partitionId);
+                setPartitionTab(activeTabId, "publish");
+              },
+            },
+          ]}
+          onClose={() => setMenu(null)}
+        />
       )}
     </li>
   );

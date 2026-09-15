@@ -83,6 +83,13 @@ impl From<PortableConnection> for NewConnection {
             ssl_keystore_location: portable.ssl_keystore_location,
             ssl_keystore_password: None,
             ssl_keystore_key_password: None,
+            // Deliberately not carried by `PortableConnection`, and so
+            // deliberately false here: an export file is something users mail
+            // each other, and a connection that arrives able to write to a
+            // production cluster is exactly the surprise this feature must not
+            // create. The importer decides to publish, on their own machine,
+            // by ticking the box themselves.
+            allow_publishing: false,
         }
     }
 }
@@ -160,7 +167,7 @@ pub fn partition_importable<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection::{Connection, SaslMechanism, SecurityProtocol};
+    use crate::connection::{Connection, NewConnection, SaslMechanism, SecurityProtocol};
     use std::collections::HashSet;
 
     fn sample_connection(id: &str, name: &str) -> Connection {
@@ -190,6 +197,7 @@ mod tests {
             ssl_keystore_location: Some("/certs/broker-keystore.jks".into()),
             ssl_keystore_password: Some("broker-ks-secret".into()),
             ssl_keystore_key_password: Some("broker-ks-key-secret".into()),
+            allow_publishing: true,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         }
@@ -229,6 +237,29 @@ mod tests {
             Some("/certs/broker-truststore.jks")
         );
         assert_eq!(portable.ssl_keystore_location.as_deref(), Some("/certs/broker-keystore.jks"));
+    }
+
+    #[test]
+    fn an_export_never_carries_permission_to_publish() {
+        // `sample_connection` has `allow_publishing: true`, so this fails if
+        // the field is ever added to `PortableConnection`.
+        let connection = sample_connection("1", "Prod");
+        assert!(connection.allow_publishing);
+        let json = serde_json::to_string(&PortableConnection::from(&connection)).unwrap();
+        assert!(
+            !json.contains("allowPublishing") && !json.contains("allow_publishing"),
+            "an export file must not be able to grant publishing: {json}"
+        );
+    }
+
+    #[test]
+    fn an_imported_connection_starts_unable_to_publish() {
+        let connection = sample_connection("1", "Prod");
+        let imported: NewConnection = PortableConnection::from(&connection).into();
+        assert!(
+            !imported.allow_publishing,
+            "importing a connection must never arrive publish-enabled"
+        );
     }
 
     #[test]
