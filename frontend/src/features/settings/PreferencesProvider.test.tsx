@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { act, render } from "@testing-library/react";
 import { PreferencesProvider } from "./PreferencesProvider";
 import { usePreferencesStore } from "./usePreferencesStore";
-import { DEFAULT_FONT_FAMILY_ID, DEFAULT_FONT_SIZE_PX, fontFamilyCssValue } from "./fonts";
+import {
+  DEFAULT_FONT_FAMILY_ID,
+  DEFAULT_FONT_SIZE_PX,
+  fontFamilyCssValue,
+  monoFontFamilyCssValue,
+} from "./fonts";
 
 beforeEach(() => {
   localStorage.clear();
@@ -12,6 +17,7 @@ beforeEach(() => {
     fontSizePx: DEFAULT_FONT_SIZE_PX,
   });
   document.documentElement.style.removeProperty("--font-family-base");
+  document.documentElement.style.removeProperty("--font-family-mono");
   document.documentElement.style.removeProperty("--font-size-base");
 });
 
@@ -43,5 +49,41 @@ describe("PreferencesProvider", () => {
     });
 
     expect(document.documentElement.style.getPropertyValue("--font-size-base")).toBe("16px");
+  });
+
+  // The payload viewer, the JSON/XML trees and the logs read
+  // `--font-family-mono`. Until it was set, they were pinned to a hard-coded
+  // monospace stack and the font setting visibly did nothing to the middle
+  // and right panels.
+  it("also applies the choice to the code surfaces", () => {
+    render(
+      <PreferencesProvider>
+        <div>content</div>
+      </PreferencesProvider>,
+    );
+
+    act(() => {
+      usePreferencesStore.getState().setAppliedFontFamily("georgia");
+    });
+
+    expect(document.documentElement.style.getPropertyValue("--font-family-mono")).toBe(
+      monoFontFamilyCssValue("georgia"),
+    );
+  });
+
+  it("previews a hovered family on the code surfaces too", () => {
+    render(
+      <PreferencesProvider>
+        <div>content</div>
+      </PreferencesProvider>,
+    );
+
+    act(() => {
+      usePreferencesStore.getState().setPreviewFontFamily("fira-code");
+    });
+
+    expect(document.documentElement.style.getPropertyValue("--font-family-mono")).toBe(
+      monoFontFamilyCssValue("fira-code"),
+    );
   });
 });

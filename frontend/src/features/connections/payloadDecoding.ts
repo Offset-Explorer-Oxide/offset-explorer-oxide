@@ -315,3 +315,84 @@ export function inlinePayloadBytesFor(estimatedRows: number | null): number {
   const perRow = Math.floor(PAYLOAD_RETENTION_BUDGET_BYTES / estimatedRows);
   return Math.min(MAX_INLINE_PAYLOAD_BYTES, Math.max(VALUE_PREVIEW_BYTES, perRow));
 }
+
+/**
+ * Renders bytes as a classic hex dump — offset, 16 bytes in hex, then those
+ * same bytes as printable ASCII — one line per 16 bytes.
+ *
+ * A flat run of hex pairs would be shorter to produce and useless to read: a
+ * payload viewed as hex is being viewed because something about the *bytes*
+ * matters (a magic byte, a framing header, an encoding that isn't UTF-8), and
+ * answering "which byte is that?" needs the offset column. The ASCII column
+ * is what makes the structured parts of a mostly-binary payload legible
+ * without switching back to Raw.
+ *
+ * Bounded by the caller: this allocates roughly four characters per input
+ * byte, so it is only ever handed a slice (see `TEXT_PREVIEW_CHARS`).
+ */
+export function bytesToHexDump(bytes: Uint8Array): string {
+  const lines: string[] = [];
+  for (let start = 0; start < bytes.length; start += 16) {
+    const row = bytes.subarray(start, start + 16);
+    const hex: string[] = [];
+    let ascii = "";
+    for (let i = 0; i < 16; i++) {
+      if (i < row.length) {
+        hex.push(row[i].toString(16).padStart(2, "0"));
+        // Printable ASCII only. Anything else becomes "." rather than the
+        // character it would decode to: control codes would move the cursor
+        // and wreck the column alignment this view exists for.
+        ascii += row[i] >= 0x20 && row[i] <= 0x7e ? String.fromCharCode(row[i]) : ".";
+      } else {
+        hex.push("  ");
+      }
+    }
+    // Split 8 + 8 the way every hex dump does — sixteen unbroken pairs are
+    // very hard to count along.
+    const left = hex.slice(0, 8).join(" ");
+    const right = hex.slice(8).join(" ");
+    lines.push(`${start.toString(16).padStart(8, "0")}  ${left}  ${right}  |${ascii}|`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Re-wraps a base64 string into fixed-width lines for display.
+ *
+ * The backend sends one unbroken string, which in a viewer that doesn't wrap
+ * (the payload views don't — wrapping would desynchronise the line-number
+ * gutter from what is on screen) is a single line megabytes wide. 76
+ * characters is the MIME line length, so the result looks like base64 as it
+ * appears anywhere else it is written down.
+ */
+export function wrapBase64(base64: string, width = 76): string {
+  const lines: string[] = [];
+  for (let i = 0; i < base64.length; i += width) {
+    lines.push(base64.slice(i, i + width));
+  }
+  return lines.join("\n");
+}
+
+/**
+ * UTF-8 encodes text and base64s it — what the Save button hands the backend,
+ * which writes bytes rather than a string (see `api.savePayloadFile`).
+ *
+ * Encoded in chunks because `String.fromCharCode(...bytes)` spreads one
+ * argument per byte, and a megabyte-sized payload is a megabyte-long argument
+ * list: every engine throws `RangeError: Maximum call stack size exceeded`
+ * somewhere in the low hundreds of thousands. 32 KB at a time is comfortably
+ * under every limit and costs one extra string concat per chunk.
+ */
+export function textToBase64(text: string): string {
+  return bytesToBase64(new TextEncoder().encode(text));
+}
+
+/** Base64-encodes bytes. See `textToBase64` for why this is chunked. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}

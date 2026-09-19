@@ -7,8 +7,8 @@ edition = "2021"
 kafkaoxide-core = { workspace = true }
 error-stack = { workspace = true }
 serde_json = { workspace = true }
-apache-avro = "0.16"
-base64 = "0.22"
+apache-avro = "0.22"
+base64 = "0.23"
 chrono = { workspace = true }
 # Same 0.4 line `apache-avro` uses, so its `From<Decimal> for BigInt`
 # applies here — that is the only way out of an `apache_avro::Decimal`,

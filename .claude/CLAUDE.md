@@ -9,6 +9,7 @@ A desktop Kafka client built with Tauri v2 (Rust backend, React/TypeScript front
 - `backend/kafka` — Kafka client, built on `rdkafka`/librdkafka
 - `backend/db` — SQLite-backed local storage (connections, tabs, saved schemas, secrets — see Conventions)
 - `backend/avro` — Avro payload decoding
+- `backend/protobuf` — Protobuf payload decoding
 - `backend/schema-registry` — Confluent Schema Registry client
 - `frontend/` — React + TypeScript + Vite app, organized by feature under `frontend/src/features/`
 - `.github/workflows/release.yml` — CI: builds and releases installers on push to `main`
@@ -50,6 +51,19 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   itself being the authorization check — nothing is written when it is refused —
   plus the app-side gates above.
 - `rdkafka` uses librdkafka's default vendored build (`configure && make`) on macOS/Linux, and the `cmake-build` feature (CMake + MSVC) on Windows — see `backend/kafka/Cargo.toml`.
+- **The fetch path uses `BaseConsumer` inside `spawn_blocking`, not
+  `StreamConsumer`, and that is deliberate.** rdkafka's `tokio` feature *is*
+  on (it is in rdkafka's `default`) and the publish path does use it, via
+  `FutureProducer::send(..).await`. `StreamConsumer` would wrap the same
+  librdkafka queue the `BaseConsumer` already polls — it changes which thread
+  waits, not how fast bytes arrive. Every measured fetch win here came from
+  librdkafka *config* or from the loop's own strategy instead:
+  `fetch.queue.backoff.ms`, dropping the `group.id` coordinator query,
+  partition-EOF completion, the 8 MB queue floor, and per-partition
+  decompression sharding. The loop in `client.rs` also multiplexes several
+  shard consumers with a non-blocking sweep plus a 5 ms blocking slice, which
+  is the one thing `StreamConsumer` would otherwise buy, and it carries the
+  cancellation / byte-budget / idle-timeout logic inline.
 - `package-lock.json` and `Cargo.lock` are both gitignored — installs are not lockfile-pinned.
 - Coverage is enforced at 80% (lines/statements/functions/branches) by
   `frontend/vitest.config.ts`'s `thresholds`, so `npm --prefix frontend test:coverage`
@@ -72,4 +86,34 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   `scripts/e2e-fixtures.sh` sets one up (`docker run -d --name kafka -p 9092:9092
   apache/kafka:3.9.0` first); without `KAFKAOXIDE_E2E_BOOTSTRAP` the e2e tests
   skip themselves and that file drops from ~94% to ~62%.
+- The message payload panel (`MessagePayloadViewer`) is the one place besides
+  `connections_export` that writes a user file: Save writes the value as the
+  selected format renders it, Download writes the payload's original bytes,
+  both through `commands::system::payload_save` after the frontend has
+  resolved a path via the native save dialog. It takes base64 rather than a
+  byte vector because Tauri's IPC is JSON. Its chosen format and its placement
+  (beside the middle pane or docked under it) live in
+  `useMessageViewerPrefsStore`, which keeps a per-tab choice *and* an
+  app-wide last-chosen default in localStorage.
+- Protobuf decoding uses `protox` (compiles `.proto` *source text* to a
+  descriptor set in pure Rust) plus `prost-reflect` (`DynamicMessage`). That
+  pair is the only route that works here: every alternative wants the schema
+  at compile time, and these schemas are pasted by the user or fetched from a
+  registry at run time. It also means no `protoc` binary to ship and locate on
+  three platforms. `Compiler::include_imports(true)` is **required** — without
+  it `file_descriptor_set()` omits the transitive imports and any schema using
+  a well-known type (`Timestamp`, `Duration`) fails to load.
+- Protobuf's framing differs from Avro's in two ways the commands encode: the
+  Confluent header is stripped on *every* path (a manual schema does not mean
+  "decode the payload whole", as it does for Avro), and there is no refusal —
+  with no schema anywhere the wire format still yields field numbers, so
+  `kafkaoxide_protobuf::wire::decode_raw` renders those and the result carries
+  `source: "none"` so the UI can say the keys are numbers, not names. Note the
+  Confluent message-index shorthand: an all-zero path is a single `0` byte,
+  not a length-prefixed array.
+- Only `ResourceCategory` (Brokers, Consumers) virtualizes its list, via
+  `react-window`'s `List` past a 50-item threshold. **Topics is a separate,
+  deliberately non-virtualized `TopicCategory`** — so a change to the
+  virtualized path cannot be verified by opening Topics, which is the obvious
+  thing to try and shows the plain `<ul>` branch instead.
 - Frontend feature folders pair each component/store with its test file (e.g. `useTabsStore.ts` + `useTabsStore.test.ts`) rather than a separate `__tests__` tree.

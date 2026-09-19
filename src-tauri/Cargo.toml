@@ -11,6 +11,7 @@ kafkaoxide-core = { workspace = true }
 kafkaoxide-db = { workspace = true }
 kafkaoxide-kafka = { workspace = true }
 kafkaoxide-avro = { workspace = true }
+kafkaoxide-protobuf = { workspace = true }
 kafkaoxide-schema-registry = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
@@ -19,8 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 error-stack = { workspace = true }
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
-base64 = "0.22"
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
+base64 = "0.23"
 
 # Backs `commands::system::trim_process_memory` — trims the OS-visible
 # working set after "Clear memory" is clicked, since neither the JS heap

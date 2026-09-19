@@ -6,6 +6,16 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
+    // Vitest's default is 5s, which the App-level integration tests began to
+    // exceed — but only under `--coverage`. Those tests render the whole app,
+    // drive it through several tab switches and fetches, and v8's
+    // instrumentation roughly doubles what that costs, so the suite passed
+    // plainly and failed the gate that CI and SonarQube actually run.
+    //
+    // Raised rather than worked around in the test: 5s was never a considered
+    // budget for a test that mounts the entire application, and a real hang
+    // still fails here — ten seconds later than it used to.
+    testTimeout: 15000,
     coverage: {
       provider: "v8",
       // `lcov` is what SonarQube's `sonar.javascript.lcov.reportPaths` reads;

@@ -1,4 +1,5 @@
 import { JsonTreeView } from "../../components/JsonTreeView";
+import { LineNumberedText } from "../../components/LineNumberedText";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { XmlElementNode } from "../connections/payloadDecoding";
 import { JsonViewerTab } from "./useJsonViewerTabsStore";
@@ -22,6 +23,8 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
       <div className="connection-modal-body">
         {tab.kind === "xml" ? (
           <XmlTreeView value={tab.value as XmlElementNode} />
+        ) : tab.kind === "text" ? (
+          <LineNumberedText text={String(tab.value)} ariaLabel={tab.title} />
         ) : (
           <JsonTreeView value={tab.value} />
         )}

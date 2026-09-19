@@ -296,6 +296,25 @@ export interface PublishOutcome {
   notAttempted: number;
 }
 
+/** Where the schema a protobuf payload was decoded with came from — `"none"` means field numbers, not names. */
+export type ProtobufSchemaSource = "manual" | "registry" | "none";
+
+/**
+ * A decoded protobuf payload.
+ *
+ * Richer than `decodeAvro`'s bare value because protobuf can be decoded with
+ * *no* schema at all: the wire format carries field numbers and types, so a
+ * payload always renders as something. `source` is what lets the UI say which
+ * of the two happened — "these are your schema's field names" and "these are
+ * numbers I read off the bytes" must not look alike.
+ */
+export interface ProtobufDecodeResult {
+  value: unknown;
+  source: ProtobufSchemaSource;
+  /** The fully-qualified message name, when a schema named one. */
+  messageType: string | null;
+}
+
 export interface ImportSummary {
   imported: number;
   skipped: number;
@@ -426,6 +445,8 @@ export const api = {
     invoke<void>("topic_schema_delete", { connectionId, topic, format }),
   decodeAvro: (connectionId: string, topic: string, payloadBase64: string) =>
     invoke<unknown>("connection_decode_avro", { id: connectionId, topic, payloadBase64 }),
+  decodeProtobuf: (connectionId: string, topic: string, payloadBase64: string) =>
+    invoke<ProtobufDecodeResult>("connection_decode_protobuf", { id: connectionId, topic, payloadBase64 }),
   listTabs: () => invoke<Tab[]>("tab_list"),
   createTab: (name: string) => invoke<Tab>("tab_create", { name }),
   renameTab: (id: string, name: string) => invoke<void>("tab_rename", { id, name }),
@@ -433,4 +454,14 @@ export const api = {
   reorderTabs: (ids: string[]) => invoke<void>("tab_reorder", { ids }),
   /** Trims the OS-visible working set on Windows (a no-op elsewhere) — see `commands::system::trim_process_memory`'s doc comment for why clearing app-level data alone doesn't shrink what Task Manager reports. */
   trimProcessMemory: () => invoke<void>("trim_process_memory"),
+  /**
+   * Writes bytes to `path` — the payload viewer's Save and Download buttons,
+   * after the native save dialog has resolved where.
+   *
+   * Takes base64 rather than bytes because Tauri's IPC is JSON: a `Uint8Array`
+   * crosses it as a decimal array, roughly three times the characters of the
+   * base64 the payload is already held as.
+   */
+  savePayloadFile: (path: string, contentsBase64: string) =>
+    invoke<void>("payload_save", { path, contentsBase64 }),
 };

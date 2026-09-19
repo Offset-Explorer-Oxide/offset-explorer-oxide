@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { JsonTreeView } from "../../components/JsonTreeView";
+import { LineNumberedText } from "../../components/LineNumberedText";
+import { ValueFormatSelect, valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
-import { useDecodeAvro, useFullPayload } from "./useClusterResources";
+import { api } from "../../lib/tauri";
+import { useDecodeAvro, useDecodeProtobuf, useFullPayload } from "./useClusterResources";
 import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import {
-  DEFAULT_MESSAGE_VIEWER_PREFS,
   PanelTabId,
+  selectTabPrefs,
   useMessageViewerPrefsStore,
   ValueMode,
 } from "../workspace/useMessageViewerPrefsStore";
@@ -15,10 +19,14 @@ import { tabDataKey } from "../workspace/useTabDataStore";
 import {
   base64ToBytes,
   base64ToDisplayText,
+  bytesToHexDump,
   bytesToText,
+  formatXmlNode,
   isPayloadTruncated,
+  textToBase64,
   tryParseJson,
   tryParseXml,
+  wrapBase64,
 } from "./payloadDecoding";
 
 /**
@@ -29,6 +37,21 @@ import {
  * at a glance and renders instantly.
  */
 export const TEXT_PREVIEW_CHARS = 256 * 1024;
+
+/**
+ * The same bound for the Hex view, expressed in payload bytes.
+ *
+ * A hex dump is about five characters per byte — offset column, two hex
+ * digits, a space and a share of the ASCII column — so capping it at
+ * [`TEXT_PREVIEW_CHARS`] *bytes* would render over a megabyte of text and
+ * reintroduce exactly the freeze that constant exists to prevent. 64 KB
+ * dumps to roughly 4,000 lines, which is already far more than anyone reads
+ * byte by byte.
+ */
+export const HEX_PREVIEW_BYTES = 64 * 1024;
+
+/** Which toolbar button a status line came from. */
+type ToolbarAction = "copy" | "open" | "save" | "download";
 
 const PANEL_TABS: { id: PanelTabId; label: string }[] = [
   { id: "headers", label: "Headers" },
@@ -60,6 +83,122 @@ function CloseIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" stroke="currentColor" />
+      <path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1" stroke="currentColor" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M6.5 3.5h-3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3" stroke="currentColor" />
+      <path d="M9.5 2.5h4v4M13.3 2.7L7.5 8.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A floppy disk — Save, which writes what is on screen in the chosen format. */
+function SaveIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.5 3.5a1 1 0 0 1 1-1h7.6l2.4 2.4v7.6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9Z" stroke="currentColor" />
+      <path d="M5 2.5v4h6v-4M5 13.5v-4h6v4" stroke="currentColor" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** An arrow into a tray — Download, which writes the payload's original bytes. */
+function DownloadIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 2v7.5m0 0L5.2 6.7M8 9.5l2.8-2.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.8 11v1.5a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1V11" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/**
+ * The layout switch, drawn as the layout it will produce rather than the one
+ * in force — the same convention as every editor's split-pane button, and the
+ * reason the two glyphs are mirror images of each other.
+ */
+function DockBottomIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" />
+      <path d="M2 10h12" stroke="currentColor" />
+      <rect x="2.6" y="10.6" width="10.8" height="2.8" fill="currentColor" opacity="0.35" stroke="none" />
+    </svg>
+  );
+}
+
+function DockRightIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" />
+      <path d="M10 2v12" stroke="currentColor" />
+      <rect x="10.6" y="2.6" width="2.8" height="10.8" fill="currentColor" opacity="0.35" stroke="none" />
+    </svg>
+  );
+}
+
+function kilobytes(chars: number): string {
+  return Math.max(Math.round(chars / 1024), 1).toLocaleString();
+}
+
+/**
+ * The Raw/Hex/Base64 text for a payload, with the bound each view is capped
+ * at already applied.
+ *
+ * All three are literal renderings of the same bytes, so they share one
+ * shape: what to show, and whether that is all of it. `total`/`shown` are in
+ * whatever unit the view is bounded by (characters for Raw and Base64, bytes
+ * for Hex) — they are only ever compared with each other and printed as a
+ * size, never mixed between views.
+ */
+interface LiteralBody {
+  text: string;
+  truncated: boolean;
+  shown: number;
+  total: number;
+}
+
+function literalBodyFor(mode: ValueMode, payloadBase64: string, text: string, showAll: boolean): LiteralBody | null {
+  if (mode === "raw") {
+    const truncated = !showAll && text.length > TEXT_PREVIEW_CHARS;
+    return {
+      text: truncated ? text.slice(0, TEXT_PREVIEW_CHARS) : text,
+      truncated,
+      shown: truncated ? TEXT_PREVIEW_CHARS : text.length,
+      total: text.length,
+    };
+  }
+  if (mode === "base64") {
+    const truncated = !showAll && payloadBase64.length > TEXT_PREVIEW_CHARS;
+    const shown = truncated ? payloadBase64.slice(0, TEXT_PREVIEW_CHARS) : payloadBase64;
+    return { text: wrapBase64(shown), truncated, shown: shown.length, total: payloadBase64.length };
+  }
+  if (mode === "hex") {
+    const bytes = base64ToBytes(payloadBase64);
+    const truncated = !showAll && bytes.length > HEX_PREVIEW_BYTES;
+    const shown = truncated ? bytes.subarray(0, HEX_PREVIEW_BYTES) : bytes;
+    return { text: bytesToHexDump(shown), truncated, shown: shown.length, total: bytes.length };
+  }
+  return null;
+}
+
 export function MessagePayloadViewer() {
   const message = useMessageViewerStore((s) => s.message);
   const connectionId = useMessageViewerStore((s) => s.connectionId);
@@ -67,17 +206,17 @@ export function MessagePayloadViewer() {
   const clearViewedMessage = useMessageViewerStore((s) => s.clear);
   const openJsonTab = useJsonViewerTabsStore((s) => s.openTab);
   const selectTab = useTabsStore((s) => s.selectTab);
-  // Which panel tab and Value view mode are showing is deliberately NOT
+  // Which panel tab and Value format are showing is deliberately NOT
   // component state: App.tsx renders this component `key={activeTabId}`, so
   // switching top-level tabs unmounts it and `useState` would hand back the
-  // "value"/"text" defaults on the way back in — dropping the user out of
-  // the JSON (or Avro/XML) view they left open. See
-  // `useMessageViewerPrefsStore`.
+  // defaults on the way back in — dropping the user out of the JSON (or
+  // Avro/XML) view they left open. See `useMessageViewerPrefsStore`.
   const prefsKey = tabDataKey(useTabsStore((s) => s.activeTabId));
-  const { panelTab: activeTab, valueMode: mode } =
-    useMessageViewerPrefsStore((s) => s.prefsByTab[prefsKey]) ?? DEFAULT_MESSAGE_VIEWER_PREFS;
+  const { panelTab: activeTab, valueMode: mode } = useMessageViewerPrefsStore((s) => selectTabPrefs(s, prefsKey));
   const setPanelTab = useMessageViewerPrefsStore((s) => s.setPanelTab);
   const setValueMode = useMessageViewerPrefsStore((s) => s.setValueMode);
+  const placement = useMessageViewerPrefsStore((s) => s.placement);
+  const togglePlacement = useMessageViewerPrefsStore((s) => s.togglePlacement);
   const setActiveTab = (tab: PanelTabId) => setPanelTab(prefsKey, tab);
   const setMode = (valueMode: ValueMode) => setValueMode(prefsKey, valueMode);
   /**
@@ -90,10 +229,24 @@ export function MessagePayloadViewer() {
    * `TEXT_PREVIEW_CHARS` exists to prevent, one render before the reset lands.
    * Comparing against the current payload is decided during render, so a
    * different message is always truncated from its first frame.
+   *
+   * The format is part of it for the same reason: "show me all 300 KB of
+   * text" must not also mean "and now dump all 300 KB as hex", which is five
+   * times the characters.
    */
-  const [expandedPayload, setExpandedPayload] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<{ payload: string; mode: ValueMode } | null>(null);
+  /**
+   * Transient feedback for the toolbar's Copy/Save/Download — cleared on a
+   * timer, or replaced by the next action's. `action` is carried so the Copy
+   * button can show its own tick without matching on the message text.
+   */
+  const [status, setStatus] = useState<{ kind: "ok" | "error"; action: ToolbarAction; message: string } | null>(null);
+  /** The pending clear for `status`, so a new action cancels the old one's timer rather than racing it. */
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const decodeAvro = useDecodeAvro();
   const { mutate: runDecodeAvro } = decodeAvro;
+  const decodeProtobuf = useDecodeProtobuf();
+  const { mutate: runDecodeProtobuf } = decodeProtobuf;
 
   // The Data tab's grid rows carry only a bounded slice of each payload —
   // that truncation is what keeps a large fetch inside the webview's memory
@@ -132,6 +285,13 @@ export function MessagePayloadViewer() {
     }
   }, [mode, payloadBase64, connectionId, topic, runDecodeAvro, isLoadingFullPayload]);
 
+  // Same contract as the Avro effect above — re-decodes on every message
+  // while Protobuf mode stays selected, not only on the click that chose it.
+  useEffect(() => {
+    if (mode === "protobuf" && !isLoadingFullPayload && payloadBase64 && connectionId && topic) {
+      runDecodeProtobuf({ connectionId, topic, payloadBase64 });
+    }
+  }, [mode, payloadBase64, connectionId, topic, runDecodeProtobuf, isLoadingFullPayload]);
 
   // Decoding is memoised on the payload itself, not left to run inline.
   // Every one of these is O(payload): the base64 decode walks byte by byte,
@@ -152,16 +312,230 @@ export function MessagePayloadViewer() {
   const xml = useMemo(() => (mode === "xml" && text !== null ? tryParseXml(text) : undefined), [mode, text]);
 
   // A `<pre>` holding megabytes of text is a single enormous DOM text node
-  // that the browser lays out in one go, so the raw view is capped until the
-  // user asks for the rest — and asking is per payload, so clicking through
-  // to a different message starts collapsed again.
-  const showFullText = expandedPayload !== null && expandedPayload === payloadBase64;
-  const isTextTruncated = text !== null && !showFullText && text.length > TEXT_PREVIEW_CHARS;
-  const displayText = isTextTruncated ? text.slice(0, TEXT_PREVIEW_CHARS) : text;
+  // that the browser lays out in one go, so the literal views are capped
+  // until the user asks for the rest — and asking is per payload and per
+  // format, so clicking through to a different message (or switching to a
+  // heavier rendering of the same one) starts collapsed again.
+  const showAll = expanded !== null && expanded.payload === payloadBase64 && expanded.mode === mode;
+  const literal = useMemo(
+    () => (payloadBase64 === null || text === null ? null : literalBodyFor(mode, payloadBase64, text, showAll)),
+    [mode, payloadBase64, text, showAll],
+  );
+
+  /**
+   * Whether a decode mutation's successful result is this message's.
+   *
+   * `useMutation` keeps the previous `data` until a new call resolves, and the
+   * decode effects above deliberately don't fire while the full payload is
+   * still being fetched. Between clicking a large message and its bytes
+   * arriving, `decodeAvro.isSuccess` therefore still describes the message
+   * before it. The *views* were safe — they hide behind the spinner — but the
+   * toolbar isn't rendered inside that branch, so Copy/Save/Open would hand
+   * back the previous message's decode under this message's filename.
+   *
+   * `variables` is what the mutation was last called with, so comparing its
+   * payload is exactly the question "is this result about what I'm showing?".
+   */
+  function decodeMatchesPayload(variables: { payloadBase64: string } | undefined): boolean {
+    return variables?.payloadBase64 === payloadBase64;
+  }
+
+  const avroDecodeIsCurrent = decodeAvro.isSuccess && decodeMatchesPayload(decodeAvro.variables);
+  const protobufDecodeIsCurrent = decodeProtobuf.isSuccess && decodeMatchesPayload(decodeProtobuf.variables);
+
+  function report(kind: "ok" | "error", action: ToolbarAction, message: string) {
+    setStatus({ kind, action, message });
+    // Cancel whatever the previous action scheduled before arming this one.
+    // Without that, a Copy's 1.5s timer outlives its own message and clears
+    // the *next* action's — so a Save that failed a second later had its
+    // reason wiped after half a second, and the 6s branch below never
+    // actually gave anyone time to read anything.
+    if (statusTimerRef.current !== null) {
+      clearTimeout(statusTimerRef.current);
+    }
+    // An error stays up long enough to read a path or a permissions message;
+    // a success is a tick and a line the user asked for and already expects.
+    statusTimerRef.current = setTimeout(() => setStatus(null), kind === "ok" ? 1500 : 6000);
+  }
+
+  /**
+   * The current view rendered as text, in full — what Copy, Save and "open in
+   * new tab" all act on.
+   *
+   * Deliberately computed on demand rather than memoised alongside the
+   * rendered body: this is the *whole* payload, uncapped, and for a
+   * multi-megabyte message pretty-printing it is exactly the work the preview
+   * bounds exist to avoid doing on every render. It is cheap to do once, on a
+   * click that asked for it.
+   */
+  function currentViewText(): string | null {
+    if (payloadBase64 === null || text === null) return null;
+    switch (mode) {
+      case "json":
+        return json === undefined ? null : JSON.stringify(json, null, 2);
+      case "avro":
+        return avroDecodeIsCurrent ? JSON.stringify(decodeAvro.data, null, 2) : null;
+      case "protobuf":
+        return protobufDecodeIsCurrent ? JSON.stringify(decodeProtobuf.data.value, null, 2) : null;
+      case "xml":
+        return xml === undefined ? null : formatXmlNode(xml);
+      case "base64":
+        return wrapBase64(payloadBase64);
+      case "hex":
+        return bytesToHexDump(base64ToBytes(payloadBase64));
+      default:
+        return text;
+    }
+  }
+
+  function messageLabel(): string {
+    return `Partition ${message?.partition} · Offset ${message?.offset}`;
+  }
+
+  /** `partition-0-offset-42` — a filename stem that says which message this is. */
+  function fileStem(): string {
+    return `partition-${message?.partition}-offset-${message?.offset}`;
+  }
+
+  /**
+   * The reason this message can't be written out yet, or `null` if it can.
+   *
+   * While `isShowingPreviewOnly` holds, `payloadBase64` is the Data tab's
+   * bounded preview slice, not the message — and if the full-payload fetch
+   * *failed* it stays that way permanently. Save and Download read straight
+   * from it, so without this they wrote a few KB of a multi-megabyte message
+   * to `partition-0-offset-42.bin` with no error and nothing to distinguish
+   * it from the real thing. Download's whole promise is the bytes exactly as
+   * the broker holds them, which is what makes a silent truncation there the
+   * worst version of this bug.
+   */
+  function incompletePayloadReason(): string | null {
+    if (!isShowingPreviewOnly) return null;
+    return fullPayload.isError
+      ? "the full payload could not be loaded, so only a truncated preview is here"
+      : "the full payload is still loading";
+  }
+
+  async function handleCopy() {
+    const incomplete = incompletePayloadReason();
+    if (incomplete !== null) {
+      report("error", "copy", `Not copied — ${incomplete}.`);
+      return;
+    }
+    const content = currentViewText();
+    if (content === null) {
+      report("error", "copy", `Nothing to copy — the payload isn't valid ${valueFormat(mode).label}.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(content);
+      report("ok", "copy", "Copied.");
+    } catch (error) {
+      report("error", "copy", `Copy failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function handleOpenInNewTab() {
+    if (mode === "json" && json !== undefined) {
+      selectTab(openJsonTab(messageLabel(), json));
+      return;
+    }
+    if (mode === "avro" && avroDecodeIsCurrent) {
+      selectTab(openJsonTab(messageLabel(), decodeAvro.data));
+      return;
+    }
+    if (mode === "protobuf" && protobufDecodeIsCurrent) {
+      selectTab(openJsonTab(messageLabel(), decodeProtobuf.data.value));
+      return;
+    }
+    if (mode === "xml" && xml !== undefined) {
+      selectTab(openJsonTab(messageLabel(), xml, "xml"));
+      return;
+    }
+    // Deliberately `literal.text`, not `currentViewText()`: the tab gets
+    // exactly what the pane is showing, capped the same way — including the
+    // user's own "show the whole payload" choice. Rebuilding it uncapped put
+    // a 10 MB payload's ~50 MB hex dump into one `<pre>` with ~650,000 gutter
+    // lines, which is the freeze `TEXT_PREVIEW_CHARS` and `HEX_PREVIEW_BYTES`
+    // exist to prevent — and a viewer tab holds it for the app's lifetime,
+    // outside the retained-payload budget.
+    const content = literal?.text ?? null;
+    if (content === null) {
+      report("error", "open", `Nothing to open — the payload isn't valid ${valueFormat(mode).label}.`);
+      return;
+    }
+    selectTab(openJsonTab(`${messageLabel()} · ${valueFormat(mode).label}`, content, "text"));
+  }
+
+  /**
+   * Save writes the value **as the chosen format renders it** — pretty JSON,
+   * indented XML, the hex dump, the decoded Avro document — to a file the
+   * user picks. It is the "give me what I'm looking at" button.
+   */
+  async function handleSave() {
+    const incomplete = incompletePayloadReason();
+    if (incomplete !== null) {
+      report("error", "save", `Not saved — ${incomplete}.`);
+      return;
+    }
+    const format = valueFormat(mode);
+    const content = currentViewText();
+    if (content === null) {
+      report("error", "save", `Nothing to save — the payload isn't valid ${format.label}.`);
+      return;
+    }
+    try {
+      const path = await save({
+        defaultPath: `${fileStem()}.${format.extension}`,
+        filters: [{ name: format.label, extensions: [format.extension] }],
+      });
+      if (!path) return;
+      await api.savePayloadFile(path, textToBase64(content));
+      report("ok", "save", `Saved to ${path}`);
+    } catch (error) {
+      report("error", "save", `Save failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Download writes the payload's **original bytes**, whatever format is
+   * selected — the message exactly as it sits on the broker.
+   *
+   * Not the same thing as Save, and the difference matters: a Kafka payload
+   * is an arbitrary byte string, and every text view of it above is a lossy
+   * UTF-8 decode (invalid sequences become U+FFFD). Saving that text back
+   * produces a file that no longer round-trips. This one does, which is what
+   * makes it the button to use for anything that will be fed to another tool.
+   */
+  async function handleDownload() {
+    if (payloadBase64 === null) {
+      report("error", "download", "Nothing to download — this row carries no payload.");
+      return;
+    }
+    const incomplete = incompletePayloadReason();
+    if (incomplete !== null) {
+      report("error", "download", `Not downloaded — ${incomplete}.`);
+      return;
+    }
+    try {
+      const path = await save({
+        defaultPath: `${fileStem()}.bin`,
+        filters: [{ name: "Raw payload", extensions: ["bin"] }],
+      });
+      if (!path) return;
+      await api.savePayloadFile(path, payloadBase64);
+      report("ok", "download", `Downloaded to ${path}`);
+    } catch (error) {
+      report("error", "download", `Download failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   if (!message) {
     return <p className="resizable-pane-placeholder">Select a message to view its payload.</p>;
   }
+
+  const dockLabel = placement === "right" ? "Move the payload panel to the bottom" : "Move the payload panel to the right";
+  const justCopied = status?.kind === "ok" && status.action === "copy";
 
   return (
     <div className="message-payload-viewer">
@@ -170,15 +544,26 @@ export function MessagePayloadViewer() {
           Partition {message.partition} · Offset {message.offset}
           {message.keyBase64 !== null && <> · Key: {base64ToDisplayText(message.keyBase64)}</>}
         </p>
-        <button
-          type="button"
-          className="json-tree-icon-button"
-          title="Close"
-          aria-label="Close message payload viewer"
-          onClick={clearViewedMessage}
-        >
-          <CloseIcon />
-        </button>
+        <div className="message-payload-header-actions">
+          <button
+            type="button"
+            className="json-tree-icon-button"
+            title={dockLabel}
+            aria-label={dockLabel}
+            onClick={togglePlacement}
+          >
+            {placement === "right" ? <DockBottomIcon /> : <DockRightIcon />}
+          </button>
+          <button
+            type="button"
+            className="json-tree-icon-button"
+            title="Close"
+            aria-label="Close message payload viewer"
+            onClick={clearViewedMessage}
+          >
+            <CloseIcon />
+          </button>
+        </div>
       </div>
 
       <div className="connection-modal-tabs" role="tablist">
@@ -238,52 +623,89 @@ export function MessagePayloadViewer() {
                     : "Loading the full payload — showing a preview until it arrives."}
                 </p>
               )}
-              <div className="message-payload-toggle" role="group" aria-label="Payload view mode">
-                <button
-                  type="button"
-                  className={mode === "text" ? "message-payload-toggle-button--active" : ""}
-                  onClick={() => setMode("text")}
-                >
-                  Text
-                </button>
-                <button
-                  type="button"
-                  className={mode === "json" ? "message-payload-toggle-button--active" : ""}
-                  onClick={() => setMode("json")}
-                >
-                  JSON
-                </button>
-                <button
-                  type="button"
-                  className={mode === "avro" ? "message-payload-toggle-button--active" : ""}
-                  onClick={() => setMode("avro")}
-                >
-                  Avro
-                </button>
-                <button
-                  type="button"
-                  className={mode === "xml" ? "message-payload-toggle-button--active" : ""}
-                  onClick={() => setMode("xml")}
-                >
-                  XML
-                </button>
+              {/* One toolbar for every format, rather than the two the tree
+                  views used to bring with them: the format picker on the
+                  left, what you can do with the result on the right. The
+                  tree views' own toolbars are switched off below
+                  (`showToolbar={false}`) so the controls don't stack and
+                  don't move depending on which format is selected. */}
+              <div className="message-payload-toolbar">
+                <ValueFormatSelect value={mode} onChange={setMode} />
+                <div className="message-payload-toolbar-actions">
+                  <button
+                    type="button"
+                    className="json-tree-icon-button"
+                    title="Open in new tab"
+                    aria-label="Open in new tab"
+                    onClick={handleOpenInNewTab}
+                  >
+                    <ExternalLinkIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="json-tree-icon-button"
+                    title={justCopied ? "Copied!" : "Copy"}
+                    aria-label={justCopied ? "Copied!" : "Copy"}
+                    onClick={handleCopy}
+                  >
+                    {justCopied ? <CheckIcon /> : <CopyIcon />}
+                  </button>
+                  <button
+                    type="button"
+                    className="json-tree-icon-button"
+                    title={`Save as ${valueFormat(mode).label}…`}
+                    aria-label={`Save as ${valueFormat(mode).label}`}
+                    onClick={handleSave}
+                  >
+                    <SaveIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="json-tree-icon-button"
+                    title="Download the original payload bytes…"
+                    aria-label="Download the original payload bytes"
+                    onClick={handleDownload}
+                  >
+                    <DownloadIcon />
+                  </button>
+                </div>
               </div>
+              {status && (
+                <p
+                  className={`message-payload-truncation${status.kind === "error" ? " message-payload-status--error" : ""}`}
+                  role={status.kind === "error" ? "alert" : "status"}
+                >
+                  {status.message}
+                </p>
+              )}
               {/* Everything above this — the partition/offset line, the
-                  Headers/Value tabs, the preview notice and the mode buttons
-                  — stays put; only the decoded payload itself scrolls. With
+                  Headers/Value tabs, the preview notice and the toolbar —
+                  stays put; only the decoded payload itself scrolls. With
                   the whole pane as one scroll box, a multi-megabyte JSON or
                   Avro document pushed those controls off the top, so
-                  switching mode or closing the message meant paging all the
+                  switching format or closing the message meant paging all the
                   way back up. */}
               <div className="message-payload-scroll">
-                {mode === "text" && (
+                {literal !== null && (
                   <>
-                    <pre className="message-payload-body">{displayText}</pre>
-                    {isTextTruncated && (
+                    <LineNumberedText
+                      text={literal.text}
+                      ariaLabel={`Payload as ${valueFormat(mode).label}`}
+                      // Hex and Base64 both lay their content out in fixed
+                      // columns — the hex dump's offset/byte/ASCII grid, and
+                      // `wrapBase64`'s 76-character MIME lines — and neither
+                      // reads as aligned in a proportional font. Raw text
+                      // has no such structure and follows the font setting.
+                      forceMonospace={mode === "hex" || mode === "base64"}
+                    />
+                    {literal.truncated && (
                       <p className="message-payload-truncation">
-                        Showing the first {Math.round(TEXT_PREVIEW_CHARS / 1024)} KB of{" "}
-                        {Math.round((text?.length ?? 0) / 1024).toLocaleString()} KB.{" "}
-                        <button type="button" className="link-button" onClick={() => setExpandedPayload(payloadBase64)}>
+                        Showing the first {kilobytes(literal.shown)} KB of {kilobytes(literal.total)} KB.{" "}
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => setExpanded({ payload: payloadBase64 as string, mode })}
+                        >
                           Show the whole payload
                         </button>
                       </p>
@@ -302,14 +724,7 @@ export function MessagePayloadViewer() {
                     // message with three entries stays expanded on the next
                     // message where it holds three thousand, rendering all of
                     // them in one pass.
-                    <JsonTreeView
-                      key={payloadBase64}
-                      value={json}
-                      onOpenInNewTab={() => {
-                        const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                        selectTab(openJsonTab(title, json));
-                      }}
-                    />
+                    <JsonTreeView key={payloadBase64} value={json} lineNumbers showToolbar={false} />
                   ) : (
                     <p role="alert">Payload is not valid JSON.</p>
                   ))}
@@ -320,14 +735,40 @@ export function MessagePayloadViewer() {
                     {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
                     {decodeAvro.isSuccess && (
                       // Same reason as the JSON view above.
-                      <JsonTreeView
-                        key={payloadBase64}
-                        value={decodeAvro.data}
-                        onOpenInNewTab={() => {
-                          const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                          selectTab(openJsonTab(title, decodeAvro.data));
-                        }}
-                      />
+                      <JsonTreeView key={payloadBase64} value={decodeAvro.data} lineNumbers showToolbar={false} />
+                    )}
+                  </>
+                )}
+                {mode === "protobuf" && isLoadingFullPayload && <PayloadLoadingSpinner />}
+                {mode === "protobuf" && !isLoadingFullPayload && (
+                  <>
+                    {decodeProtobuf.isPending && <p>Decoding…</p>}
+                    {decodeProtobuf.isError && <p role="alert">{decodeProtobuf.error?.message}</p>}
+                    {decodeProtobuf.isSuccess && (
+                      <>
+                        {/* Protobuf is the one format that decodes with no
+                            schema at all — the wire format carries field
+                            numbers and types but no names. That has to be
+                            said out loud: a tree of "1", "2", "3" otherwise
+                            looks like a schema that decoded badly rather
+                            than like no schema at all. */}
+                        <p className="message-payload-truncation">
+                          {decodeProtobuf.data.source === "none" ? (
+                            <>
+                              No .proto schema for this topic — showing field numbers read from the wire format. Paste
+                              one in the Schema tab for field names.
+                            </>
+                          ) : (
+                            <>
+                              Decoded as {decodeProtobuf.data.messageType ?? "a message"} using the{" "}
+                              {decodeProtobuf.data.source === "manual" ? "schema saved for this topic" : "Schema Registry"}
+                              .
+                            </>
+                          )}
+                        </p>
+                        {/* Same reason as the JSON view above. */}
+                        <JsonTreeView key={payloadBase64} value={decodeProtobuf.data.value} lineNumbers showToolbar={false} />
+                      </>
                     )}
                   </>
                 )}
@@ -335,13 +776,7 @@ export function MessagePayloadViewer() {
                   (isLoadingFullPayload ? (
                     <PayloadLoadingSpinner />
                   ) : xml !== undefined ? (
-                    <XmlTreeView
-                      value={xml}
-                      onOpenInNewTab={() => {
-                        const title = `Partition ${message.partition} · Offset ${message.offset}`;
-                        selectTab(openJsonTab(title, xml, "xml"));
-                      }}
-                    />
+                    <XmlTreeView value={xml} lineNumbers showToolbar={false} />
                   ) : (
                     <p role="alert">Payload is not valid XML.</p>
                   ))}

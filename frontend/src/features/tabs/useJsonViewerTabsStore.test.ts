@@ -69,4 +69,12 @@ describe("useJsonViewerTabsStore", () => {
 
     expect(useJsonViewerTabsStore.getState().tabs[0].name).toBe("Json");
   });
+
+  it("names a text tab 'Text'", () => {
+    const id = useJsonViewerTabsStore.getState().openTab("Partition 0 · Offset 1 · Hex", "00 01", "text");
+
+    const tab = useJsonViewerTabsStore.getState().tabs.find((t) => t.id === id);
+    expect(tab?.kind).toBe("text");
+    expect(tab?.name).toBe("Text");
+  });
 });

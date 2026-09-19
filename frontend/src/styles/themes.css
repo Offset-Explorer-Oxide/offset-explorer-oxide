@@ -1,4 +1,18 @@
-:root[data-theme="zed-dark"] {
+/* Each theme's palette is attached to `[data-theme="..."]` rather than to
+   `:root[data-theme="..."]`, so the declarations apply to *any* element
+   carrying the attribute — not only the document root.
+ 
+   That is what lets the theme picker's swatches show each theme in its own
+   real colors: a swatch is a `<div data-theme="ayu-dark">` and reads
+   `var(--color-bg)` and friends straight from these blocks, instead of the
+   palette being duplicated into JavaScript where it would quietly drift out
+   of sync with what the app actually renders.
+ 
+   `:root` still matches the attribute selector, so applying a theme to the
+   document is unchanged. The specificity drop (0,2,0 -> 0,1,0) is safe:
+   nothing outside this file declares a `--color-*` on an element that also
+   carries `data-theme`. */
+[data-theme="zed-dark"] {
   color-scheme: dark;
   --color-bg: #1e1e2e;
   --color-bg-elevated: #262638;
@@ -12,7 +26,7 @@
   --color-status-amber: #f9e2af;
 }
 
-:root[data-theme="zed-light"] {
+[data-theme="zed-light"] {
   color-scheme: light;
   --color-bg: #fafafa;
   --color-bg-elevated: #ffffff;
@@ -26,7 +40,7 @@
   --color-status-amber: #df8e1d;
 }
 
-:root[data-theme="ayu-dark"] {
+[data-theme="ayu-dark"] {
   color-scheme: dark;
   --color-bg: #0b0e14;
   --color-bg-elevated: #131721;
@@ -40,7 +54,7 @@
   --color-status-amber: #ffb454;
 }
 
-:root[data-theme="one-light"] {
+[data-theme="one-light"] {
   color-scheme: light;
   --color-bg: #fafafa;
   --color-bg-elevated: #eaeaeb;
@@ -54,7 +68,7 @@
   --color-status-amber: #c18401;
 }
 
-:root[data-theme="one-dark"] {
+[data-theme="one-dark"] {
   color-scheme: dark;
   --color-bg: #282c34;
   --color-bg-elevated: #2c313c;
@@ -68,7 +82,7 @@
   --color-status-amber: #e5c07b;
 }
 
-:root[data-theme="gruvbox-light-soft"] {
+[data-theme="gruvbox-light-soft"] {
   color-scheme: light;
   --color-bg: #f2e5bc;
   --color-bg-elevated: #ebdbb2;
@@ -82,7 +96,7 @@
   --color-status-amber: #b57614;
 }
 
-:root[data-theme="gruvbox-light-hard"] {
+[data-theme="gruvbox-light-hard"] {
   color-scheme: light;
   --color-bg: #f9f5d7;
   --color-bg-elevated: #f2e5bc;
@@ -96,7 +110,7 @@
   --color-status-amber: #b57614;
 }
 
-:root[data-theme="gruvbox-dark-soft"] {
+[data-theme="gruvbox-dark-soft"] {
   color-scheme: dark;
   --color-bg: #32302f;
   --color-bg-elevated: #3c3836;
@@ -110,7 +124,7 @@
   --color-status-amber: #fabd2f;
 }
 
-:root[data-theme="gruvbox-dark-hard"] {
+[data-theme="gruvbox-dark-hard"] {
   color-scheme: dark;
   --color-bg: #1d2021;
   --color-bg-elevated: #282828;

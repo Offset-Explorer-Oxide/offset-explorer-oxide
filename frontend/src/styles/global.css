@@ -1,3 +1,27 @@
+/* The app's type scale.
+ 
+   Every font size in this file is one of these steps rather than an absolute
+   pixel value, so Settings -> Appearance -> Font size moves all of them
+   together. Before this, `--font-size-base` reached `body` and almost nothing
+   else: the middle and right panels hard-coded 12px/13px/14px, so changing
+   the setting visibly did nothing to the parts of the app anyone spends time
+   reading.
+ 
+   The ratios are the old absolute sizes divided by the old 13px base, so at
+   the default size the app renders exactly as it did before; they are
+   multiplicative rather than "base minus 2px" so the hierarchy holds its
+   shape at 11px and at 18px instead of flattening at one end. */
+:root {
+  --font-size-base: 13px;
+  --font-size-2xs: calc(var(--font-size-base) * 0.77);
+  --font-size-xs: calc(var(--font-size-base) * 0.85);
+  --font-size-sm: calc(var(--font-size-base) * 0.92);
+  --font-size-md: var(--font-size-base);
+  --font-size-lg: calc(var(--font-size-base) * 1.08);
+  --font-size-xl: calc(var(--font-size-base) * 1.38);
+  --font-size-2xl: calc(var(--font-size-base) * 1.85);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -25,10 +49,12 @@ body {
 .app-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: stretch;
   background: var(--color-bg-elevated);
   border-bottom: 1px solid var(--color-border);
-  padding: 4px 8px;
+  /* No vertical padding: the tabs run to the header's full height so the
+     active one meets the content area below it with nothing in between. */
+  padding: 0 0 0 0;
 }
 
 .app-body {
@@ -87,6 +113,17 @@ body {
   min-width: 0;
   min-height: 0;
 }
+/* Wraps the middle pane and — only when the payload panel is docked below —
+   a divider and that panel, so the dock spans the middle pane's width rather
+   than the whole window's and the sidebar keeps its full height. Holding one
+   child, it lays out exactly as the bare middle pane did. */
+.resizable-column {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
 
 .resizable-pane {
   min-height: 0;
@@ -101,17 +138,28 @@ body {
   min-width: 0;
   overflow: auto;
 }
-.resizable-pane--right {
-  border-left: 1px solid var(--color-border);
+.resizable-pane--right,
+.resizable-pane--bottom {
   padding: 8px;
   /* The pane itself no longer scrolls: the payload viewer inside it scrolls
      only its payload, keeping the offset line, the Headers/Value tabs and
-     the Text/JSON/Avro/XML buttons on screen. */
+     the format toolbar on screen. */
   overflow: hidden;
   display: flex;
   flex-direction: column;
   color: var(--color-fg-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
+}
+.resizable-pane--right {
+  border-left: 1px solid var(--color-border);
+}
+/* Docked under the middle pane: full width, its own height, and the border
+   moves to the edge it now shares with the pane above it. */
+.resizable-pane--bottom {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  border-top: 1px solid var(--color-border);
 }
 
 .resizable-divider {
@@ -134,14 +182,30 @@ body {
 .resizable-divider--persistent:active {
   background: var(--color-accent);
 }
+/* The divider above a bottom-docked payload panel — the same control one axis
+   over, so it only has to restate what the axis changes. */
+.resizable-divider--horizontal {
+  width: auto;
+  height: 4px;
+  cursor: row-resize;
+}
 
 @media (max-width: 900px) {
   .resizable-pane--right {
     display: none;
   }
-  .resizable-divider:last-of-type {
+  /* Targeted by its own class, not by `:last-of-type`. That is what this rule
+     used to say, and it never matched: `:last-of-type` means "the last sibling
+     of this element type", every sibling here is a `div`, and the last of
+     those is the right *pane* — so the divider stayed on screen as a stray
+     draggable strip beside a hidden pane. */
+  .resizable-divider--right {
     display: none;
   }
+  /* The bottom dock is deliberately NOT hidden here. The side placement is,
+     because 240px of payload pane leaves nothing of a narrow window for the
+     grid — a dock under the grid costs it no width at all, which is most of
+     why the switch exists. */
 }
 
 @media (max-width: 720px) {
@@ -151,6 +215,9 @@ body {
   .resizable-pane--left,
   .resizable-pane--right {
     width: 100% !important;
+    max-height: 40vh;
+  }
+  .resizable-pane--bottom {
     max-height: 40vh;
   }
   .resizable-divider {
@@ -190,7 +257,7 @@ body {
   background: none;
   border: none;
   color: var(--color-fg-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   padding: 2px 4px;
 }
@@ -204,7 +271,7 @@ body {
   margin-left: auto;
 }
 .bottom-panel-memory-label {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 /* The app-wide payload total, once it is close enough to the ceiling that
@@ -217,7 +284,7 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-fg-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   cursor: pointer;
   padding: 2px 8px;
 }
@@ -254,8 +321,8 @@ body {
   margin: 0;
   padding: 4px 0;
   list-style: none;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
+  font-size: var(--font-size-sm);
 }
 .log-entry {
   display: flex;
@@ -287,33 +354,63 @@ body {
 .logs-empty {
   margin: 0;
   padding: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 
+/* The tab strip. Square-edged tabs sitting flush in the header, with the
+   active one lifted out by three signals at once rather than by one:
+
+   1. **Background.** The active tab is painted in `--color-bg`, the colour of
+      the content area below it, so it reads as the front edge of the pane it
+      opens. Inactive tabs stay on the header's own `--color-bg-elevated`.
+   2. **An accent bar along its top edge**, in `--color-accent` — the signal
+      that survives when a theme's `bg` and `bg-elevated` are close enough
+      that (1) alone is a guess.
+   3. **Text.** Full `--color-fg` at weight 600 against `--color-fg-muted` at
+      weight 400 for the rest.
+
+   The old styling had only (1), in the *opposite* direction (the active tab
+   was elevated, the strip was transparent), which on several themes came out
+   as a few percent of lightness between a selected tab and an unselected
+   one. */
 .tab-bar {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-bar::-webkit-scrollbar {
+  display: none;
 }
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px 8px 16px;
-  font-size: 14px;
-  border-radius: 8px 8px 0 0;
+  padding: 9px 10px 9px 14px;
+  font-size: var(--font-size-md);
   cursor: pointer;
   background: transparent;
   color: var(--color-fg-muted);
-  border: 1px solid transparent;
-  border-bottom: none;
-  min-width: 120px;
+  /* A hairline between tabs, and a transparent top edge that the active tab
+     fills in — reserved on every tab so activating one doesn't shift the
+     row by 2px. */
+  border-right: 1px solid var(--color-border);
+  border-top: 2px solid transparent;
+  min-width: 110px;
   max-width: 220px;
+  flex: 0 0 auto;
+  user-select: none;
 }
 .tab:hover {
-  background: var(--color-bg-elevated);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
   color: var(--color-fg);
+}
+.tab:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -2px;
 }
 .tab span {
   overflow: hidden;
@@ -325,12 +422,12 @@ body {
   background: none;
   border: none;
   color: inherit;
-  font-size: 14px;
+  font-size: var(--font-size-lg);
   line-height: 1;
   width: 18px;
   height: 18px;
   min-width: 18px;
-  border-radius: 50%;
+  border-radius: 4px;
   cursor: pointer;
   opacity: 0;
   margin-left: auto;
@@ -340,14 +437,21 @@ body {
 .tab-close:focus-visible {
   opacity: 0.7;
 }
+/* Always visible on the active tab — it is the one you are most likely to
+   close, and hunting for a control that only appears on hover is exactly the
+   friction the rest of this redesign removes. */
+.tab[aria-selected="true"] .tab-close {
+  opacity: 0.7;
+}
 .tab-close:hover {
   opacity: 1;
-  background: var(--color-border);
+  background: color-mix(in srgb, var(--color-fg) 14%, transparent);
 }
 .tab[aria-selected="true"] {
-  background: var(--color-bg-elevated);
+  background: var(--color-bg);
   color: var(--color-fg);
-  border-color: var(--color-border);
+  font-weight: 600;
+  border-top-color: var(--color-accent);
 }
 .tab--dragging {
   opacity: 0.6;
@@ -357,26 +461,37 @@ body {
   width: 28px;
   height: 28px;
   min-width: 28px;
-  border-radius: 50%;
+  border-radius: 4px;
   border: none;
   background: none;
   color: var(--color-fg-muted);
-  font-size: 18px;
+  font-size: var(--font-size-xl);
   line-height: 1;
   cursor: pointer;
-  margin-left: 8px;
+  margin-left: 6px;
+  align-self: center;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
 }
 .tab-new:hover {
-  background: var(--color-bg-elevated);
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
   color: var(--color-fg);
 }
 
+/* Wraps the strip and the error line under it. Flexed so the strip can take
+   the header's full height (the active tab's fill has to reach the content
+   area) while the error still sits below it. */
+.tab-bar-region {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .tab-bar-error {
   color: var(--color-status-red);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   margin: 2px 8px;
 }
 
@@ -384,10 +499,12 @@ body {
   background: none;
   border: none;
   color: var(--color-fg-muted);
-  font-size: 24px;
+  font-size: var(--font-size-2xl);
   line-height: 1;
   cursor: pointer;
   padding: 6px 10px;
+  align-self: center;
+  flex: 0 0 auto;
 }
 .settings-gear:hover {
   color: var(--color-fg);
@@ -408,7 +525,7 @@ body {
   margin: 0;
   padding-bottom: 16px;
   border-bottom: 1px solid var(--color-border);
-  font-size: 18px;
+  font-size: var(--font-size-xl);
 }
 .settings-panel__tabs {
   display: flex;
@@ -420,7 +537,7 @@ body {
   border: none;
   border-bottom: 2px solid transparent;
   color: var(--color-fg-muted);
-  font-size: 13px;
+  font-size: var(--font-size-md);
   padding: 8px 16px;
   cursor: pointer;
   border-radius: 6px 6px 0 0;
@@ -449,7 +566,7 @@ body {
   border-radius: 8px;
 }
 .settings-panel__section h3 {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--color-fg-muted);
   text-transform: uppercase;
@@ -460,7 +577,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 .dropdown-field input {
@@ -526,7 +643,7 @@ body {
 }
 .context-menu-item {
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--font-size-md);
   cursor: pointer;
 }
 .context-menu-item:hover {
@@ -683,7 +800,7 @@ body {
   margin-bottom: 2px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   line-height: 1.4;
   color: var(--color-fg-muted);
   position: sticky;
@@ -707,7 +824,7 @@ body {
   border-radius: 50%;
   background: var(--color-status-amber);
   color: var(--color-bg);
-  font-size: 10px;
+  font-size: var(--font-size-2xs);
   font-weight: 700;
   line-height: 1;
 }
@@ -718,7 +835,7 @@ body {
   border-radius: 4px;
   background: var(--color-bg);
   color: var(--color-fg-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
@@ -740,7 +857,7 @@ body {
   width: 100%;
   margin: 2px 0 4px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg);
   background: var(--color-bg);
   border: 1px solid var(--color-border);
@@ -760,7 +877,7 @@ body {
   margin-bottom: 2px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .resource-item:hover {
   background: var(--color-bg-elevated);
@@ -782,7 +899,7 @@ body {
   padding: 4px 10px;
   margin-bottom: 2px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
   cursor: pointer;
 }
@@ -798,7 +915,7 @@ body {
 }
 .topic-partition-empty {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 
@@ -807,7 +924,7 @@ body {
 }
 .cluster-detail-header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--font-size-lg);
 }
 
 .cluster-detail-footer {
@@ -855,7 +972,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 .data-tab-filters input {
@@ -886,14 +1003,14 @@ body {
 }
 .data-tab-include-payload {
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 .data-tab-search {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
   margin-bottom: 8px;
 }
@@ -907,7 +1024,7 @@ body {
 }
 .data-tab-search-notice {
   margin: -4px 0 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 /* Mirrors the backend's own "warn"-level log for the same event (see
@@ -918,12 +1035,12 @@ body {
 }
 .settings-panel__hint {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
   max-width: 52ch;
 }
 .data-tab-total-count {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
   margin: 0 0 6px;
 }
@@ -949,7 +1066,7 @@ body {
   inset: 0;
 }
 .data-tab-no-rows {
-  font-size: 13px;
+  font-size: var(--font-size-md);
   color: var(--color-fg-muted);
 }
 .value-cell-fetch-button {
@@ -958,7 +1075,7 @@ body {
   border: 1px solid var(--color-border);
   background: var(--color-bg-elevated);
   color: var(--color-fg-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   cursor: pointer;
 }
 .value-cell-fetch-button:hover {
@@ -975,7 +1092,7 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .lag-panel-summary button {
   padding: 6px 14px;
@@ -994,7 +1111,7 @@ body {
 }
 
 .message-payload-viewer {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   /* Fills the right pane so the scroll region below can take whatever is
      left over after the fixed header, tabs and mode buttons. */
   flex: 1 1 auto;
@@ -1093,38 +1210,187 @@ body {
   margin: 0 0 8px;
   color: var(--color-fg-muted);
 }
-.message-payload-toggle {
+/* The Value tab's one row of chrome: the format picker on the left, what you
+   can do with the result on the right. Fixed, like the tabs above it. */
+.message-payload-toolbar {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
   flex: 0 0 auto;
 }
-.message-payload-toggle button {
-  padding: 3px 10px;
+.message-payload-toolbar-actions {
+  display: flex;
+  gap: 4px;
+}
+.message-payload-header-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.message-payload-status--error {
+  color: var(--color-status-red);
+}
+
+/* The format dropdown. Deliberately shaped like the app's shared `.dropdown`
+   — same border, same caret, same open-downward listbox — with room made for
+   an icon beside each name. */
+.value-format-select {
+  position: relative;
+  flex: 0 0 auto;
+}
+.value-format-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
   border-radius: 4px;
   border: 1px solid var(--color-border);
   background: var(--color-bg-elevated);
-  color: var(--color-fg-muted);
+  color: var(--color-fg);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
-.message-payload-toggle-button--active {
-  color: var(--color-fg) !important;
-  border-color: var(--color-accent) !important;
+.value-format-toggle:hover {
+  border-color: var(--color-accent);
+}
+.value-format-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-fg-muted);
+}
+.value-format-toggle .value-format-label {
+  min-width: 44px;
+  text-align: left;
+}
+.value-format-caret {
+  color: var(--color-fg-muted);
+}
+.value-format-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin: 2px 0 0;
+  padding: 4px;
+  min-width: 140px;
+  list-style: none;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+}
+.value-format-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.value-format-option:hover,
+.value-format-option:focus-visible {
+  background: var(--color-bg);
+  outline: none;
+}
+.value-format-option--selected {
+  color: var(--color-accent);
+}
+.value-format-option--selected .value-format-icon {
+  color: var(--color-accent);
+}
+/* The rule between the structured formats and the literal ones. Drawn as a
+   border on the first literal entry plus its own spacing, so the list needs
+   no separator element that a listbox's options shouldn't contain. */
+.value-format-option--group-start {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+.value-format-check {
+  margin-left: auto;
+}
+
+/* Line-numbered monospaced text — the Raw/Hex/Base64 payload views, and a
+   "text" viewer tab. */
+.code-view {
+  display: flex;
+  align-items: flex-start;
+  font-family: var(--font-family-mono, ui-monospace, "SF Mono", Consolas, monospace);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  /* Wide enough for the widest line, so the gutter's sticky background has
+     something to sit against all the way across a horizontal scroll. */
+  width: max-content;
+  min-width: 100%;
+}
+/* The hex dump's columns only line up in a monospace font — see
+   `LineNumberedText`'s `forceMonospace`. */
+.code-view--monospace,
+.code-view--monospace .code-body,
+.code-view--monospace .code-gutter {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+.code-gutter {
+  /* Sticks to the left edge while the payload scrolls sideways — without
+     this the numbers slide off screen exactly when a long line makes them
+     useful. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 0 8px 0 0;
+  text-align: right;
+  color: var(--color-fg-muted);
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  user-select: none;
+  flex: 0 0 auto;
+}
+.code-body {
+  margin: 0;
+  padding-left: 8px;
+  flex: 1 1 auto;
 }
 .message-payload-body {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, "SF Mono", Consolas, monospace;
-  font-size: 12px;
+  /* Not `pre-wrap`: one logical line has to occupy exactly one visual row or
+     the line-number gutter beside it points at the wrong text. The scroll
+     region handles the horizontal axis instead. */
+  white-space: pre;
+  font-family: var(--font-family-mono, ui-monospace, "SF Mono", Consolas, monospace);
+  font-size: var(--font-size-sm);
   margin: 0;
+}
+
+/* Line numbers down a JSON/XML tree, counted in document order by CSS rather
+   than threaded through the recursive node components as a prop — the nodes
+   render in order, so the browser can do the counting. */
+.json-tree-body--numbered {
+  counter-reset: json-tree-line;
+}
+.json-tree-body--numbered .json-tree-line::before {
+  counter-increment: json-tree-line;
+  content: counter(json-tree-line);
+  position: sticky;
+  left: 0;
+  flex: 0 0 auto;
+  width: 3.2em;
+  margin-right: 8px;
+  padding-right: 6px;
+  text-align: right;
+  color: var(--color-fg-muted);
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  user-select: none;
 }
 
 /* The "showing the first 256 KB" notice under a truncated raw payload, and
    its inline control for rendering the rest. */
 .message-payload-truncation {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 /* The "showing a preview only" banner sits above the scroll region, as part
@@ -1151,8 +1417,8 @@ body {
 .topic-schema-editor {
   width: 100%;
   min-height: 220px;
-  font-family: ui-monospace, "SF Mono", Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-family-mono, ui-monospace, "SF Mono", Consolas, monospace);
+  font-size: var(--font-size-sm);
   padding: 8px;
   border-radius: 4px;
   border: 1px solid var(--color-border);
@@ -1163,8 +1429,8 @@ body {
 }
 
 .json-tree {
-  font-family: ui-monospace, "SF Mono", Consolas, monospace;
-  font-size: 12px;
+  font-family: var(--font-family-mono, ui-monospace, "SF Mono", Consolas, monospace);
+  font-size: var(--font-size-sm);
 }
 .json-tree-toolbar {
   display: flex;
@@ -1199,11 +1465,20 @@ body {
 .json-tree-line {
   display: flex;
   align-items: center;
-  gap: 2px;
   line-height: 1.6;
   white-space: pre;
 }
-.json-tree-line .tree-caret-button {
+/* The indent lives here rather than on the line box so that the line's left
+   edge stays free for the number gutter — a `padding-left` on the line itself
+   would push each node's number right along with its content, staggering the
+   column into uselessness. */
+.json-tree-line-content {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.json-tree-line-content .tree-caret-button {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
@@ -1242,7 +1517,7 @@ body {
 .topic-detail-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .topic-detail-table th,
 .topic-detail-table td {
@@ -1286,7 +1561,7 @@ body {
 }
 .connection-modal-header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--font-size-lg);
 }
 
 .connection-modal-tabs {
@@ -1335,7 +1610,7 @@ body {
   flex-direction: column;
   gap: 4px;
   margin-bottom: 10px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 .connection-modal-tab-panel label input,
@@ -1355,7 +1630,7 @@ body {
 
 .connection-modal-hint {
   margin: 6px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-fg-muted);
   line-height: 1.5;
 }
@@ -1372,7 +1647,7 @@ body {
 }
 .connection-modal-section h3 {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-fg-muted);
@@ -1400,7 +1675,7 @@ body {
 
 .ping-result,
 .connection-modal-error {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   margin: -4px 0 10px;
 }
 .ping-result--success {
@@ -1436,7 +1711,7 @@ body {
   margin: 0 8px 4px 28px;
   padding: 6px 8px;
   border-left: 2px solid var(--color-status-red);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   line-height: 1.4;
   color: var(--color-fg-muted);
 }
@@ -1447,7 +1722,7 @@ body {
 .connection-modal-field-note {
   grid-column: 1 / -1;
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 
@@ -1466,18 +1741,18 @@ body {
 }
 .publish-gate h3 {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: var(--font-size-md);
 }
 .publish-gate p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
   line-height: 1.6;
 }
 
 .publish-target {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
 
@@ -1500,17 +1775,17 @@ body {
 }
 .publish-message-header h3 {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .publish-message-size {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-fg-muted);
   margin-right: auto;
 }
 .publish-message-delivered {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-status-green);
 }
 .publish-message-problem,
@@ -1518,7 +1793,7 @@ body {
 .publish-error,
 .publish-result-failure {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-status-red);
 }
 
@@ -1542,7 +1817,7 @@ body {
 
 .publish-headers h4 {
   margin: 8px 0 4px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-fg-muted);
@@ -1560,7 +1835,7 @@ body {
   gap: 12px;
   padding-top: 8px;
   border-top: 1px solid var(--color-border);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .publish-footer .publish-button {
   margin-left: auto;
@@ -1588,14 +1863,14 @@ body {
 }
 .publish-confirm h3 {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: var(--font-size-md);
 }
 .publish-confirm-details {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .publish-confirm-details dt {
   color: var(--color-fg-muted);
@@ -1605,7 +1880,7 @@ body {
 }
 .publish-confirm-warning {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-status-amber);
 }
 .publish-confirm-actions {
@@ -1627,11 +1902,11 @@ body {
 }
 .publish-result h3 {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 .publish-result-table {
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
 }
 .publish-result-table th,
 .publish-result-table td {
@@ -1644,6 +1919,167 @@ body {
 }
 .publish-result-skipped {
   margin: 8px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--color-fg-muted);
+}
+
+
+/* --- Theme picker ------------------------------------------------------
+   Shared by Settings -> Appearance and the status strip's palette button, so
+   the two can never drift into offering different things. */
+.theme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The Light/Dark switch: a two-up segmented control, the decision most theme
+   changes really are. */
+.theme-kind-switch {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-bg);
+  align-self: flex-start;
+}
+.theme-kind-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.theme-kind-button:hover {
+  color: var(--color-fg);
+}
+.theme-kind-button--active {
+  background: var(--color-accent);
+  /* Against the accent fill rather than the page, so this is the one place a
+     literal colour is right: every theme's accent is chosen to carry white
+     text, and `--color-fg` would be invisible on the light ones. */
+  color: #fff;
+}
+.theme-kind-button--active:hover {
+  color: #fff;
+}
+
+.theme-list {
+  display: grid;
+  /* `em`, not a fixed 190px: the column has to grow with the font setting or
+     the longest names truncate. At 17px the two Gruvbox entries both came out
+     as "Gruvbox Dark …" — identical, and so unpickable. */
+  grid-template-columns: repeat(auto-fill, minmax(15em, 1fr));
+  gap: 6px;
+}
+/* Every theme's name is readable at full strength — these are a list to scan,
+   and dimming the eight you have not chosen makes finding the ninth harder.
+   Selection is carried by the border and the check instead. */
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.theme-option:hover {
+  border-color: var(--color-fg-muted);
+  background: var(--color-bg-elevated);
+}
+.theme-option:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.theme-option--active {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.theme-option__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-option__check {
+  color: var(--color-accent);
+}
+
+/* A miniature app window, painted from the swatch's own `data-theme` block —
+   sidebar on the left, an accent line and a text line in the body. */
+.theme-swatch {
+  display: flex;
+  width: 34px;
+  height: 22px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  flex: 0 0 auto;
+}
+.theme-swatch__sidebar {
+  width: 10px;
+  background: var(--color-bg-elevated);
+  border-right: 1px solid var(--color-border);
+}
+.theme-swatch__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 3px;
+}
+.theme-swatch__line {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-fg-muted);
+}
+.theme-swatch__line--accent {
+  background: var(--color-accent);
+}
+
+/* --- The status strip's theme button ----------------------------------- */
+.theme-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.theme-menu__button {
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+}
+/* Opens upward: the strip is on the window's bottom edge, so there is no
+   downward for it to open into. */
+.theme-menu__popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 30%);
+}
+/* In the popover the themes stack one per row — 300px has no room for a grid,
+   and a scrollable column keeps the popover a fixed size however many themes
+   the list grows to. */
+.theme-picker--compact .theme-list {
+  grid-template-columns: 1fr;
+  max-height: 232px;
+  overflow-y: auto;
 }

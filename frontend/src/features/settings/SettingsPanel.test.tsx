@@ -20,7 +20,7 @@ beforeEach(() => {
     previewFontFamilyId: null,
     fontSizePx: DEFAULT_FONT_SIZE_PX,
   });
-  useThemeStore.setState({ appliedThemeId: DEFAULT_THEME_ID });
+  useThemeStore.setState({ appliedThemeId: DEFAULT_THEME_ID, lastByKind: {} });
   useGeneralSettingsStore.setState({
     zookeeperTimeoutMs: DEFAULT_ZOOKEEPER_TIMEOUT_MS,
     brokerReadTimeoutMs: DEFAULT_BROKER_READ_TIMEOUT_MS,
@@ -50,7 +50,7 @@ describe("SettingsPanel tabs", () => {
     await user.click(screen.getByRole("tab", { name: "Appearance" }));
 
     expect(screen.getByRole("tab", { name: "Appearance", selected: true })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Zed Dark/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Zed Dark" })).toBeInTheDocument();
   });
 
   it("does not show General's timeout fields while Appearance is active", async () => {
@@ -104,9 +104,10 @@ describe("SettingsPanel General tab", () => {
 });
 
 describe("SettingsPanel Appearance tab", () => {
-  it("renders the theme, font style, and font size dropdowns as matching button+listbox controls", async () => {
+  it("renders the theme picker and the font dropdowns", async () => {
     await openAppearanceTab();
-    expect(screen.getByRole("button", { name: /Zed Dark/ })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Light or dark" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Zed Dark" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /System UI/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: `${DEFAULT_FONT_SIZE_PX}px ▾` })).toBeInTheDocument();
   });
@@ -151,19 +152,19 @@ describe("SettingsPanel Appearance tab", () => {
     expect(usePreferencesStore.getState().fontSizePx).toBe(DEFAULT_FONT_SIZE_PX + 1);
   });
 
-  it("marks the currently applied theme with a checkmark when the dropdown is open", async () => {
-    const user = await openAppearanceTab();
+  it("marks the currently applied theme as checked", async () => {
+    await openAppearanceTab();
 
-    await user.click(screen.getByRole("button", { name: /Zed Dark/ }));
-
-    expect(screen.getByRole("option", { name: "✓ Zed Dark" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Zed Dark" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "Ayu Dark" })).not.toBeChecked();
   });
 
   it("applies the selected theme immediately and persists it", async () => {
     const user = await openAppearanceTab();
 
-    await user.click(screen.getByRole("button", { name: /Zed Dark/ }));
-    await user.click(screen.getByRole("option", { name: "Zed Light" }));
+    // Zed Light is on the other side of the Light/Dark switch.
+    await user.click(screen.getByRole("radio", { name: "Light" }));
+    await user.click(screen.getByRole("radio", { name: "Zed Light" }));
 
     expect(useThemeStore.getState().appliedThemeId).toBe("zed-light");
     expect(localStorage.getItem("kafkaoxide.theme")).toBe("zed-light");
@@ -200,12 +201,16 @@ describe("SettingsPanel Appearance tab", () => {
     expect(usePreferencesStore.getState().appliedFontFamilyId).toBe("inter");
   });
 
-  it("selects a theme via keyboard navigation (ArrowDown + Enter)", async () => {
+  // `role="radio"` promises arrow-key navigation within the group, and moving
+  // focus selects — the same contract a native radio group has.
+  it("moves through the themes with the arrow keys", async () => {
     const user = await openAppearanceTab();
 
-    await user.click(screen.getByRole("button", { name: /Zed Dark/ }));
-    await user.keyboard("{ArrowDown}{Enter}");
+    screen.getByRole("radio", { name: "Zed Dark" }).focus();
+    await user.keyboard("{ArrowDown}");
 
-    expect(useThemeStore.getState().appliedThemeId).toBe("zed-light");
+    // The dark themes in list order: Zed Dark, Ayu Dark, One Dark, ...
+    expect(useThemeStore.getState().appliedThemeId).toBe("ayu-dark");
+    expect(screen.getByRole("radio", { name: "Ayu Dark" })).toHaveFocus();
   });
 });

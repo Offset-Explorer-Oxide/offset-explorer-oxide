@@ -41,4 +41,22 @@ describe("JsonViewerTabPanel", () => {
     expect(screen.getByRole("heading", { name: "Partition 0 · Offset 1" })).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
   });
+
+  it("shows a line-numbered text view when kind is text", () => {
+    const { container } = render(
+      <JsonViewerTabPanel
+        tab={{
+          id: "text-1",
+          title: "Partition 0 · Offset 1 · Hex",
+          name: "Text",
+          kind: "text",
+          value: "line one\nline two",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Partition 0 · Offset 1 · Hex" })).toBeInTheDocument();
+    expect(container.querySelector(".code-gutter")?.textContent).toBe("1\n2");
+    expect(container.querySelector(".code-body")?.textContent).toBe("line one\nline two");
+  });
 });

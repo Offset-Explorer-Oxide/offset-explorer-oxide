@@ -1,5 +1,6 @@
 use chrono::Utc;
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::{AppError, Connection, NewConnection, SaslMechanism, SecurityProtocol};
 use sqlx::sqlite::SqlitePool;
 use sqlx::FromRow;
@@ -42,14 +43,14 @@ impl ConnectionRow {
     fn into_connection(self) -> Result<Connection, AppError> {
         let security_protocol = SecurityProtocol::from_str(&self.security_protocol)
             .change_context(AppError::Db)
-            .attach_printable_lazy(|| format!("invalid security_protocol {}", self.security_protocol))?;
+            .attach_with(|| format!("invalid security_protocol {}", self.security_protocol))?;
         let sasl_mechanism = self
             .sasl_mechanism
             .as_deref()
             .map(SaslMechanism::from_str)
             .transpose()
             .change_context(AppError::Db)
-            .attach_printable("invalid sasl_mechanism")?;
+            .attach("invalid sasl_mechanism")?;
         Ok(Connection {
             id: self.id,
             name: self.name,
@@ -134,7 +135,7 @@ pub async fn create(pool: &SqlitePool, new_conn: &NewConnection) -> Result<Conne
     .execute(pool)
     .await
     .change_context(AppError::Db)
-    .attach_printable("failed to insert connection")?;
+    .attach("failed to insert connection")?;
 
     get(pool, &id).await
 }
@@ -145,13 +146,13 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Connection, AppError> {
         .fetch_optional(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to fetch connection {id}"))?;
+        .attach_with(|| format!("failed to fetch connection {id}"))?;
 
     let row = match row {
         Some(row) => row,
         None => {
             return Err(error_stack::Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("connection {id} not found"));
+                .attach_with(|| format!("connection {id} not found"));
         }
     };
 
@@ -163,7 +164,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Connection>, AppError> {
         .fetch_all(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to list connections")?;
+        .attach("failed to list connections")?;
 
     rows.into_iter().map(ConnectionRow::into_connection).collect()
 }
@@ -217,11 +218,11 @@ pub async fn update(pool: &SqlitePool, id: &str, new_conn: &NewConnection) -> Re
     .execute(pool)
     .await
     .change_context(AppError::Db)
-    .attach_printable_lazy(|| format!("failed to update connection {id}"))?;
+    .attach_with(|| format!("failed to update connection {id}"))?;
 
     if result.rows_affected() == 0 {
         return Err(error_stack::Report::new(AppError::NotFound))
-            .attach_printable_lazy(|| format!("connection {id} not found"));
+            .attach_with(|| format!("connection {id} not found"));
     }
 
     get(pool, id).await
@@ -233,11 +234,11 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         .execute(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to delete connection {id}"))?;
+        .attach_with(|| format!("failed to delete connection {id}"))?;
 
     if result.rows_affected() == 0 {
         return Err(error_stack::Report::new(AppError::NotFound))
-            .attach_printable_lazy(|| format!("connection {id} not found"));
+            .attach_with(|| format!("connection {id} not found"));
     }
 
     Ok(())

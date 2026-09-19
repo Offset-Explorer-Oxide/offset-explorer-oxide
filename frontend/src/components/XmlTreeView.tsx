@@ -5,6 +5,10 @@ export interface XmlTreeViewProps {
   value: XmlElementNode;
   /** Opens `value` as its own tab in the app (there's no browser to open a real new tab in). Omit to hide the button — e.g. a view that's already a dedicated XML tab has nothing new to open. */
   onOpenInNewTab?: () => void;
+  /** Numbers every rendered line down the left edge. Off by default — a tab-sized view of a small document reads better without the column. */
+  lineNumbers?: boolean;
+  /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
+  showToolbar?: boolean;
 }
 
 function CopyIcon() {
@@ -50,41 +54,47 @@ function XmlNode({ node, depth }: XmlNodeProps) {
 
   if (node.children.length === 0) {
     return (
-      <div className="json-tree-line" style={indent}>
-        <span className="json-tree-indent" aria-hidden="true" />
-        <span className="json-tree-key">{openTag}</span>
-        {node.text !== null && <span className="json-tree-value json-tree-value--string">{node.text}</span>}
-        <span className="json-tree-key">{`</${node.tag}>`}</span>
+      <div className="json-tree-line">
+        <span className="json-tree-line-content" style={indent}>
+          <span className="json-tree-indent" aria-hidden="true" />
+          <span className="json-tree-key">{openTag}</span>
+          {node.text !== null && <span className="json-tree-value json-tree-value--string">{node.text}</span>}
+          <span className="json-tree-key">{`</${node.tag}>`}</span>
+        </span>
       </div>
     );
   }
 
   return (
     <div>
-      <div className="json-tree-line" style={indent}>
-        <button
-          type="button"
-          className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
-          aria-label={expanded ? `Collapse ${node.tag}` : `Expand ${node.tag}`}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          <span className="tree-caret" aria-hidden="true" />
-        </button>
-        <span className="json-tree-key">{openTag}</span>
-        {!expanded && (
-          <span className="json-tree-summary">
-            {node.children.length} {node.children.length === 1 ? "child" : "children"}
-          </span>
-        )}
+      <div className="json-tree-line">
+        <span className="json-tree-line-content" style={indent}>
+          <button
+            type="button"
+            className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
+            aria-label={expanded ? `Collapse ${node.tag}` : `Expand ${node.tag}`}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <span className="tree-caret" aria-hidden="true" />
+          </button>
+          <span className="json-tree-key">{openTag}</span>
+          {!expanded && (
+            <span className="json-tree-summary">
+              {node.children.length} {node.children.length === 1 ? "child" : "children"}
+            </span>
+          )}
+        </span>
       </div>
       {expanded && (
         <>
           {node.children.map((child, index) => (
             <XmlNode key={index} node={child} depth={depth + 1} />
           ))}
-          <div className="json-tree-line" style={indent}>
-            <span className="json-tree-indent" aria-hidden="true" />
-            <span className="json-tree-key">{`</${node.tag}>`}</span>
+          <div className="json-tree-line">
+            <span className="json-tree-line-content" style={indent}>
+              <span className="json-tree-indent" aria-hidden="true" />
+              <span className="json-tree-key">{`</${node.tag}>`}</span>
+            </span>
           </div>
         </>
       )}
@@ -97,7 +107,7 @@ function XmlNode({ node, depth }: XmlNodeProps) {
  * interaction (expand/collapse arrows, copy, open-in-new-tab) for XML
  * payloads.
  */
-export function XmlTreeView({ value, onOpenInNewTab }: XmlTreeViewProps) {
+export function XmlTreeView({ value, onOpenInNewTab, lineNumbers = false, showToolbar = true }: XmlTreeViewProps) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -108,6 +118,7 @@ export function XmlTreeView({ value, onOpenInNewTab }: XmlTreeViewProps) {
 
   return (
     <div className="json-tree">
+      {showToolbar && (
       <div className="json-tree-toolbar">
         {onOpenInNewTab && (
           <button
@@ -130,7 +141,8 @@ export function XmlTreeView({ value, onOpenInNewTab }: XmlTreeViewProps) {
           {copied ? <CheckIcon /> : <CopyIcon />}
         </button>
       </div>
-      <div className="json-tree-body" role="tree">
+      )}
+      <div className={`json-tree-body${lineNumbers ? " json-tree-body--numbered" : ""}`} role="tree">
         <XmlNode node={value} depth={0} />
       </div>
     </div>

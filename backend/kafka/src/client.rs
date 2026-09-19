@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::{
     AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
     ConsumerGroupSummary, EncodedRecord, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag,
@@ -109,7 +110,7 @@ where
             match handle.join().expect("watermark lookup thread panicked") {
                 Ok(found) => watermarks.extend(found),
                 Err((partition, reason)) => {
-                    return Err(error_stack::Report::new(AppError::Kafka).attach_printable(format!(
+                    return Err(error_stack::Report::new(AppError::Kafka).attach(format!(
                         "failed to fetch watermarks for {topic}:{partition}: {reason}"
                     )))
                 }
@@ -572,7 +573,7 @@ fn failure_report(error: &KafkaError, reason: &str, what: &str) -> error_stack::
     } else {
         AppError::Kafka
     };
-    error_stack::Report::new(kind).attach_printable(format!("{what}: {reason}"))
+    error_stack::Report::new(kind).attach(format!("{what}: {reason}"))
 }
 
 async fn run_probe(config: ClientConfig) -> Result<ConnectionStatus, AppError> {
@@ -582,7 +583,7 @@ async fn run_probe(config: ClientConfig) -> Result<ConnectionStatus, AppError> {
     })
     .await
     .change_context(AppError::Kafka)
-    .attach_printable("status check task panicked")?
+    .attach("status check task panicked")?
 }
 
 /// How long a connection probe waits for the broker to answer. Covers the
@@ -779,7 +780,7 @@ impl KafkaClient for RdKafkaClient {
         let result = tokio::task::spawn_blocking(move || probe_with(&client, PROBE_TIMEOUT))
             .await
             .change_context(AppError::Kafka)
-            .attach_printable("connect task panicked")?;
+            .attach("connect task panicked")?;
 
         if result.is_err() {
             self.drop_pooled_client(&connection.id);
@@ -886,7 +887,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("list_brokers task panicked")?
+        .attach("list_brokers task panicked")?
     }
 
     async fn list_topics(&self, connection: &Connection, read_timeout: Duration) -> Result<Vec<TopicSummary>, AppError> {
@@ -907,7 +908,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("list_topics task panicked")?
+        .attach("list_topics task panicked")?
     }
 
     async fn list_consumer_groups(
@@ -932,7 +933,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("list_consumer_groups task panicked")?
+        .attach("list_consumer_groups task panicked")?
     }
 
     async fn count_topic_messages(&self, connection: &Connection, topic: &str, read_timeout: Duration) -> Result<u64, AppError> {
@@ -948,7 +949,7 @@ impl KafkaClient for RdKafkaClient {
                 .iter()
                 .find(|t| t.name() == topic)
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("topic {topic} not found"))?;
+                .attach_with(|| format!("topic {topic} not found"))?;
 
             // Outside the `observed` section above: on a wide topic this is
             // the seconds-long part, and it needs no exclusive access — see
@@ -960,7 +961,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("count_topic_messages task panicked")?
+        .attach("count_topic_messages task panicked")?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1062,7 +1063,7 @@ impl KafkaClient for RdKafkaClient {
                 .iter()
                 .find(|t| t.name() == topic)
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("topic {topic} not found"))?;
+                .attach_with(|| format!("topic {topic} not found"))?;
 
             let target_partitions: Vec<i32> = match &filter.partitions {
                 Some(partitions) => partitions.clone(),
@@ -1084,7 +1085,7 @@ impl KafkaClient for RdKafkaClient {
                     .get(&partition)
                     .copied()
                     .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
-                    .attach_printable_lazy(|| format!("no such partition: {topic}:{partition}"))
+                    .attach_with(|| format!("no such partition: {topic}:{partition}"))
             };
 
             // An explicit `offset` and a `from_timestamp_ms` are independent
@@ -1284,7 +1285,7 @@ impl KafkaClient for RdKafkaClient {
                 assignments[position % consumers.len()]
                     .add_partition_offset(&topic, partition, Offset::Offset(start))
                     .change_context(AppError::Kafka)
-                    .attach_printable("failed to build partition assignment")?;
+                    .attach("failed to build partition assignment")?;
             }
             if stopped() {
                 return Ok(MessageFetchResult::default());
@@ -1296,7 +1297,7 @@ impl KafkaClient for RdKafkaClient {
                 shard
                     .assign(assignment)
                     .change_context(AppError::Kafka)
-                    .attach_printable("failed to assign partitions")?;
+                    .attach("failed to assign partitions")?;
             }
 
             let total_target: i64 = limits.values().sum();
@@ -1504,7 +1505,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("fetch_messages task panicked")?
+        .attach("fetch_messages task panicked")?
     }
 
     async fn list_partitions(
@@ -1525,7 +1526,7 @@ impl KafkaClient for RdKafkaClient {
                 .iter()
                 .find(|t| t.name() == topic)
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("topic {topic} not found"))?;
+                .attach_with(|| format!("topic {topic} not found"))?;
 
             // Outside the `observed` section — see `count_topic_messages`.
             let partition_ids: Vec<i32> = topic_metadata.partitions().iter().map(|p| p.id()).collect();
@@ -1549,7 +1550,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("list_partitions task panicked")?
+        .attach("list_partitions task panicked")?
     }
 
     async fn describe_topic_config(
@@ -1574,10 +1575,10 @@ impl KafkaClient for RdKafkaClient {
             .into_iter()
             .next()
             .ok_or_else(|| error_stack::Report::new(AppError::Kafka))
-            .attach_printable_lazy(|| format!("no config result returned for topic {topic}"))?;
+            .attach_with(|| format!("no config result returned for topic {topic}"))?;
         let resource = resource_result
             .change_context(AppError::Kafka)
-            .attach_printable_lazy(|| format!("kafka rejected describe-config for topic {topic}"))?;
+            .attach_with(|| format!("kafka rejected describe-config for topic {topic}"))?;
 
         Ok(resource
             .entries
@@ -1605,7 +1606,7 @@ impl KafkaClient for RdKafkaClient {
                 .iter()
                 .find(|g| g.name() == group_id)
                 .ok_or_else(|| error_stack::Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("group {group_id} not found"))?;
+                .attach_with(|| format!("group {group_id} not found"))?;
 
             let mut owners: HashMap<(String, i32), (String, String)> = HashMap::new();
             let mut decode_failures = 0usize;
@@ -1632,7 +1633,7 @@ impl KafkaClient for RdKafkaClient {
             }
 
             if decode_attempts > 0 && decode_failures == decode_attempts {
-                return Err(error_stack::Report::new(AppError::Kafka)).attach_printable_lazy(|| {
+                return Err(error_stack::Report::new(AppError::Kafka)).attach_with(|| {
                     format!("could not determine partition assignment for group {group_id}")
                 });
             }
@@ -1711,7 +1712,7 @@ impl KafkaClient for RdKafkaClient {
         })
         .await
         .change_context(AppError::Kafka)
-        .attach_printable("fetch_consumer_group_lag task panicked")?
+        .attach("fetch_consumer_group_lag task panicked")?
     }
 
     async fn publish_messages(
@@ -1799,13 +1800,13 @@ fn resolve_offsets_by_timestamp(
         request
             .add_partition_offset(topic, partition, Offset::Offset(timestamp_ms))
             .change_context(AppError::Kafka)
-            .attach_printable("failed to build offsets_for_times request")?;
+            .attach("failed to build offsets_for_times request")?;
     }
 
     let resolved = consumer
         .offsets_for_times(request, read_timeout)
         .change_context(AppError::Kafka)
-        .attach_printable("failed to resolve timestamp to offsets")?;
+        .attach("failed to resolve timestamp to offsets")?;
 
     let mut result = BTreeMap::new();
     for partition in partitions {

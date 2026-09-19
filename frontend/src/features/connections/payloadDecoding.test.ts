@@ -1,22 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { TopicMessage } from "../../lib/tauri";
 import {
+  ROW_OVERHEAD_BYTES,
+  VALUE_PREVIEW_BYTES,
+  VALUE_PREVIEW_DECODED_BYTES,
+  base64DecodedLength,
   base64ToBytes,
   base64ToDisplayText,
+  bytesToBase64,
+  bytesToHexDump,
   bytesToText,
   decodeValuePreview,
   detectConfluentAvro,
-  base64DecodedLength,
-  searchSeesPartialValue,
-  VALUE_PREVIEW_DECODED_BYTES,
-  isPayloadTruncated,
   formatXmlNode,
-  tryParseJson,
-  tryParseXml,
-  VALUE_PREVIEW_BYTES,
+  isPayloadTruncated,
   retainedPayloadBytes,
   retainedRowBytes,
-  ROW_OVERHEAD_BYTES,
+  searchSeesPartialValue,
+  textToBase64,
+  tryParseJson,
+  tryParseXml,
+  wrapBase64,
 } from "./payloadDecoding";
 
 function toBase64(bytes: number[]): string {
@@ -298,5 +302,89 @@ describe("retainedRowBytes", () => {
     ];
 
     expect(retainedRowBytes(rows)).toBe(ROW_OVERHEAD_BYTES + 300 + 20 + "trace-id".length + 16);
+  });
+});
+
+describe("bytesToHexDump", () => {
+  it("lays out one line per 16 bytes: offset, hex, then printable ASCII", () => {
+    const dump = bytesToHexDump(new TextEncoder().encode("Hello, hex dump!"));
+
+    expect(dump).toBe(
+      "00000000  48 65 6c 6c 6f 2c 20 68  65 78 20 64 75 6d 70 21  |Hello, hex dump!|",
+    );
+  });
+
+  it("numbers each line with the offset of its first byte", () => {
+    const dump = bytesToHexDump(new Uint8Array(33));
+
+    expect(dump.split("\n").map((line) => line.slice(0, 8))).toEqual(["00000000", "00000010", "00000020"]);
+  });
+
+  // The hex column is fixed-width whatever the last line holds, so the ASCII
+  // column stays where it is instead of sliding left on the final row.
+  it("pads a short final line so the columns stay aligned", () => {
+    const lines = bytesToHexDump(new TextEncoder().encode("abcdefghijklmnopqr")).split("\n");
+
+    expect(lines[1].indexOf("|")).toBe(lines[0].indexOf("|"));
+  });
+
+  // Control codes would move the cursor and wreck the alignment the view
+  // exists for.
+  it("renders unprintable bytes as dots in the ASCII column", () => {
+    const dump = bytesToHexDump(new Uint8Array([0x00, 0x41, 0x1f, 0x7f, 0xff]));
+
+    expect(dump).toContain("|.A...|");
+  });
+
+  it("renders no lines for no bytes", () => {
+    expect(bytesToHexDump(new Uint8Array())).toBe("");
+  });
+});
+
+describe("wrapBase64", () => {
+  it("breaks the string into MIME-width lines", () => {
+    const wrapped = wrapBase64("a".repeat(200));
+
+    expect(wrapped.split("\n").map((line) => line.length)).toEqual([76, 76, 48]);
+  });
+
+  it("leaves a string shorter than one line alone", () => {
+    expect(wrapBase64("abcd")).toBe("abcd");
+  });
+
+  it("wraps at a caller-chosen width", () => {
+    expect(wrapBase64("abcdef", 2)).toBe("ab\ncd\nef");
+  });
+});
+
+describe("textToBase64", () => {
+  it("round-trips text through base64", () => {
+    expect(bytesToText(base64ToBytes(textToBase64("hello world")))).toBe("hello world");
+  });
+
+  it("encodes as UTF-8 rather than one byte per character", () => {
+    // "é" is two bytes in UTF-8; `btoa` on the raw string would throw.
+    expect(base64ToBytes(textToBase64("é"))).toEqual(new Uint8Array([0xc3, 0xa9]));
+  });
+
+  // `String.fromCharCode(...bytes)` spreads one argument per byte and blows
+  // the call stack somewhere in the low hundreds of thousands — which is well
+  // inside the range of payloads this app opens.
+  it("encodes a payload far larger than the argument-spread limit", () => {
+    const large = "x".repeat(1_000_000);
+
+    expect(bytesToText(base64ToBytes(textToBase64(large)))).toBe(large);
+  });
+});
+
+describe("bytesToBase64", () => {
+  it("round-trips bytes", () => {
+    const bytes = new Uint8Array([0, 1, 2, 250, 251, 255]);
+
+    expect(base64ToBytes(bytesToBase64(bytes))).toEqual(bytes);
+  });
+
+  it("encodes no bytes as an empty string", () => {
+    expect(bytesToBase64(new Uint8Array())).toBe("");
   });
 });

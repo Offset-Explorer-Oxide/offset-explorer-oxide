@@ -25,8 +25,13 @@ pub async fn topic_schema_set(
     format: String,
     schema_text: String,
 ) -> Result<(), CommandError> {
-    if format == "avro" {
-        kafkaoxide_avro::validate_schema(&schema_text)?;
+    // Rejected at save time rather than the first time someone opens a
+    // message with it — the editor is where the user can still see and fix
+    // what they pasted.
+    match format.as_str() {
+        "avro" => kafkaoxide_avro::validate_schema(&schema_text)?,
+        "protobuf" => kafkaoxide_protobuf::validate_schema(&schema_text)?,
+        _ => {}
     }
     Ok(kafkaoxide_db::topic_schemas::set(&state.pool, &connection_id, &topic, &format, &schema_text).await?)
 }
@@ -77,11 +82,11 @@ pub async fn connection_decode_avro(
         BASE64
             .decode(&payload_base64)
             .change_context(AppError::Decode)
-            .attach_printable("payload isn't valid base64")
+            .attach("payload isn't valid base64")
     })
     .await
     .change_context(AppError::Decode)
-    .attach_printable("base64 decode task panicked")??;
+    .attach("base64 decode task panicked")??;
 
     let manual_schema = kafkaoxide_db::topic_schemas::get(&state.pool, &id, &topic, "avro").await?;
     let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
@@ -99,7 +104,7 @@ pub async fn connection_decode_avro(
         move || -> Result<DecodeOutcome, Report<AppError>> {
             let strategy =
                 kafkaoxide_avro::decide_decode_strategy(&bytes, manual_schema.is_some(), has_registry_endpoint)
-                    .map_err(|refusal| Report::new(AppError::Decode).attach_printable(refusal.message()))?;
+                    .map_err(|refusal| Report::new(AppError::Decode).attach(refusal.message()))?;
 
             match strategy {
                 kafkaoxide_avro::AvroDecodeStrategy::ContainerFile => {
@@ -118,7 +123,7 @@ pub async fn connection_decode_avro(
     )
     .await
     .change_context(AppError::Decode)
-    .attach_printable("avro decode task panicked")??;
+    .attach("avro decode task panicked")??;
 
     let (bytes, schema_id) = match outcome {
         DecodeOutcome::Decoded(value) => return Ok(value),
@@ -152,7 +157,117 @@ pub async fn connection_decode_avro(
     })
     .await
     .change_context(AppError::Decode)
-    .attach_printable("avro decode task panicked")??;
+    .attach("avro decode task panicked")??;
 
     Ok(value)
+}
+
+
+/// Backs the payload viewer's "Protobuf" mode.
+///
+/// Shaped like [`connection_decode_avro`] above — the precedence rule lives in
+/// `kafkaoxide_protobuf::decide_decode_strategy` where it can be tested
+/// without a desktop toolchain, and every CPU-bound step runs on the blocking
+/// pool so a multi-megabyte message cannot stall an async worker that other
+/// commands are queued behind.
+///
+/// Two things differ from the Avro command, both following from how protobuf
+/// is framed:
+///
+/// 1. **The Confluent header is stripped on every path**, including the
+///    manual-schema one. Avro's manual path decodes the payload whole; here
+///    the 5-byte header plus a message-index path sits in front of the
+///    message regardless of where the schema came from, and leaving it on
+///    reads the magic byte as a field key.
+/// 2. **It never refuses.** With no schema from either source the wire format
+///    still yields field numbers and values, which is more useful than an
+///    error — so the fallback is a decode, not a failure.
+#[tauri::command]
+pub async fn connection_decode_protobuf(
+    state: State<'_, AppState>,
+    id: String,
+    topic: String,
+    payload_base64: String,
+) -> Result<kafkaoxide_protobuf::ProtobufDecoded, CommandError> {
+    // First, exactly as in the Avro command: an unusable payload reports
+    // itself as such rather than as whatever the lookups below happen to say.
+    let bytes = tokio::task::spawn_blocking(move || {
+        BASE64
+            .decode(&payload_base64)
+            .change_context(AppError::Decode)
+            .attach("payload isn't valid base64")
+    })
+    .await
+    .change_context(AppError::Decode)
+    .attach("base64 decode task panicked")??;
+
+    let manual_schema = kafkaoxide_db::topic_schemas::get(&state.pool, &id, &topic, "protobuf").await?;
+    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
+    let has_registry_endpoint = connection.schema_registry_endpoint.is_some();
+
+    let strategy =
+        kafkaoxide_protobuf::decide_decode_strategy(&bytes, manual_schema.is_some(), has_registry_endpoint);
+
+    let (body_offset, message_index, schema_id) = match strategy {
+        kafkaoxide_protobuf::ProtobufDecodeStrategy::RawFields { body_offset } => {
+            return Ok(tokio::task::spawn_blocking(move || {
+                kafkaoxide_protobuf::decode_without_schema(&bytes[body_offset..])
+            })
+            .await
+            .change_context(AppError::Decode)
+            .attach("protobuf decode task panicked")??);
+        }
+        kafkaoxide_protobuf::ProtobufDecodeStrategy::ManualSchema {
+            body_offset,
+            message_index,
+        } => {
+            let schema = manual_schema.expect("the strategy is only chosen when a manual schema exists");
+            return Ok(tokio::task::spawn_blocking(move || {
+                kafkaoxide_protobuf::decode(
+                    &bytes[body_offset..],
+                    &schema,
+                    &message_index,
+                    kafkaoxide_protobuf::ProtobufSchemaSource::Manual,
+                )
+            })
+            .await
+            .change_context(AppError::Decode)
+            .attach("protobuf decode task panicked")??);
+        }
+        kafkaoxide_protobuf::ProtobufDecodeStrategy::SchemaRegistry {
+            schema_id,
+            body_offset,
+            message_index,
+        } => (body_offset, message_index, schema_id),
+    };
+
+    let endpoint = connection
+        .schema_registry_endpoint
+        .as_deref()
+        .expect("the strategy is only chosen when an endpoint is configured");
+
+    let auth = SchemaRegistryAuth {
+        basic_auth_credentials: connection.schema_registry_basic_auth_credentials.as_deref(),
+        trust_store_location: connection.schema_registry_trust_store_location.as_deref(),
+        keystore_location: connection.schema_registry_keystore_location.as_deref(),
+        keystore_password: connection.schema_registry_keystore_password.as_deref(),
+    };
+    // Pooled per connection, for the same reason the Avro path is: one client
+    // per opened message would discard both its HTTPS connection and its
+    // schema cache every time, re-fetching the same id over a fresh TLS
+    // handshake for every message in a topic.
+    let client = state.schema_registry.get_or_create(&id, endpoint, auth)?;
+    let schema_text = client.fetch_schema_by_id(schema_id).await?;
+
+    Ok(tokio::task::spawn_blocking(move || {
+        kafkaoxide_protobuf::decode(
+            &bytes[body_offset..],
+            &schema_text,
+            &message_index,
+            kafkaoxide_protobuf::ProtobufSchemaSource::Registry,
+        )
+    })
+    .await
+    .change_context(AppError::Decode)
+    .attach("protobuf decode task panicked")??)
 }

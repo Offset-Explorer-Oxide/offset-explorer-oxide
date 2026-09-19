@@ -52,6 +52,7 @@ cargo llvm-cov \
   -p kafkaoxide-core \
   -p kafkaoxide-db \
   -p kafkaoxide-avro \
+  -p kafkaoxide-protobuf \
   -p kafkaoxide-schema-registry \
   -p kafkaoxide-kafka
 echo "    -> coverage/backend.lcov"
@@ -62,5 +63,6 @@ cargo llvm-cov report --summary-only \
   -p kafkaoxide-core \
   -p kafkaoxide-db \
   -p kafkaoxide-avro \
+  -p kafkaoxide-protobuf \
   -p kafkaoxide-schema-registry \
   -p kafkaoxide-kafka

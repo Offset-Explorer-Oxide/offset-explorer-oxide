@@ -213,7 +213,7 @@ pub async fn publish_messages(
         .create_with_context(errors.clone())
         .map_err(|err| {
             Report::new(AppError::Kafka)
-                .attach_printable(format!("failed to create a producer for publishing: {err}"))
+                .attach(format!("failed to create a producer for publishing: {err}"))
         })?;
 
     let mut outcome = PublishOutcome::default();
@@ -236,10 +236,13 @@ pub async fn publish_messages(
         // ever hide a real problem. How long the record itself may take is
         // `message.timeout.ms`, set from the user's timeout in `publish_config`.
         match producer.send(future_record, Timeout::After(Duration::ZERO)).await {
-            Ok((delivered_partition, offset)) => outcome.delivered.push(DeliveredRecord {
+            // rdkafka 0.39 returns a named `Delivery` struct here instead of
+            // the `(partition, offset)` tuple 0.36 did; it also carries the
+            // broker's timestamp, which nothing here needs yet.
+            Ok(delivery) => outcome.delivered.push(DeliveredRecord {
                 index,
-                partition: delivered_partition,
-                offset,
+                partition: delivery.partition,
+                offset: delivery.offset,
             }),
             Err((error, _message)) => {
                 // The callback's reason, if librdkafka gave one during this

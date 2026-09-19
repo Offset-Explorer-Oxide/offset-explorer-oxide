@@ -20,6 +20,21 @@ function drag(startClientX: number, endClientX: number, start: (e: ReactPointerE
   });
 }
 
+function pointerEventAtY(type: string, clientY: number): Event {
+  const event = new Event(type);
+  Object.defineProperty(event, "clientY", { value: clientY });
+  return event;
+}
+
+function dragVertically(startClientY: number, endClientY: number, start: (e: ReactPointerEvent) => void) {
+  act(() => {
+    start({ clientY: startClientY, pointerId: 1 } as unknown as ReactPointerEvent);
+  });
+  act(() => {
+    window.dispatchEvent(pointerEventAtY("pointermove", endClientY));
+  });
+}
+
 function release() {
   act(() => {
     window.dispatchEvent(new Event("pointerup"));
@@ -135,4 +150,61 @@ describe("useResizablePanes", () => {
     expect(result.current.leftWidth).toBe(300);
     expect(result.current.rightWidth).toBe(280);
   });
+});
+
+describe("useResizablePanes bottom height", () => {
+  it("starts at the default height", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-1" }));
+
+    expect(result.current.bottomHeight).toBe(300);
+  });
+
+  // Dragging the divider up makes the pane taller — the opposite sign to the
+  // pointer delta, same as the right pane one axis over.
+  it("grows the pane as the divider is dragged upwards", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-2" }));
+
+    dragVertically(500, 440, result.current.startResizingBottom);
+
+    expect(result.current.bottomHeight).toBe(360);
+  });
+
+  it("shrinks the pane as the divider is dragged downwards", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-2b" }));
+
+    dragVertically(500, 560, result.current.startResizingBottom);
+
+    expect(result.current.bottomHeight).toBe(240);
+  });
+
+  it("clamps the height to its bounds", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-3" }));
+
+    dragVertically(500, 5000, result.current.startResizingBottom);
+
+    expect(result.current.bottomHeight).toBe(140);
+  });
+
+  it("persists the height on release and restores it on mount", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-4" }));
+
+    dragVertically(500, 460, result.current.startResizingBottom);
+    release();
+
+    const { result: remounted } = renderHook(() => useResizablePanes({ storageKey: "bottom-4" }));
+    expect(remounted.current.bottomHeight).toBe(340);
+  });
+
+  // A comfortable width beside the grid and a comfortable height under it are
+  // unrelated numbers; sharing one would resize the pane to nonsense every
+  // time the user flipped the layout.
+  it("keeps the bottom height and the right width as separate stored values", () => {
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "bottom-5" }));
+
+    dragVertically(500, 460, result.current.startResizingBottom);
+    release();
+
+    expect(JSON.parse(localStorage.getItem("bottom-5") ?? "{}")).toEqual({ bottom: 340 });
+  });
+
 });

@@ -9,7 +9,7 @@ error-stack = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

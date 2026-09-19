@@ -23,10 +23,18 @@ export const APP_GRID_THEME = themeQuartz.withParams({
   // a tint so faint it was indistinguishable from an unselected row.
   selectedRowBackgroundColor: "color-mix(in srgb, var(--color-accent) 28%, transparent)",
   spacing: 4,
-  fontSize: 12,
-  headerFontSize: 12,
-  dataFontSize: 12,
-  rowHeight: 28,
-  headerHeight: 32,
-  iconSize: 14,
+  // Typography comes from the app's own scale and font setting rather than
+  // fixed pixels, so Settings -> Appearance moves the Data tab grid too. The
+  // grid is most of the middle pane, and it used to be the largest surface
+  // the font settings did not reach.
+  fontFamily: "var(--font-family-base)",
+  fontSize: "var(--font-size-sm)",
+  headerFontSize: "var(--font-size-sm)",
+  dataFontSize: "var(--font-size-sm)",
+  // Row and header heights have to grow with the text or a larger font is
+  // simply clipped. The multipliers are the old fixed heights over the old
+  // 12px cell font (28/12, 32/12), so the default size renders as before.
+  rowHeight: "calc(var(--font-size-sm) * 2.33)",
+  headerHeight: "calc(var(--font-size-sm) * 2.67)",
+  iconSize: "var(--font-size-lg)",
 });

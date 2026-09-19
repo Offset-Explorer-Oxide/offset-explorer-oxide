@@ -19,7 +19,8 @@
 //! and [`encode_messages`] is the only thing that produces bytes.
 
 use base64::Engine;
-use error_stack::{Report, Result};
+use error_stack::Report;
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -168,7 +169,7 @@ fn encode_field(field: &PublishField, what: &str) -> Result<Option<Vec<u8>>, App
         PayloadEncoding::Json => {
             serde_json::from_str::<serde_json::Value>(&field.text).map_err(|err| {
                 Report::new(AppError::Validation)
-                    .attach_printable(format!("the {what} is not valid JSON: {err}"))
+                    .attach(format!("the {what} is not valid JSON: {err}"))
             })?;
             Ok(Some(field.text.as_bytes().to_vec()))
         }
@@ -177,7 +178,7 @@ fn encode_field(field: &PublishField, what: &str) -> Result<Option<Vec<u8>>, App
                 .decode(field.text.trim())
                 .map_err(|err| {
                     Report::new(AppError::Validation)
-                        .attach_printable(format!("the {what} is not valid base64: {err}"))
+                        .attach(format!("the {what} is not valid base64: {err}"))
                 })?;
             Ok(Some(bytes))
         }
@@ -196,10 +197,10 @@ pub fn encode_messages(
 ) -> Result<Vec<EncodedRecord>, AppError> {
     if messages.is_empty() {
         return Err(Report::new(AppError::Validation)
-            .attach_printable("there are no messages to publish"));
+            .attach("there are no messages to publish"));
     }
     if messages.len() > limits.max_batch_messages {
-        return Err(Report::new(AppError::Validation).attach_printable(format!(
+        return Err(Report::new(AppError::Validation).attach(format!(
             "one publish carries at most {} messages, but {} were given",
             limits.max_batch_messages,
             messages.len()
@@ -219,7 +220,7 @@ pub fn encode_messages(
         let mut headers = Vec::with_capacity(message.headers.len());
         for header in &message.headers {
             if header.key.trim().is_empty() {
-                return Err(Report::new(AppError::Validation).attach_printable(format!(
+                return Err(Report::new(AppError::Validation).attach(format!(
                     "message {position} has a header with no name"
                 )));
             }
@@ -233,14 +234,14 @@ pub fn encode_messages(
         let record = EncodedRecord { key, value, headers };
         let size = record.size_bytes();
         if size > u64::from(limits.max_message_size_bytes) {
-            return Err(Report::new(AppError::Validation).attach_printable(format!(
+            return Err(Report::new(AppError::Validation).attach(format!(
                 "message {position} is {size} bytes, over the {} byte Max Message Size",
                 limits.max_message_size_bytes
             )));
         }
         total_bytes = total_bytes.saturating_add(size);
         if total_bytes > limits.max_batch_bytes {
-            return Err(Report::new(AppError::Validation).attach_printable(format!(
+            return Err(Report::new(AppError::Validation).attach(format!(
                 "these messages total more than the {} byte publish limit",
                 limits.max_batch_bytes
             )));

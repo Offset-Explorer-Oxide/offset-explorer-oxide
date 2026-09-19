@@ -88,3 +88,21 @@ describe("XmlTreeView", () => {
     expect(screen.queryByRole("button", { name: "Open in new tab" })).not.toBeInTheDocument();
   });
 });
+
+describe("XmlTreeView line numbers and toolbar", () => {
+  const node = { tag: "order", attributes: [] as [string, string][], children: [], text: "42" };
+
+  it("numbers the lines only when asked to", () => {
+    const { container, rerender } = render(<XmlTreeView value={node} />);
+    expect(container.querySelector(".json-tree-body--numbered")).toBeNull();
+
+    rerender(<XmlTreeView value={node} lineNumbers />);
+    expect(container.querySelector(".json-tree-body--numbered")).not.toBeNull();
+  });
+
+  it("hides its own toolbar when the surrounding panel provides one", () => {
+    const { container } = render(<XmlTreeView value={node} onOpenInNewTab={() => {}} showToolbar={false} />);
+
+    expect(container.querySelector(".json-tree-toolbar")).toBeNull();
+  });
+});
