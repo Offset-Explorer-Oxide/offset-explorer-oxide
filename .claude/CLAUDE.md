@@ -27,6 +27,20 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
 ## Conventions
 
 - Rust workspace defined at the repo root `Cargo.toml`; `src-tauri` is a member, not its own workspace root.
+- The Rust toolchain is pinned in `rust-toolchain.toml` (1.98.1) and the CI
+  workflow pins the same version on its `dtolnay/rust-toolchain@` ref — keep
+  the two in step. It used to be `@stable`, which meant the compiler building a
+  release depended on the day it ran.
+- Every `backend/*` crate is on **edition 2024**; `src-tauri` is deliberately
+  still on 2021 because it cannot be compiled here, and the 2024 migration
+  needs `cargo fix --edition` run somewhere it builds. Editions are per-crate
+  and mix freely.
+- `[profile.release]` is `lto = "fat"` + `codegen-units = 1` + `strip =
+  "debuginfo"`, which is the practical optimum. `panic = "abort"` is
+  deliberately **not** set (see the profile comment: `spawn_blocking` turns
+  panics back into errors and the pooled-client mutexes recover from
+  poisoning), and `-C target-cpu=native` would be wrong for a binary shipped
+  to other people's machines.
 - Secrets (SASL password, schema registry credentials, keystore/truststore passwords) are stored as plaintext columns on `connections` and returned to the frontend as part of `Connection`. This was previously OS-keychain-backed (`kafkaoxide-secrets`, since removed); that approach was abandoned after keychain writes proved unreliable on Windows (Credential Manager silently failing for some users, with no working fallback for SASL-authenticated connections). Export (`connections_export`) still deliberately excludes every secret via `PortableConnection`'s field list.
 - Publishing is gated in four places, and the broker is the only authority
   among them: a per-connection `allow_publishing` column (`DEFAULT 0`, so every

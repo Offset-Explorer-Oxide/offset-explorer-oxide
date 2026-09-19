@@ -8,6 +8,12 @@
 //! JSON IPC — are mirrored here against the real crate. The database and
 //! registry lookups are stubbed; the decode orchestration is verbatim.
 
+// The whole point of this file is that it mirrors `src-tauri`'s command
+// *verbatim*, so clippy's suggestion to drop the `Ok(...?)` wrapper is
+// declined here: taking it would make the mirror stop matching the code it
+// exists to type-check, which is the one property that makes it useful.
+#![allow(clippy::needless_question_mark)]
+
 use error_stack::ResultExt;
 use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;

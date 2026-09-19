@@ -124,7 +124,7 @@ mod tests {
     }
 
     impl Collector {
-        fn emitter(&self) -> impl FnMut(Vec<TopicMessage>) {
+        fn emitter(&self) -> impl FnMut(Vec<TopicMessage>) + use<> {
             let batches = Arc::clone(&self.batches);
             move |batch: Vec<TopicMessage>| {
                 assert!(!batch.is_empty(), "an empty batch is a wasted IPC hop");

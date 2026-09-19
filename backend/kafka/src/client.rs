@@ -669,10 +669,10 @@ impl RdKafkaClient {
     fn metadata_client(&self, connection: &Connection) -> Result<ObservedClient, AppError> {
         let mut pool = self.metadata_clients.lock().unwrap_or_else(|err| err.into_inner());
 
-        if let Some(pooled) = pool.get(&connection.id) {
-            if pooled.updated_at == connection.updated_at {
-                return Ok(pooled.client.clone());
-            }
+        if let Some(pooled) = pool.get(&connection.id)
+            && pooled.updated_at == connection.updated_at
+        {
+            return Ok(pooled.client.clone());
         }
 
         let client = ObservedClient::create(&client_config(connection))?;
@@ -697,10 +697,10 @@ impl RdKafkaClient {
     fn admin_client(&self, connection: &Connection) -> Result<Arc<AdminClient<DefaultClientContext>>, AppError> {
         let mut pool = self.admin_clients.lock().unwrap_or_else(|err| err.into_inner());
 
-        if let Some(pooled) = pool.get(&connection.id) {
-            if pooled.updated_at == connection.updated_at {
-                return Ok(Arc::clone(&pooled.client));
-            }
+        if let Some(pooled) = pool.get(&connection.id)
+            && pooled.updated_at == connection.updated_at
+        {
+            return Ok(Arc::clone(&pooled.client));
         }
 
         let client: Arc<AdminClient<DefaultClientContext>> = Arc::new(
@@ -1228,7 +1228,7 @@ impl KafkaClient for RdKafkaClient {
             };
 
             let working: Vec<i32> =
-                limits.iter().filter(|(_, &limit)| limit > 0).map(|(&partition, _)| partition).collect();
+                limits.iter().filter(|&(_, &limit)| limit > 0).map(|(&partition, _)| partition).collect();
 
             // One consumer per shard, polled from this one loop.
             //
@@ -1403,13 +1403,13 @@ impl KafkaClient for RdKafkaClient {
                         // that carries no message leaves budget over, and the
                         // messages that budget then admits are the ones after
                         // the To time the user set.
-                        if let Some(&end) = end_offsets.get(&partition) {
-                            if borrowed.offset() >= end {
-                                if finished.insert(partition) {
-                                    unfinished -= 1;
-                                }
-                                continue;
+                        if let Some(&end) = end_offsets.get(&partition)
+                            && borrowed.offset() >= end
+                        {
+                            if finished.insert(partition) {
+                                unfinished -= 1;
                             }
+                            continue;
                         }
                         let payload = borrowed.payload().unwrap_or(&[]);
                         payload_bytes_read += budgeted_payload_bytes(payload.len(), filter.include_payload);

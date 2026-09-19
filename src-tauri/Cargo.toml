@@ -1,6 +1,13 @@
 [package]
 name = "kafkaoxide-app"
 version = "0.1.0"
+# Deliberately still 2021 while every `backend/*` crate is on 2024. Editions
+# are per-crate and mix freely, and this is the one crate that cannot be
+# compiled in every environment the workspace is developed in (it needs GTK
+# and pkg-config). Migrating it means running `cargo fix --edition` somewhere
+# it can actually build — the 2024 changes that bit the other crates
+# (RPIT lifetime capture, match ergonomics) are exactly the kind that fail to
+# compile rather than fail quietly, so doing it blind would break CI.
 edition = "2021"
 
 [build-dependencies]

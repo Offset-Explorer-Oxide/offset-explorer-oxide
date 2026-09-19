@@ -71,8 +71,12 @@ jobs:
         with:
           node-version: 24
 
+      # Pinned, not `@stable`: the ref *is* the toolchain for this action, and
+      # a floating one means the compiler that builds a release depends on the
+      # day it ran. Keep in step with `rust-toolchain.toml` at the repo root,
+      # which pins the same version for local builds.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
