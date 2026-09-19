@@ -1,0 +1,16 @@
+# The one place the Rust version is decided, for developers and CI alike.
+#
+# CI used to be `dtolnay/rust-toolchain@stable`, which floats: a release built
+# on a Monday and one built on a Tuesday could use different compilers, and a
+# new stable landing mid-week changed the shipped binary with nothing in the
+# repo to show for it. Local machines drifted from CI the same way — this
+# workspace was being developed against 1.96.0 while CI compiled it on 1.98.1.
+# That is not hypothetical here: rustc 1.96.0 ICEs compiling bindgen 0.72.x,
+# so "works on my machine" and "works in CI" have already diverged on a
+# compiler bug once.
+#
+# `.github/workflows/release.yml` pins the same version on its
+# `dtolnay/rust-toolchain@` ref — keep the two in step when bumping.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

@@ -54,10 +54,10 @@ pub fn build_client_config(
 
     if let Some(location) = ssl.truststore_location {
         config.set("ssl.ca.location", location);
-    } else if matches!(security_protocol, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl) {
-        if let Some(pem) = native_ca_bundle_pem() {
-            config.set("ssl.ca.pem", pem);
-        }
+    } else if matches!(security_protocol, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl)
+        && let Some(pem) = native_ca_bundle_pem()
+    {
+        config.set("ssl.ca.pem", pem);
     }
     if let Some(location) = ssl.keystore_location {
         config.set("ssl.keystore.location", location);
@@ -514,7 +514,7 @@ mod tests {
         let config = fetch_consumer_config(&sample_connection(), 1_048_576);
 
         assert_eq!(
-            config.get("enable.partition.eof").as_deref(),
+            config.get("enable.partition.eof"),
             Some("true"),
             "without partition EOF the poll loop cannot tell 'I have read everything' from \
              'nothing has arrived yet', and waits out IDLE_TIMEOUT on every fetch of a \
@@ -532,7 +532,7 @@ mod tests {
         let config = fetch_consumer_config(&sample_connection(), 1_048_576);
 
         assert_eq!(
-            config.get("queued.max.messages.kbytes").as_deref(),
+            config.get("queued.max.messages.kbytes"),
             Some("8192"),
             "a topic of small records prefetches only as far as this floor, and a low one \
              makes every refill of a large fetch pay fetch.queue.backoff.ms"
@@ -665,7 +665,7 @@ mod tests {
             BrokerSslConfig::default(),
         );
 
-        assert_eq!(config.get("client.id").as_deref(), Some(expected));
+        assert_eq!(config.get("client.id"), Some(expected));
     }
 
     /// Sent to every cluster the user connects to, including ones they do not
@@ -677,10 +677,10 @@ mod tests {
         assert!(!id.contains(char::is_whitespace), "client id must be a single token");
 
         for leaked in [std::env::var("HOSTNAME"), std::env::var("USER")] {
-            if let Ok(value) = leaked {
-                if !value.is_empty() {
-                    assert!(!id.contains(&value), "client id must not carry {value:?}");
-                }
+            if let Ok(value) = leaked
+                && !value.is_empty()
+            {
+                assert!(!id.contains(&value), "client id must not carry {value:?}");
             }
         }
     }

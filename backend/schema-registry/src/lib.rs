@@ -191,10 +191,10 @@ impl SchemaRegistryClients {
         let fingerprint = fingerprint_of(endpoint, &auth);
         let mut clients = self.clients.lock().unwrap_or_else(|err| err.into_inner());
 
-        if let Some(pooled) = clients.get(connection_id) {
-            if pooled.fingerprint == fingerprint {
-                return Ok(Arc::clone(&pooled.client));
-            }
+        if let Some(pooled) = clients.get(connection_id)
+            && pooled.fingerprint == fingerprint
+        {
+            return Ok(Arc::clone(&pooled.client));
         }
 
         let client = Arc::new(SchemaRegistryClient::new(endpoint, auth)?);
