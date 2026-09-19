@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
-use error_stack::{Report, Result, ResultExt};
+use error_stack::{Report, ResultExt};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::{Connection, NewConnection, SaslMechanism, SecurityProtocol};
@@ -119,9 +120,9 @@ impl ConnectionExportFile {
     pub fn parse(text: &str) -> Result<Self, AppError> {
         let file: Self = serde_json::from_str(text)
             .change_context(AppError::Validation)
-            .attach_printable("not a valid kafkaoxide connections export file")?;
+            .attach("not a valid kafkaoxide connections export file")?;
         if file.kafkaoxide_connections_version != CURRENT_EXPORT_VERSION {
-            return Err(Report::new(AppError::Validation).attach_printable(format!(
+            return Err(Report::new(AppError::Validation).attach(format!(
                 "unsupported connections export file version {} (expected {CURRENT_EXPORT_VERSION})",
                 file.kafkaoxide_connections_version
             )));

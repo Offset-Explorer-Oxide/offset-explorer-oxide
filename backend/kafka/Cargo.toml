@@ -8,7 +8,7 @@ kafkaoxide-core = { workspace = true }
 error-stack = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 # Vendored OpenSSL (see `ssl-vendored` below) has no knowledge of any OS's
 # certificate trust store — it only knows the path baked in at compile time
 # on the CI build machine, which doesn't exist on an end user's machine. This
@@ -47,10 +47,10 @@ rustls-native-certs = "0.8"
 # of this actually took effect is verified by `build_info`'s tests, which ask
 # the built library rather than trusting this file.
 [target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.36", features = ["cmake-build", "ssl-vendored", "zstd"] }
+rdkafka = { version = "0.39", features = ["cmake-build", "ssl-vendored", "zstd"] }
 
 [target.'cfg(not(windows))'.dependencies]
-rdkafka = { version = "0.36", features = ["ssl-vendored", "zstd"] }
+rdkafka = { version = "0.39", features = ["ssl-vendored", "zstd"] }
 
 [dev-dependencies]
 # `tests/live_schema_registry.rs` follows one Avro message the whole way: off

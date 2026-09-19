@@ -24,7 +24,7 @@ impl From<error_stack::Report<kafkaoxide_core::AppError>> for CommandError {
 
 /// Renders a report as a single readable line for the frontend to show
 /// as-is: the top-level `AppError`'s message, followed by each
-/// `.attach_printable(...)` reason in the chain. Plain `{report:?}` isn't
+/// `.attach(...)` reason in the chain. Plain `{report:?}` isn't
 /// fit for end users — it includes box-drawing characters and `at
 /// file:line` source locations meant for developers reading logs.
 fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
@@ -34,7 +34,7 @@ fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> Str
     parts.join(": ")
 }
 
-/// Just the `.attach_printable(...)` reasons from a report, without the
+/// Just the `.attach(...)` reasons from a report, without the
 /// `AppError` heading — for callers that already say what went wrong and
 /// only need the detail (e.g. the reason stored against a connection whose
 /// credentials were rejected, which is shown under its name in the tree).
@@ -242,10 +242,10 @@ pub async fn connections_export(
     let json = file
         .to_json_pretty()
         .change_context(AppError::Validation)
-        .attach_printable("failed to serialize the connections export file")?;
+        .attach("failed to serialize the connections export file")?;
     std::fs::write(&path, json)
         .change_context(AppError::Validation)
-        .attach_printable("failed to write the connections export file")?;
+        .attach("failed to write the connections export file")?;
     Ok(())
 }
 
@@ -258,7 +258,7 @@ pub async fn connections_export(
 pub async fn connections_import(state: State<'_, AppState>, path: String) -> Result<ImportSummary, CommandError> {
     let text = std::fs::read_to_string(&path)
         .change_context(AppError::Validation)
-        .attach_printable("failed to read the connections export file")?;
+        .attach("failed to read the connections export file")?;
     let file = ConnectionExportFile::parse(&text)?;
 
     let existing = kafkaoxide_db::connections::list(&state.pool).await?;

@@ -1,4 +1,5 @@
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -18,7 +19,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Tab>, AppError> {
         .fetch_all(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to list tabs")
+        .attach("failed to list tabs")
 }
 
 pub async fn create(pool: &SqlitePool, name: &str) -> Result<Tab, AppError> {
@@ -29,13 +30,13 @@ pub async fn create(pool: &SqlitePool, name: &str) -> Result<Tab, AppError> {
         .begin()
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to start transaction for tab creation")?;
+        .attach("failed to start transaction for tab creation")?;
 
     let next_position: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(position), -1) + 1 FROM tabs")
         .fetch_one(&mut *tx)
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to compute next tab position")?;
+        .attach("failed to compute next tab position")?;
 
     sqlx::query("INSERT INTO tabs (id, name, position, created_at) VALUES (?1, ?2, ?3, ?4)")
         .bind(&id)
@@ -45,12 +46,12 @@ pub async fn create(pool: &SqlitePool, name: &str) -> Result<Tab, AppError> {
         .execute(&mut *tx)
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to insert tab")?;
+        .attach("failed to insert tab")?;
 
     tx.commit()
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to commit tab creation transaction")?;
+        .attach("failed to commit tab creation transaction")?;
 
     Ok(Tab {
         id,
@@ -66,11 +67,11 @@ pub async fn rename(pool: &SqlitePool, id: &str, name: &str) -> Result<(), AppEr
         .execute(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to rename tab {id}"))?;
+        .attach_with(|| format!("failed to rename tab {id}"))?;
 
     if result.rows_affected() == 0 {
         return Err(error_stack::Report::new(AppError::NotFound))
-            .attach_printable_lazy(|| format!("tab {id} not found"));
+            .attach_with(|| format!("tab {id} not found"));
     }
 
     Ok(())
@@ -83,7 +84,7 @@ pub async fn reorder(pool: &SqlitePool, ids: &[String]) -> Result<(), AppError> 
         .begin()
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to start transaction for tab reorder")?;
+        .attach("failed to start transaction for tab reorder")?;
 
     for (position, id) in ids.iter().enumerate() {
         sqlx::query("UPDATE tabs SET position = ?1 WHERE id = ?2")
@@ -92,13 +93,13 @@ pub async fn reorder(pool: &SqlitePool, ids: &[String]) -> Result<(), AppError> 
             .execute(&mut *tx)
             .await
             .change_context(AppError::Db)
-            .attach_printable_lazy(|| format!("failed to reposition tab {id}"))?;
+            .attach_with(|| format!("failed to reposition tab {id}"))?;
     }
 
     tx.commit()
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to commit tab reorder transaction")?;
+        .attach("failed to commit tab reorder transaction")?;
 
     Ok(())
 }
@@ -109,11 +110,11 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
         .execute(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to delete tab {id}"))?;
+        .attach_with(|| format!("failed to delete tab {id}"))?;
 
     if result.rows_affected() == 0 {
         return Err(error_stack::Report::new(AppError::NotFound))
-            .attach_printable_lazy(|| format!("tab {id} not found"));
+            .attach_with(|| format!("tab {id} not found"));
     }
 
     Ok(())

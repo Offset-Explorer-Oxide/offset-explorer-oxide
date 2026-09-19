@@ -78,3 +78,78 @@ describe("TopicSchemaTab", () => {
     expect(screen.getByLabelText("Avro schema")).toHaveValue("");
   });
 });
+
+describe("TopicSchemaTab protobuf", () => {
+  it("opens on Avro and offers a Protobuf tab beside it", async () => {
+    setInvokeHandlers({ topic_schema_get: () => null });
+    renderWithClient(<TopicSchemaTab connectionId="1" topicName="orders" />);
+
+    expect(await screen.findByRole("tab", { name: "Avro", selected: true })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Protobuf", selected: false })).toBeInTheDocument();
+  });
+
+  it("loads that format's saved schema when the format changes", async () => {
+    setInvokeHandlers({
+      topic_schema_get: (args) =>
+        (args as { format: string }).format === "protobuf" ? 'syntax = "proto3";' : '{"type":"string"}',
+    });
+    const user = userEvent.setup();
+    renderWithClient(<TopicSchemaTab connectionId="1" topicName="orders" />);
+    await screen.findByLabelText("Avro schema");
+
+    await user.click(screen.getByRole("tab", { name: "Protobuf" }));
+
+    expect(await screen.findByLabelText("Protobuf schema")).toHaveValue('syntax = "proto3";');
+  });
+
+  it("saves against the protobuf format", async () => {
+    setInvokeHandlers({ topic_schema_get: () => null, topic_schema_set: () => undefined });
+    const user = userEvent.setup();
+    renderWithClient(<TopicSchemaTab connectionId="1" topicName="orders" />);
+    await screen.findByLabelText("Avro schema");
+
+    await user.click(screen.getByRole("tab", { name: "Protobuf" }));
+    await user.type(await screen.findByLabelText("Protobuf schema"), "message A {{}");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("topic_schema_set", {
+        connectionId: "1",
+        topic: "orders",
+        format: "protobuf",
+        schemaText: "message A {}",
+      });
+    });
+  });
+
+  it("clears only the format on screen", async () => {
+    setInvokeHandlers({ topic_schema_get: () => "saved", topic_schema_delete: () => undefined });
+    const user = userEvent.setup();
+    renderWithClient(<TopicSchemaTab connectionId="1" topicName="orders" />);
+    await screen.findByLabelText("Avro schema");
+
+    await user.click(screen.getByRole("tab", { name: "Protobuf" }));
+    await screen.findByLabelText("Protobuf schema");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("topic_schema_delete", {
+        connectionId: "1",
+        topic: "orders",
+        format: "protobuf",
+      });
+    });
+  });
+
+  // A draft typed under one format must never be saved against the other.
+  it("replaces the draft when the format changes", async () => {
+    setInvokeHandlers({ topic_schema_get: (args) => ((args as { format: string }).format === "avro" ? "avro-text" : null) });
+    const user = userEvent.setup();
+    renderWithClient(<TopicSchemaTab connectionId="1" topicName="orders" />);
+    await screen.findByLabelText("Avro schema");
+
+    await user.click(screen.getByRole("tab", { name: "Protobuf" }));
+
+    expect(await screen.findByLabelText("Protobuf schema")).toHaveValue("");
+  });
+});

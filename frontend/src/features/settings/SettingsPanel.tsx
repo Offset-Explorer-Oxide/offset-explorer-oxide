@@ -1,12 +1,10 @@
 import { useState } from "react";
-import { THEMES } from "../theme/themes";
-import { useThemeStore } from "../theme/useThemeStore";
+import { ThemePicker } from "../theme/ThemePicker";
 import { FONT_FAMILIES, FONT_SIZE_OPTIONS_PX } from "./fonts";
 import { Dropdown } from "../../components/Dropdown";
 import { activeFontFamilyId, usePreferencesStore } from "./usePreferencesStore";
 import { useGeneralSettingsStore } from "./useGeneralSettingsStore";
 
-const THEME_OPTIONS = THEMES.map((theme) => ({ id: theme.id, label: theme.label }));
 const FONT_FAMILY_OPTIONS = FONT_FAMILIES.map((f) => ({ id: f.id, label: f.label }));
 const FONT_SIZE_OPTIONS = FONT_SIZE_OPTIONS_PX.map((px) => ({ id: String(px), label: `${px}px` }));
 
@@ -120,9 +118,6 @@ function GeneralSettingsTab() {
 }
 
 function AppearanceSettingsTab() {
-  const appliedThemeId = useThemeStore((s) => s.appliedThemeId);
-  const setAppliedTheme = useThemeStore((s) => s.setApplied);
-
   const appliedFontFamilyId = usePreferencesStore((s) => s.appliedFontFamilyId);
   const previewFontFamilyId = usePreferencesStore((s) => s.previewFontFamilyId);
   const setPreviewFontFamily = usePreferencesStore((s) => s.setPreviewFontFamily);
@@ -136,14 +131,7 @@ function AppearanceSettingsTab() {
     <div className="settings-panel__tabpanel" role="tabpanel" aria-label="Appearance">
       <section className="settings-panel__section">
         <h3>Theme</h3>
-        <Dropdown
-          label="Theme"
-          ariaLabel="Theme"
-          options={THEME_OPTIONS}
-          displayedId={appliedThemeId}
-          appliedId={appliedThemeId}
-          onCommit={setAppliedTheme}
-        />
+        <ThemePicker />
       </section>
 
       <section className="settings-panel__section">

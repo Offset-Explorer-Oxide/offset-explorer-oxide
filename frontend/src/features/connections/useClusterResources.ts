@@ -1,5 +1,12 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api, ConsumerGroupLag, MessageFetchResult, MessageFilter, SchemaFormat } from "../../lib/tauri";
+import {
+  api,
+  ConsumerGroupLag,
+  MessageFetchResult,
+  MessageFilter,
+  ProtobufDecodeResult,
+  SchemaFormat,
+} from "../../lib/tauri";
 
 /**
  * How long a per-topic partition listing stays fresh.
@@ -231,5 +238,11 @@ export function useDeleteTopicSchema() {
 export function useDecodeAvro() {
   return useMutation<unknown, Error, { connectionId: string; topic: string; payloadBase64: string }>({
     mutationFn: ({ connectionId, topic, payloadBase64 }) => api.decodeAvro(connectionId, topic, payloadBase64),
+  });
+}
+
+export function useDecodeProtobuf() {
+  return useMutation<ProtobufDecodeResult, Error, { connectionId: string; topic: string; payloadBase64: string }>({
+    mutationFn: ({ connectionId, topic, payloadBase64 }) => api.decodeProtobuf(connectionId, topic, payloadBase64),
   });
 }

@@ -5,12 +5,13 @@ members = [
   "backend/db",
   "backend/kafka",
   "backend/avro",
+  "backend/protobuf",
   "backend/schema-registry",
   "src-tauri",
 ]
 
 [workspace.dependencies]
-error-stack = "0.5"
+error-stack = "0.8"
 serde = { version = "1", features = ["derive"] }
 # `preserve_order` keeps `serde_json::Value::Object` in insertion order
 # (IndexMap) instead of sorting keys (BTreeMap). Decoded Avro records are
@@ -23,12 +24,13 @@ serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 async-trait = "0.1"
 kafkaoxide-core = { path = "backend/core" }
 kafkaoxide-db = { path = "backend/db" }
 kafkaoxide-kafka = { path = "backend/kafka" }
 kafkaoxide-avro = { path = "backend/avro" }
+kafkaoxide-protobuf = { path = "backend/protobuf" }
 kafkaoxide-schema-registry = { path = "backend/schema-registry" }
 
 # Release builds had no profile at all, so they ran on cargo's defaults:

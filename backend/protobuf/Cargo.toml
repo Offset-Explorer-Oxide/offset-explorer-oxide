@@ -1,0 +1,26 @@
+[package]
+name = "kafkaoxide-protobuf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kafkaoxide-core = { workspace = true }
+error-stack = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+# `protox` compiles `.proto` *source text* to a FileDescriptorSet in pure
+# Rust, and `prost-reflect` turns that into a `DynamicMessage` that can decode
+# a payload with no generated code. The pair is what makes schema-driven
+# protobuf decoding possible here at all: every other route (rust-protobuf,
+# prost on its own, tonic-build) needs the schema at *compile* time, and the
+# schemas this decodes are pasted by the user or fetched from a registry at
+# run time. It also avoids shelling out to a `protoc` binary, which a desktop
+# installer would have to ship and locate on three platforms.
+protox = "0.9"
+prost-reflect = { version = "0.16", features = ["serde"] }
+prost = "0.14"
+
+[dev-dependencies]
+# Only to type-check the `spawn_blocking` shape of the Tauri command that
+# wraps this crate — see `tests/tauri_command_shape.rs`.
+tokio = { workspace = true }

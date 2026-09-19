@@ -15,6 +15,19 @@ export const FONT_FAMILIES: FontFamilyDef[] = [
   { id: "georgia", label: "Georgia", cssValue: 'Georgia, "Times New Roman", serif' },
 ];
 
+/**
+ * The fallbacks appended to the chosen family for the code-ish surfaces —
+ * message payloads, the JSON/XML trees, the logs, the schema editor.
+ *
+ * The chosen family comes *first*, so picking a font really does change what
+ * a payload is rendered in: that is the whole point of the setting, and
+ * hard-coded monospace stacks on those surfaces were the reason it appeared
+ * to do nothing to the middle and right panels. The monospace stack behind it
+ * only takes over when the chosen family isn't installed, which for a
+ * payload is the better of the two ways to be wrong.
+ */
+const MONO_FALLBACKS = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
+
 export const DEFAULT_FONT_FAMILY_ID = "system-ui";
 
 export const MIN_FONT_SIZE_PX = 11;
@@ -29,4 +42,9 @@ export const FONT_SIZE_OPTIONS_PX: number[] = Array.from(
 
 export function fontFamilyCssValue(id: string): string {
   return FONT_FAMILIES.find((f) => f.id === id)?.cssValue ?? FONT_FAMILIES[0].cssValue;
+}
+
+/** The same choice, for the surfaces that show payloads and logs — see `MONO_FALLBACKS`. */
+export function monoFontFamilyCssValue(id: string): string {
+  return `${fontFamilyCssValue(id)}, ${MONO_FALLBACKS}`;
 }

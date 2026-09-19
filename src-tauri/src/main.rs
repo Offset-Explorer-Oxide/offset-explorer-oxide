@@ -179,12 +179,14 @@ fn main() {
             commands::schema::topic_schema_set,
             commands::schema::topic_schema_delete,
             commands::schema::connection_decode_avro,
+            commands::schema::connection_decode_protobuf,
             commands::tabs::tab_list,
             commands::tabs::tab_create,
             commands::tabs::tab_rename,
             commands::tabs::tab_delete,
             commands::tabs::tab_reorder,
             commands::system::trim_process_memory,
+            commands::system::payload_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

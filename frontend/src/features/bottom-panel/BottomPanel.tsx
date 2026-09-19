@@ -10,6 +10,7 @@ import { useWorkspaceSelectionStore } from "../workspace/useWorkspaceSelectionSt
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { tabDataPrefix, totalRetainedPayloadBytes, useTabDataStore } from "../workspace/useTabDataStore";
 import { useGeneralSettingsStore } from "../settings/useGeneralSettingsStore";
+import { ThemeMenuButton } from "../theme/ThemeMenuButton";
 import { retainedPayloadBytes, retainedRowBytes } from "../connections/payloadDecoding";
 import { MessageFetchResult } from "../../lib/tauri";
 
@@ -143,6 +144,7 @@ export function BottomPanel() {
         >
           {isExpanded ? "▾" : "▸"} Logs
         </button>
+        <ThemeMenuButton />
         <div className="bottom-panel-memory">
           <span className="bottom-panel-memory-label">Tab memory: {formatTabMemory(bytesUsed)}</span>
           <span

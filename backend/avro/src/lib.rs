@@ -4,7 +4,8 @@ use apache_avro::Schema;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{DateTime, NaiveTime, Timelike};
-use error_stack::{Report, Result, ResultExt};
+use error_stack::{Report, ResultExt};
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 use num_bigint::BigInt;
 
@@ -25,7 +26,7 @@ pub fn detect_wire_format(bytes: &[u8]) -> Option<u32> {
 pub fn validate_schema(schema_json: &str) -> Result<(), AppError> {
     Schema::parse_str(schema_json)
         .change_context(AppError::Decode)
-        .attach_printable("invalid Avro schema")?;
+        .attach("invalid Avro schema")?;
     Ok(())
 }
 
@@ -120,7 +121,7 @@ impl AvroDecodeRefusal {
 pub fn decode_container(bytes: &[u8]) -> Result<serde_json::Value, AppError> {
     let reader = apache_avro::Reader::new(bytes)
         .change_context(AppError::Decode)
-        .attach_printable("payload isn't a valid Avro container file")?;
+        .attach("payload isn't a valid Avro container file")?;
 
     // Cloned before the iterator consumes `reader`: the writer schema is
     // what gives `to_json` the scale of a decimal and the field order of a
@@ -132,12 +133,12 @@ pub fn decode_container(bytes: &[u8]) -> Result<serde_json::Value, AppError> {
     for value in reader {
         let value = value
             .change_context(AppError::Decode)
-            .attach_printable("payload isn't a valid Avro container file")?;
+            .attach("payload isn't a valid Avro container file")?;
         records.push(to_json(value, &schema));
     }
 
     match records.len() {
-        0 => Err(Report::new(AppError::Decode).attach_printable("Avro container file has no records")),
+        0 => Err(Report::new(AppError::Decode).attach("Avro container file has no records")),
         1 => Ok(records.into_iter().next().unwrap()),
         _ => Ok(serde_json::Value::Array(records)),
     }
@@ -150,11 +151,18 @@ pub fn decode_container(bytes: &[u8]) -> Result<serde_json::Value, AppError> {
 pub fn decode(bytes: &[u8], schema_json: &str) -> Result<serde_json::Value, AppError> {
     let schema = Schema::parse_str(schema_json)
         .change_context(AppError::Decode)
-        .attach_printable("invalid Avro schema")?;
+        .attach("invalid Avro schema")?;
     let mut reader = bytes;
-    let value = apache_avro::from_avro_datum(&schema, &mut reader, None)
+    // `GenericDatumReader` replaced the free `from_avro_datum`, which
+    // apache-avro 0.22 deprecates. Same single-datum read (no container
+    // framing), same "reader schema defaults to the writer schema".
+    let value = apache_avro::reader::datum::GenericDatumReader::builder(&schema)
+        .build()
         .change_context(AppError::Decode)
-        .attach_printable("payload isn't valid Avro for this schema")?;
+        .attach("invalid Avro schema")?
+        .read_value(&mut reader)
+        .change_context(AppError::Decode)
+        .attach("payload isn't valid Avro for this schema")?;
     Ok(to_json(value, &schema))
 }
 
@@ -232,6 +240,15 @@ fn to_json_value<'s>(
         Value::TimestampMicros(micros) => format_timestamp(micros, 1_000_000, 6, true),
         Value::LocalTimestampMillis(millis) => format_timestamp(millis, 1_000, 3, false),
         Value::LocalTimestampMicros(micros) => format_timestamp(micros, 1_000_000, 6, false),
+        // Nanosecond precision, added to the Avro spec after the rest of
+        // these and surfaced by apache-avro 0.17. Same treatment: the
+        // fraction is nine digits wide rather than three or six.
+        Value::TimestampNanos(nanos) => format_timestamp(nanos, 1_000_000_000, 9, true),
+        Value::LocalTimestampNanos(nanos) => format_timestamp(nanos, 1_000_000_000, 9, false),
+        // Unlike `Value::Decimal`, this one carries its own scale, so it
+        // needs no help from the schema — and `Display` already renders it
+        // as the decimal it is rather than as debug output.
+        Value::BigDecimal(decimal) => serde_json::Value::String(decimal.to_string()),
         // Not an instant and not a duration any calendar can flatten — the
         // Avro spec keeps the three components deliberately separate, and
         // so does this.
@@ -249,8 +266,11 @@ fn to_json_value<'s>(
             to_json_value(*inner, variant, names)
         }
         Value::Array(items) => {
+            // apache-avro 0.17 replaced `Schema::Array(Box<Schema>)` with
+            // an `ArraySchema` struct carrying the element schema plus its
+            // attributes; the element schema is what this needs.
             let items_schema = match schema {
-                Some(Schema::Array(inner)) => Some(&**inner),
+                Some(Schema::Array(inner)) => Some(&*inner.items),
                 _ => None,
             };
             serde_json::Value::Array(
@@ -261,8 +281,10 @@ fn to_json_value<'s>(
             )
         }
         Value::Map(map) => {
+            // Same shape change as `Schema::Array` above — `MapSchema` names
+            // its value schema `types`.
             let values_schema = match schema {
-                Some(Schema::Map(inner)) => Some(&**inner),
+                Some(Schema::Map(inner)) => Some(&*inner.types),
                 _ => None,
             };
             // Avro maps are genuinely unordered and arrive here in a
@@ -435,11 +457,15 @@ mod tests {
 
     /// Builds Avro bytes for a `Value` by hand (not via `apache_avro`'s
     /// `Record`/`put` builder, which needs schema-internal field lookups
-    /// for nested records) — `to_avro_datum` accepts any `Value` shaped
-    /// like the schema, builder or not.
+    /// for nested records) — this accepts any `Value` shaped like the
+    /// schema, builder or not.
     fn encode(schema_json: &str, value: Value) -> Vec<u8> {
         let schema = Schema::parse_str(schema_json).unwrap();
-        apache_avro::to_avro_datum(&schema, value).unwrap()
+        apache_avro::writer::datum::GenericDatumWriter::builder(&schema)
+            .build()
+            .unwrap()
+            .write_value_to_vec(value)
+            .unwrap()
     }
 
     #[test]
@@ -624,9 +650,10 @@ mod tests {
 
     fn encode_container(schema_json: &str, values: Vec<Value>) -> Vec<u8> {
         let schema = Schema::parse_str(schema_json).unwrap();
-        let mut writer = apache_avro::Writer::new(&schema, Vec::new());
+        // apache-avro 0.22 made `Writer::new` fallible.
+        let mut writer = apache_avro::Writer::new(&schema, Vec::new()).unwrap();
         for value in values {
-            writer.append(value).unwrap();
+            writer.append_value(value).unwrap();
         }
         writer.into_inner().unwrap()
     }

@@ -1,4 +1,5 @@
-use error_stack::{Report, Result, ResultExt};
+use error_stack::{Report, ResultExt};
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -34,32 +35,32 @@ impl SchemaRegistryClient {
         if let Some(location) = auth.trust_store_location {
             let pem = std::fs::read(location)
                 .change_context(AppError::SchemaRegistry)
-                .attach_printable_lazy(|| format!("failed to read trust store at {location}"))?;
+                .attach_with(|| format!("failed to read trust store at {location}"))?;
             let cert = reqwest::Certificate::from_pem(&pem)
                 .change_context(AppError::SchemaRegistry)
-                .attach_printable("failed to parse trust store as PEM")?;
+                .attach("failed to parse trust store as PEM")?;
             builder = builder.add_root_certificate(cert);
         }
 
         if let (Some(location), Some(password)) = (auth.keystore_location, auth.keystore_password) {
             let der = std::fs::read(location)
                 .change_context(AppError::SchemaRegistry)
-                .attach_printable_lazy(|| format!("failed to read keystore at {location}"))?;
+                .attach_with(|| format!("failed to read keystore at {location}"))?;
             let identity = reqwest::Identity::from_pkcs12_der(&der, password)
                 .change_context(AppError::SchemaRegistry)
-                .attach_printable("failed to parse keystore as PKCS12")?;
+                .attach("failed to parse keystore as PKCS12")?;
             builder = builder.identity(identity);
         }
 
         let http = builder
             .build()
             .change_context(AppError::SchemaRegistry)
-            .attach_printable("failed to build Schema Registry HTTP client")?;
+            .attach("failed to build Schema Registry HTTP client")?;
 
         let basic_auth = match auth.basic_auth_credentials {
             Some(creds) => {
                 let (user, pass) = creds.split_once(':').ok_or_else(|| {
-                    Report::new(AppError::SchemaRegistry).attach_printable(
+                    Report::new(AppError::SchemaRegistry).attach(
                         "schema registry basic auth credentials must be in \"username:password\" format",
                     )
                 })?;
@@ -96,17 +97,17 @@ impl SchemaRegistryClient {
             .send()
             .await
             .change_context(AppError::SchemaRegistry)
-            .attach_printable_lazy(|| format!("request to {url} failed"))?;
+            .attach_with(|| format!("request to {url} failed"))?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Err(Report::new(AppError::NotFound))
-                .attach_printable_lazy(|| format!("schema id {id} not found in registry"));
+                .attach_with(|| format!("schema id {id} not found in registry"));
         }
 
         let response = response
             .error_for_status()
             .change_context(AppError::SchemaRegistry)
-            .attach_printable_lazy(|| format!("registry returned an error for schema id {id}"))?;
+            .attach_with(|| format!("registry returned an error for schema id {id}"))?;
 
         #[derive(serde::Deserialize)]
         struct SchemaResponse {
@@ -117,7 +118,7 @@ impl SchemaRegistryClient {
             .json()
             .await
             .change_context(AppError::SchemaRegistry)
-            .attach_printable("failed to parse registry response as JSON")?;
+            .attach("failed to parse registry response as JSON")?;
 
         self.cache
             .lock()

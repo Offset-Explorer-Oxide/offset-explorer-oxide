@@ -10,6 +10,8 @@ import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
 import { dataTabCacheKey, useTabDataStore } from "../workspace/useTabDataStore";
 import { retainedPayloadBytes, retainedRowBytes } from "../connections/payloadDecoding";
 import { TopicMessage } from "../../lib/tauri";
+import { useThemeStore } from "../theme/useThemeStore";
+import { DEFAULT_THEME_ID } from "../theme/themes";
 
 /** The panel reads the payload viewer's open message out of the query cache, so it needs a client. */
 function renderPanel() {
@@ -447,5 +449,29 @@ describe("BottomPanel logs context menu", () => {
 
     expect(screen.queryByRole("menuitem", { name: "Clear logs" })).not.toBeInTheDocument();
     expect(screen.getByText("Connecting finished")).toBeInTheDocument();
+  });
+});
+
+describe("BottomPanel theme control", () => {
+  it("puts a theme button in the status strip", () => {
+    const { container } = renderPanel();
+
+    const button = screen.getByRole("button", { name: /^Theme:/ });
+    expect(button).toBeInTheDocument();
+    expect(button.closest(".bottom-panel-status-strip")).toBe(container.querySelector(".bottom-panel-status-strip"));
+  });
+
+  // Changing theme is a look-at-it-and-decide action. From the strip the app
+  // stays on screen while the picker is open, which opening Settings did not
+  // allow — its tab covered the very thing being judged.
+  it("changes the theme without leaving the current tab", async () => {
+    const user = userEvent.setup();
+    useThemeStore.setState({ appliedThemeId: DEFAULT_THEME_ID, lastByKind: {} });
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: /^Theme:/ }));
+    await user.click(screen.getByRole("radio", { name: "One Dark" }));
+
+    expect(useThemeStore.getState().appliedThemeId).toBe("one-dark");
   });
 });

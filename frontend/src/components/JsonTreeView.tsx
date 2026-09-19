@@ -4,6 +4,10 @@ export interface JsonTreeViewProps {
   value: unknown;
   /** Opens `value` as its own tab in the app (there's no browser to open a real new tab in). Omit to hide the button — e.g. a view that's already a dedicated JSON tab has nothing new to open. */
   onOpenInNewTab?: () => void;
+  /** Numbers every rendered line down the left edge. Off by default — a tab-sized view of a small document reads better without the column. */
+  lineNumbers?: boolean;
+  /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
+  showToolbar?: boolean;
 }
 
 function CopyIcon() {
@@ -83,10 +87,12 @@ function JsonNode({ label, value, depth }: JsonNodeProps) {
 
   if (!isExpandable(value)) {
     return (
-      <div className="json-tree-line" style={indent}>
-        <span className="json-tree-indent" aria-hidden="true" />
-        {label !== null && <span className="json-tree-key">{label}: </span>}
-        <span className={`json-tree-value ${primitiveTypeClass(value)}`}>{formatPrimitive(value)}</span>
+      <div className="json-tree-line">
+        <span className="json-tree-line-content" style={indent}>
+          <span className="json-tree-indent" aria-hidden="true" />
+          {label !== null && <span className="json-tree-key">{label}: </span>}
+          <span className={`json-tree-value ${primitiveTypeClass(value)}`}>{formatPrimitive(value)}</span>
+        </span>
       </div>
     );
   }
@@ -100,34 +106,38 @@ function JsonNode({ label, value, depth }: JsonNodeProps) {
 
   return (
     <div>
-      <div className="json-tree-line" style={indent}>
-        <button
-          type="button"
-          className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
-          aria-label={expanded ? `Collapse ${label ?? "value"}` : `Expand ${label ?? "value"}`}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          <span className="tree-caret" aria-hidden="true" />
-        </button>
-        {label !== null && <span className="json-tree-key">{label}: </span>}
-        <span className="json-tree-bracket">{openBracket}</span>
-        {!expanded && (
-          <>
-            <span className="json-tree-summary">
-              {entries.length} {isArray ? "items" : "keys"}
-            </span>
-            <span className="json-tree-bracket">{closeBracket}</span>
-          </>
-        )}
+      <div className="json-tree-line">
+        <span className="json-tree-line-content" style={indent}>
+          <button
+            type="button"
+            className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
+            aria-label={expanded ? `Collapse ${label ?? "value"}` : `Expand ${label ?? "value"}`}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <span className="tree-caret" aria-hidden="true" />
+          </button>
+          {label !== null && <span className="json-tree-key">{label}: </span>}
+          <span className="json-tree-bracket">{openBracket}</span>
+          {!expanded && (
+            <>
+              <span className="json-tree-summary">
+                {entries.length} {isArray ? "items" : "keys"}
+              </span>
+              <span className="json-tree-bracket">{closeBracket}</span>
+            </>
+          )}
+        </span>
       </div>
       {expanded && (
         <>
           {entries.map(([key, item]) => (
             <JsonNode key={key} label={key} value={item} depth={depth + 1} />
           ))}
-          <div className="json-tree-line" style={indent}>
-            <span className="json-tree-indent" aria-hidden="true" />
-            <span className="json-tree-bracket">{closeBracket}</span>
+          <div className="json-tree-line">
+            <span className="json-tree-line-content" style={indent}>
+              <span className="json-tree-indent" aria-hidden="true" />
+              <span className="json-tree-bracket">{closeBracket}</span>
+            </span>
           </div>
         </>
       )}
@@ -141,7 +151,7 @@ function JsonNode({ label, value, depth }: JsonNodeProps) {
  * on hover): copy the whole pretty-printed value to the clipboard, or open
  * it in its own tab in the app.
  */
-export function JsonTreeView({ value, onOpenInNewTab }: JsonTreeViewProps) {
+export function JsonTreeView({ value, onOpenInNewTab, lineNumbers = false, showToolbar = true }: JsonTreeViewProps) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -152,6 +162,7 @@ export function JsonTreeView({ value, onOpenInNewTab }: JsonTreeViewProps) {
 
   return (
     <div className="json-tree">
+      {showToolbar && (
       <div className="json-tree-toolbar">
         {onOpenInNewTab && (
           <button
@@ -174,7 +185,8 @@ export function JsonTreeView({ value, onOpenInNewTab }: JsonTreeViewProps) {
           {copied ? <CheckIcon /> : <CopyIcon />}
         </button>
       </div>
-      <div className="json-tree-body" role="tree">
+      )}
+      <div className={`json-tree-body${lineNumbers ? " json-tree-body--numbered" : ""}`} role="tree">
         <JsonNode label={null} value={value} depth={0} />
       </div>
     </div>

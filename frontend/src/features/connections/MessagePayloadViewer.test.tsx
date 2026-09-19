@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -8,10 +8,15 @@ import { useJsonViewerTabsStore } from "../tabs/useJsonViewerTabsStore";
 import { useTabsStore } from "../tabs/useTabsStore";
 import { useTabOrderStore } from "../tabs/useTabOrderStore";
 import { useMessageViewerStore } from "../workspace/useMessageViewerStore";
-import { useMessageViewerPrefsStore } from "../workspace/useMessageViewerPrefsStore";
+import {
+  DEFAULT_MESSAGE_VIEWER_PREFS,
+  useMessageViewerPrefsStore,
+} from "../workspace/useMessageViewerPrefsStore";
 import { MessagePayloadViewer, TEXT_PREVIEW_CHARS } from "./MessagePayloadViewer";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+const saveDialog = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-dialog", () => ({ save: (...args: unknown[]) => saveDialog(...args) }));
 
 function renderWithClient(ui: React.ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -23,8 +28,26 @@ beforeEach(() => {
   useJsonViewerTabsStore.setState({ tabs: [] });
   useTabsStore.setState({ tabs: [], activeTabId: null, error: null });
   useTabOrderStore.setState({ anchors: {} });
-  useMessageViewerPrefsStore.setState({ prefsByTab: {} });
+  // `defaultValueMode` as well as `prefsByTab`: choosing a format now also
+  // sets the app-wide default, so without this each case would start in
+  // whatever format the previous one happened to select.
+  localStorage.clear();
+  saveDialog.mockReset();
+  useMessageViewerPrefsStore.setState({
+    prefsByTab: {},
+    defaultValueMode: DEFAULT_MESSAGE_VIEWER_PREFS.valueMode,
+    placement: "right",
+  });
 });
+
+/**
+ * Picks a format from the Value tab's dropdown — which replaced the row of
+ * Text/JSON/Avro/XML buttons these tests used to click directly.
+ */
+async function selectFormat(user: ReturnType<typeof userEvent.setup>, label: string) {
+  await user.click(screen.getByRole("button", { name: /^Value format:/ }));
+  await user.click(screen.getByRole("option", { name: label }));
+}
 
 describe("MessagePayloadViewer", () => {
   it("shows a placeholder when no message is selected", () => {
@@ -52,7 +75,7 @@ describe("MessagePayloadViewer", () => {
     // …the chrome the user needs while reading it does not.
     expect(container.querySelector(".message-payload-header")?.closest(".message-payload-scroll")).toBeNull();
     expect(screen.getByRole("tab", { name: "Value" }).closest(".message-payload-scroll")).toBeNull();
-    expect(screen.getByRole("button", { name: "JSON" }).closest(".message-payload-scroll")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Value format:/ }).closest(".message-payload-scroll")).toBeNull();
 
     // The Headers tab scrolls its rows the same way.
     await user.click(screen.getByRole("tab", { name: "Headers" }));
@@ -178,7 +201,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
 
     expect(await screen.findByRole("status", { name: /loading the full payload/i })).toBeInTheDocument();
     expect(screen.queryByText(/not valid json/i)).not.toBeInTheDocument();
@@ -207,7 +230,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
     resolveFetch({
       messages: [
         {
@@ -251,7 +274,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "Avro" }));
+    await selectFormat(user, "Avro");
 
     expect(await screen.findByRole("status", { name: /loading the full payload/i })).toBeInTheDocument();
     expect(decodeAvro).not.toHaveBeenCalled();
@@ -282,7 +305,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
 
     expect(await screen.findByText(/not valid json/i)).toBeInTheDocument();
     expect(screen.queryByRole("status", { name: /loading the full payload/i })).not.toBeInTheDocument();
@@ -326,7 +349,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
 
     expect(screen.getByText("id:")).toBeInTheDocument();
     expect(screen.getByText('"orders"')).toBeInTheDocument();
@@ -347,7 +370,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
     await user.click(screen.getByRole("button", { name: "Open in new tab" }));
 
     const tabs = useJsonViewerTabsStore.getState().tabs;
@@ -363,7 +386,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
 
     expect(screen.getByText(/not valid json/i)).toBeInTheDocument();
   });
@@ -375,7 +398,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
 
     expect(screen.getByText(/not valid json/i)).toBeInTheDocument();
   });
@@ -395,7 +418,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "XML" }));
+    await selectFormat(user, "XML");
 
     expect(screen.getByText("<order>")).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
@@ -416,7 +439,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "XML" }));
+    await selectFormat(user, "XML");
     await user.click(screen.getByRole("button", { name: "Open in new tab" }));
 
     const tabs = useJsonViewerTabsStore.getState().tabs;
@@ -432,7 +455,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "XML" }));
+    await selectFormat(user, "XML");
 
     expect(screen.getByText(/not valid xml/i)).toBeInTheDocument();
   });
@@ -452,7 +475,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "XML" }));
+    await selectFormat(user, "XML");
 
     expect(screen.getByText(/not valid xml/i)).toBeInTheDocument();
   });
@@ -467,7 +490,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "Avro" }));
+    await selectFormat(user, "Avro");
 
     expect(await screen.findByText("id:")).toBeInTheDocument();
     expect(screen.getByText('"orders"')).toBeInTheDocument();
@@ -492,7 +515,7 @@ describe("MessagePayloadViewer", () => {
     const user = userEvent.setup();
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "Avro" }));
+    await selectFormat(user, "Avro");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/no schema registry configured/i);
   });
@@ -504,7 +527,7 @@ describe("MessagePayloadViewer", () => {
     renderWithClient(<MessagePayloadViewer />);
 
     expect(screen.getByText(/fetch message payload/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Text" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Value format:/ })).not.toBeInTheDocument();
   });
 
   it("shows the message's partition and offset even when the payload wasn't loaded", () => {
@@ -657,7 +680,7 @@ describe("MessagePayloadViewer", () => {
     viewMessage(btoa(small));
     renderWithClient(<MessagePayloadViewer />);
 
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
     expect(screen.getByText('"only-one"')).toBeInTheDocument();
 
     viewMessage(btoa(large), 2);
@@ -686,7 +709,7 @@ describe("MessagePayloadViewer", () => {
       },
     });
     const { unmount } = renderWithClient(<MessagePayloadViewer />);
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
     expect(screen.getByText('"order-42"')).toBeInTheDocument();
 
     // Leaving the tab tears the viewer down; coming back builds a new one.
@@ -694,7 +717,7 @@ describe("MessagePayloadViewer", () => {
     renderWithClient(<MessagePayloadViewer />);
 
     expect(screen.getByText('"order-42"')).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "JSON" })).toHaveClass("message-payload-toggle-button--active");
+    expect(screen.getByRole("button", { name: "Value format: JSON" })).toBeInTheDocument();
   });
 
   it("comes back on the Headers panel tab after the top-level tab was switched away from and back", async () => {
@@ -722,9 +745,11 @@ describe("MessagePayloadViewer", () => {
   });
 
   // Each top-level tab's right pane holds its own message
-  // (`useMessageViewerStore.byTab`), so the view mode is per tab too — a
-  // second tab opens on the Text default rather than inheriting the first's.
-  it("does not carry one tab's chosen view mode over to a different tab", async () => {
+  // (`useMessageViewerStore.byTab`), and its own explicit format choice — but
+  // a tab that has never chosen one follows the last format picked anywhere,
+  // which is what "remember the format I read payloads in" means across the
+  // several tabs a session accumulates.
+  it("opens a fresh tab in the last format chosen", async () => {
     const user = userEvent.setup();
     useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
     useMessageViewerStore.setState({
@@ -739,13 +764,806 @@ describe("MessagePayloadViewer", () => {
       },
     });
     const { unmount } = renderWithClient(<MessagePayloadViewer />);
-    await user.click(screen.getByRole("button", { name: "JSON" }));
+    await selectFormat(user, "JSON");
     unmount();
 
     useTabsStore.setState({ tabs: [], activeTabId: "tab-2", error: null });
     renderWithClient(<MessagePayloadViewer />);
 
-    expect(screen.getByRole("button", { name: "Text" })).toHaveClass("message-payload-toggle-button--active");
-    expect(screen.queryByText('"order-42"')).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Value format: JSON" })).toBeInTheDocument();
+  });
+
+  it("keeps a tab's own format when another tab changes the default", async () => {
+    const user = userEvent.setup();
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(JSON.stringify({ id: "order-42" })),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    const first = renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "XML");
+    first.unmount();
+
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-2", error: null });
+    const second = renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "Hex");
+    second.unmount();
+
+    useTabsStore.setState({ tabs: [], activeTabId: "tab-1", error: null });
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByRole("button", { name: "Value format: XML" })).toBeInTheDocument();
+  });
+});
+
+// --- The format dropdown's literal renderings ------------------------------
+
+describe("MessagePayloadViewer literal formats", () => {
+  function viewText(payload: string) {
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(payload),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+  }
+
+  it("renders the payload as a hex dump", async () => {
+    const user = userEvent.setup();
+    viewText("Hello, hex dump!");
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Hex");
+
+    expect(container.querySelector(".code-body")?.textContent).toBe(
+      "00000000  48 65 6c 6c 6f 2c 20 68  65 78 20 64 75 6d 70 21  |Hello, hex dump!|",
+    );
+  });
+
+  it("renders the payload as wrapped base64", async () => {
+    const user = userEvent.setup();
+    viewText("a".repeat(120));
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Base64");
+
+    const shown = container.querySelector(".code-body")?.textContent ?? "";
+    expect(shown.replace(/\n/g, "")).toBe(btoa("a".repeat(120)));
+    expect(shown.split("\n")[0]).toHaveLength(76);
+  });
+
+  it("numbers the lines of the raw payload", async () => {
+    viewText("alpha\nbeta\ngamma");
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    expect(container.querySelector(".code-gutter")?.textContent).toBe("1\n2\n3");
+  });
+
+  it("numbers the lines of the JSON tree", async () => {
+    const user = userEvent.setup();
+    viewText(JSON.stringify({ id: "order-42" }));
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+
+    expect(container.querySelector(".json-tree-body--numbered")).not.toBeNull();
+  });
+
+  // The tree views bring their own copy/open toolbar; inside this pane the
+  // panel's own toolbar provides those, and two stacked rows of the same
+  // buttons is what this replaced.
+  it("shows one toolbar, not the tree view's as well", async () => {
+    const user = userEvent.setup();
+    viewText(JSON.stringify({ id: 1 }));
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+
+    expect(container.querySelectorAll(".json-tree-toolbar")).toHaveLength(0);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+  });
+
+  // A hex dump is ~5 characters per byte, so the bound that keeps the raw
+  // view from freezing the webview has to be a tighter one here.
+  it("truncates a large hex dump and offers the rest behind a click", async () => {
+    const user = userEvent.setup();
+    viewText("a".repeat(200_000));
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Hex");
+
+    expect(screen.getByText(/showing the first/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /show the whole payload/i })).toBeInTheDocument();
+  });
+
+  // "Show me all 300 KB as text" must not also mean "and now dump it as hex",
+  // which is five times the characters.
+  it("re-truncates when the format changes after expanding", async () => {
+    const user = userEvent.setup();
+    viewText("a".repeat(300_000));
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: /show the whole payload/i }));
+    expect(screen.queryByRole("button", { name: /show the whole payload/i })).not.toBeInTheDocument();
+
+    await selectFormat(user, "Hex");
+
+    expect(screen.getByRole("button", { name: /show the whole payload/i })).toBeInTheDocument();
+  });
+});
+
+// --- The toolbar: open / copy / save / download ----------------------------
+
+describe("MessagePayloadViewer toolbar", () => {
+  function viewJson(value: unknown) {
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 2,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(JSON.stringify(value)),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+  }
+
+  it("copies the payload in the chosen format", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator.clipboard, "writeText").mockImplementation(writeText);
+    const user = userEvent.setup();
+    viewJson({ id: "order-42" });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify({ id: "order-42" }, null, 2));
+    expect(await screen.findByRole("button", { name: "Copied!" })).toBeInTheDocument();
+  });
+
+  // Copy takes the *whole* payload even where the view on screen is capped —
+  // a clipboard has no rendering cost to protect.
+  it("copies the whole payload even when the view is truncated", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator.clipboard, "writeText").mockImplementation(writeText);
+    const user = userEvent.setup();
+    const long = "a".repeat(300_000);
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(long),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(writeText).toHaveBeenCalledWith(long);
+  });
+
+  it("saves the value in the chosen format, through the native save dialog", async () => {
+    saveDialog.mockResolvedValue("/home/u/order.json");
+    const invoked: { command: string; args: unknown }[] = [];
+    setInvokeHandlers({
+      payload_save: (args) => {
+        invoked.push({ command: "payload_save", args });
+        return undefined;
+      },
+    });
+    const user = userEvent.setup();
+    viewJson({ id: "order-42" });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+    await user.click(screen.getByRole("button", { name: "Save as JSON" }));
+
+    expect(saveDialog).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPath: "partition-2-offset-7.json" }),
+    );
+    expect(await screen.findByText(/saved to \/home\/u\/order\.json/i)).toBeInTheDocument();
+    expect(invoked).toHaveLength(1);
+    const { path, contentsBase64 } = invoked[0].args as { path: string; contentsBase64: string };
+    expect(path).toBe("/home/u/order.json");
+    expect(atob(contentsBase64)).toBe(JSON.stringify({ id: "order-42" }, null, 2));
+  });
+
+  it("writes nothing when the save dialog is cancelled", async () => {
+    saveDialog.mockResolvedValue(null);
+    const writes: unknown[] = [];
+    setInvokeHandlers({
+      payload_save: (args) => {
+        writes.push(args);
+        return undefined;
+      },
+    });
+    const user = userEvent.setup();
+    viewJson({ id: "order-42" });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
+
+    expect(saveDialog).toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  it("reports a failed save rather than failing silently", async () => {
+    saveDialog.mockResolvedValue("/root/denied.txt");
+    setInvokeHandlers({
+      payload_save: () => {
+        throw new Error("permission denied");
+      },
+    });
+    const user = userEvent.setup();
+    viewJson({ id: "order-42" });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/save failed: permission denied/i);
+  });
+
+  it("refuses to save a payload the chosen format can't render", async () => {
+    saveDialog.mockResolvedValue("/home/u/order.json");
+    setInvokeHandlers({});
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("not json at all"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+    await user.click(screen.getByRole("button", { name: "Save as JSON" }));
+
+    expect(await screen.findByText(/nothing to save/i)).toBeInTheDocument();
+    expect(saveDialog).not.toHaveBeenCalled();
+  });
+
+  // Download is the round-trip button: the bytes as the broker holds them,
+  // not the lossy UTF-8 decode every text view above shows.
+  it("downloads the original payload bytes whatever format is selected", async () => {
+    saveDialog.mockResolvedValue("/home/u/message.bin");
+    const invoked: { path: string; contentsBase64: string }[] = [];
+    setInvokeHandlers({
+      payload_save: (args) => {
+        invoked.push(args as { path: string; contentsBase64: string });
+        return undefined;
+      },
+    });
+    const user = userEvent.setup();
+    viewJson({ id: "order-42" });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Hex");
+    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
+
+    expect(saveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "partition-2-offset-7.bin" }));
+    // Byte for byte the payload, not the hex dump that is on screen.
+    expect(invoked[0].contentsBase64).toBe(btoa(JSON.stringify({ id: "order-42" })));
+  });
+
+  it("opens the raw text as its own app tab", async () => {
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 2,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("plain text payload"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    const [tab] = useJsonViewerTabsStore.getState().tabs;
+    expect(tab.kind).toBe("text");
+    expect(tab.value).toBe("plain text payload");
+    expect(tab.title).toBe("Partition 2 · Offset 7 · Raw");
+  });
+});
+
+// --- The dock switch ------------------------------------------------------
+
+describe("MessagePayloadViewer dock switch", () => {
+  beforeEach(() => {
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("hello"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+  });
+
+  it("offers to move the panel to the bottom while it is on the right", () => {
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByRole("button", { name: "Move the payload panel to the bottom" })).toBeInTheDocument();
+  });
+
+  it("switches the placement, and offers the way back", async () => {
+    const user = userEvent.setup();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "Move the payload panel to the bottom" }));
+
+    expect(useMessageViewerPrefsStore.getState().placement).toBe("bottom");
+    expect(screen.getByRole("button", { name: "Move the payload panel to the right" })).toBeInTheDocument();
+  });
+
+  // The switch is chrome, not payload: it has to stay reachable however far
+  // down a long message the user has scrolled.
+  it("keeps the switch out of the scrolling region", () => {
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(
+      screen.getByRole("button", { name: /^Move the payload panel/ }).closest(".message-payload-scroll"),
+    ).toBeNull();
+  });
+});
+
+describe("MessagePayloadViewer font handling", () => {
+  function viewText(payload: string) {
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa(payload),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+  }
+
+  // The payload is the thing people asked to read in their chosen font, so
+  // the raw view must not pin a font of its own.
+  it("leaves the raw payload on the app's chosen font", () => {
+    viewText("plain text");
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    expect(container.querySelector(".code-view")).not.toHaveClass("code-view--monospace");
+  });
+
+  // The hex dump is the exception: its offset, byte and ASCII columns only
+  // line up in a monospace font.
+  it("pins the hex dump to monospace", async () => {
+    const user = userEvent.setup();
+    viewText("plain text");
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Hex");
+
+    expect(container.querySelector(".code-view")).toHaveClass("code-view--monospace");
+  });
+
+  // Base64 is wrapped to 76-character MIME lines, which only read as
+  // fixed-width columns in a monospace font — the same argument as the hex
+  // dump, and it was inconsistent to apply it to one and not the other.
+  it("pins base64 to monospace too, for its fixed-width lines", async () => {
+    const user = userEvent.setup();
+    viewText("plain text");
+    const { container } = renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Base64");
+
+    expect(container.querySelector(".code-view")).toHaveClass("code-view--monospace");
+  });
+});
+
+describe("MessagePayloadViewer protobuf", () => {
+  function viewMessage() {
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("anything"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+  }
+
+  it("decodes the payload and shows the fields", async () => {
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({
+        value: { order_id: "ORD-42", quantity: 3 },
+        source: "manual",
+        messageType: "shop.Order",
+      }),
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+
+    expect(await screen.findByText('"ORD-42"')).toBeInTheDocument();
+    expect(screen.getByText("order_id:")).toBeInTheDocument();
+  });
+
+  it("says which schema decoded it", async () => {
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({
+        value: { a: 1 },
+        source: "registry",
+        messageType: "shop.Order",
+      }),
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+
+    expect(await screen.findByText(/shop\.Order/)).toHaveTextContent(/Schema Registry/);
+  });
+
+  // Protobuf is the one format that decodes with no schema at all. A tree of
+  // "1", "2", "3" otherwise reads as a schema that decoded badly rather than
+  // as no schema at all.
+  it("says so when it decoded without a schema", async () => {
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({ value: { "1": "ORD-42" }, source: "none", messageType: null }),
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+
+    expect(await screen.findByText(/no \.proto schema for this topic/i)).toBeInTheDocument();
+    expect(screen.getByText(/showing field numbers/i)).toBeInTheDocument();
+  });
+
+  it("reports a decode failure rather than showing nothing", async () => {
+    setInvokeHandlers({
+      connection_decode_protobuf: () => {
+        throw new Error("the payload does not match this .proto schema");
+      },
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/does not match this \.proto schema/);
+  });
+
+  it("copies the decoded message, not the raw bytes", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator.clipboard, "writeText").mockImplementation(writeText);
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({ value: { order_id: "ORD-42" }, source: "manual", messageType: "Order" }),
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+    await screen.findByText('"ORD-42"');
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(writeText).toHaveBeenCalledWith(JSON.stringify({ order_id: "ORD-42" }, null, 2));
+  });
+
+  it("opens the decoded message as its own tab", async () => {
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({ value: { order_id: "ORD-42" }, source: "manual", messageType: "Order" }),
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "Protobuf");
+    await screen.findByText('"ORD-42"');
+    await user.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    expect(useJsonViewerTabsStore.getState().tabs[0].value).toEqual({ order_id: "ORD-42" });
+  });
+
+  // Same contract the Avro mode has: clicking through grid rows must re-decode
+  // rather than leave the first message's fields on screen.
+  it("re-decodes when a different message is selected", async () => {
+    const decoded: string[] = [];
+    setInvokeHandlers({
+      connection_decode_protobuf: (args) => {
+        decoded.push((args as { payloadBase64: string }).payloadBase64);
+        return { value: { a: 1 }, source: "manual", messageType: "Order" };
+      },
+    });
+    const user = userEvent.setup();
+    viewMessage();
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "Protobuf");
+    await screen.findByText("a:");
+
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 2,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("a different message"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+
+    await waitFor(() => expect(decoded).toHaveLength(2));
+    expect(decoded[1]).toBe(btoa("a different message"));
+  });
+});
+
+// --- Writing out a message that isn't all here yet ------------------------
+
+describe("MessagePayloadViewer with only a preview loaded", () => {
+  /**
+   * A row whose payload the grid truncated, whose full-payload fetch fails.
+   * `payloadBase64` then holds the bounded preview slice permanently.
+   */
+  function viewTruncatedMessage() {
+    setInvokeHandlers({
+      connection_fetch_messages: () => {
+        throw new Error("broker unreachable");
+      },
+      payload_save: () => undefined,
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 42,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("the first few by"),
+        payloadSizeBytes: 5_000_000,
+        headers: [],
+      },
+    });
+  }
+
+  /**
+   * Download promises the payload's original bytes. Writing the preview
+   * slice under `partition-0-offset-42.bin`, with no error, hands the user a
+   * file that silently isn't the message — and nothing downstream can tell.
+   */
+  it("refuses to download a payload that is only a preview", async () => {
+    const user = userEvent.setup();
+    viewTruncatedMessage();
+    renderWithClient(<MessagePayloadViewer />);
+    await screen.findByText(/showing a preview only/i);
+
+    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not downloaded/i);
+    expect(saveDialog).not.toHaveBeenCalled();
+  });
+
+  it("refuses to save a payload that is only a preview", async () => {
+    const user = userEvent.setup();
+    viewTruncatedMessage();
+    renderWithClient(<MessagePayloadViewer />);
+    await screen.findByText(/showing a preview only/i);
+
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not saved/i);
+    expect(saveDialog).not.toHaveBeenCalled();
+  });
+
+  it("says why, so the banner and the refusal agree", async () => {
+    const user = userEvent.setup();
+    viewTruncatedMessage();
+    renderWithClient(<MessagePayloadViewer />);
+    await screen.findByText(/showing a preview only/i);
+
+    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be loaded/i);
+  });
+});
+
+// --- The toolbar must describe the message on screen ----------------------
+
+describe("MessagePayloadViewer toolbar freshness", () => {
+  /**
+   * `useMutation` keeps the previous result until a new call resolves, and
+   * the decode effects deliberately don't fire while a full payload is still
+   * being fetched — so a successful decode can outlive the message it
+   * describes. The views hide behind the spinner; the toolbar does not.
+   */
+  it("won't save one message's decode under the next message's name", async () => {
+    const user = userEvent.setup();
+    let failFetch = false;
+    setInvokeHandlers({
+      connection_decode_protobuf: () => ({
+        value: { order_id: "FROM-THE-FIRST-MESSAGE" },
+        source: "manual",
+        messageType: "shop.Order",
+      }),
+      connection_fetch_messages: () => {
+        if (failFetch) throw new Error("broker unreachable");
+        return { messages: [], totalMatching: 0 };
+      },
+      payload_save: () => undefined,
+    });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("first"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "Protobuf");
+    expect(await screen.findByText(/FROM-THE-FIRST-MESSAGE/)).toBeInTheDocument();
+
+    // A second, larger message whose full payload never arrives — the decode
+    // effect is gated on that, so the mutation keeps the first result.
+    failFetch = true;
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 2,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("second, trunc"),
+        payloadSizeBytes: 5_000_000,
+        headers: [],
+      },
+    });
+    await screen.findByText(/showing a preview only/i);
+
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/not saved/i);
+    expect(saveDialog).not.toHaveBeenCalled();
+  });
+});
+
+// --- Opening a literal view in its own tab --------------------------------
+
+describe("MessagePayloadViewer open-in-new-tab capping", () => {
+  it("hands the tab what the pane is showing, not an uncapped rebuild", async () => {
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("a".repeat(400_000)),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+    // The pane caps the raw view at TEXT_PREVIEW_CHARS.
+    expect(screen.getByRole("button", { name: /show the whole payload/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    const [tab] = useJsonViewerTabsStore.getState().tabs;
+    expect(String(tab.value)).toHaveLength(TEXT_PREVIEW_CHARS);
+  });
+
+  /** Expanding is the user's explicit choice, and the tab honours it. */
+  it("hands over the whole payload once the user has expanded it", async () => {
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("a".repeat(400_000)),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+    await user.click(screen.getByRole("button", { name: /show the whole payload/i }));
+
+    await user.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    const [tab] = useJsonViewerTabsStore.getState().tabs;
+    expect(String(tab.value)).toHaveLength(400_000);
+  });
+});
+
+// --- Status messages ------------------------------------------------------
+
+describe("MessagePayloadViewer status messages", () => {
+  /**
+   * Each action used to schedule its own unconditional clear, so a Copy's
+   * 1.5s timer would wipe a Save error that appeared a second later — after
+   * half a second, not the six the error branch asks for.
+   */
+  it("an earlier success's timer doesn't clear a later error", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    saveDialog.mockResolvedValue("/home/u/out.json");
+    setInvokeHandlers({
+      payload_save: () => {
+        throw new Error("permission denied");
+      },
+    });
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("hello"),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    // Real timers: the interaction under test *is* two timers racing, and
+    // faking them here fights userEvent's own scheduling. The copy clear is
+    // armed for 1.5s, so a save that fails 1s later must still be on screen
+    // after the moment that timer would have fired.
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/permission denied/i);
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/permission denied/i);
   });
 });

@@ -2,7 +2,8 @@ pub mod connections;
 pub mod tabs;
 pub mod topic_schemas;
 
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
 use std::str::FromStr;
@@ -38,7 +39,7 @@ use std::str::FromStr;
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool, AppError> {
     let options = SqliteConnectOptions::from_str(database_url)
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to parse sqlite url {database_url}"))?
+        .attach_with(|| format!("failed to parse sqlite url {database_url}"))?
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal);
 
@@ -47,13 +48,13 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool, AppError> {
         .connect_with(options)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| format!("failed to connect to sqlite at {database_url}"))?;
+        .attach_with(|| format!("failed to connect to sqlite at {database_url}"))?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable("failed to run migrations")?;
+        .attach("failed to run migrations")?;
 
     Ok(pool)
 }
@@ -75,7 +76,9 @@ mod tests {
         // anything — queried rather than merely listed, so a table that
         // exists with the wrong shape fails here too.
         for table in ["connections", "tabs", "topic_schemas"] {
-            sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
+            // sqlx 0.9 requires dynamic SQL to be marked as audited.
+            // `table` comes from the hard-coded list above, never from input.
+            sqlx::query(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
                 .fetch_one(&pool)
                 .await
                 .unwrap_or_else(|err| panic!("migrations left `{table}` unusable: {err}"));

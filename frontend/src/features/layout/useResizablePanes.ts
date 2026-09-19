@@ -9,18 +9,31 @@ export interface UseResizablePanesOptions {
   maxLeft?: number;
   minRight?: number;
   maxRight?: number;
+  defaultBottom?: number;
+  minBottom?: number;
+  maxBottom?: number;
 }
 
 export interface UseResizablePanesResult {
   leftWidth: number;
   rightWidth: number;
+  /** The payload pane's height while it is docked under the middle pane instead of beside it. */
+  bottomHeight: number;
   startResizingLeft: (e: ReactPointerEvent) => void;
   startResizingRight: (e: ReactPointerEvent) => void;
+  startResizingBottom: (e: ReactPointerEvent) => void;
 }
 
 interface StoredWidths {
   left?: number;
   right?: number;
+  /**
+   * Kept separately from `right` rather than reusing it: the same pane is
+   * being sized, but a comfortable *width* beside the grid and a comfortable
+   * *height* under it are unrelated numbers, and sharing one would resize the
+   * pane to a nonsense value every time the user flipped the layout.
+   */
+  bottom?: number;
 }
 
 function readStoredWidths(storageKey: string): StoredWidths {
@@ -50,15 +63,20 @@ export function useResizablePanes({
   maxLeft = 560,
   minRight = 240,
   maxRight = 640,
+  defaultBottom = 300,
+  minBottom = 140,
+  maxBottom = 900,
 }: UseResizablePanesOptions): UseResizablePanesResult {
   const stored = useRef(readStoredWidths(storageKey)).current;
   const [leftWidth, setLeftWidth] = useState(() => clamp(stored.left ?? defaultLeft, minLeft, maxLeft));
   const [rightWidth, setRightWidth] = useState(() => clamp(stored.right ?? defaultRight, minRight, maxRight));
+  const [bottomHeight, setBottomHeight] = useState(() => clamp(stored.bottom ?? defaultBottom, minBottom, maxBottom));
 
   const dragRef = useRef<{
-    pane: "left" | "right";
-    startClientX: number;
-    startWidth: number;
+    pane: "left" | "right" | "bottom";
+    /** The pointer coordinate along the axis being dragged — clientX for the vertical dividers, clientY for the horizontal one. */
+    startClient: number;
+    startSize: number;
   } | null>(null);
 
   const persist = useCallback(
@@ -77,11 +95,15 @@ export function useResizablePanes({
     function handlePointerMove(e: PointerEvent) {
       const drag = dragRef.current;
       if (!drag) return;
-      const delta = e.clientX - drag.startClientX;
       if (drag.pane === "left") {
-        setLeftWidth(clamp(drag.startWidth + delta, minLeft, maxLeft));
+        setLeftWidth(clamp(drag.startSize + (e.clientX - drag.startClient), minLeft, maxLeft));
+      } else if (drag.pane === "right") {
+        // Negated: the right pane grows as the divider moves left.
+        setRightWidth(clamp(drag.startSize - (e.clientX - drag.startClient), minRight, maxRight));
       } else {
-        setRightWidth(clamp(drag.startWidth - delta, minRight, maxRight));
+        // Same reasoning one axis over — the bottom pane grows as its
+        // divider moves up.
+        setBottomHeight(clamp(drag.startSize - (e.clientY - drag.startClient), minBottom, maxBottom));
       }
     }
 
@@ -94,9 +116,14 @@ export function useResizablePanes({
           persist({ left: current });
           return current;
         });
-      } else {
+      } else if (drag.pane === "right") {
         setRightWidth((current) => {
           persist({ right: current });
+          return current;
+        });
+      } else {
+        setBottomHeight((current) => {
+          persist({ bottom: current });
           return current;
         });
       }
@@ -108,21 +135,28 @@ export function useResizablePanes({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [minLeft, maxLeft, minRight, maxRight, persist]);
+  }, [minLeft, maxLeft, minRight, maxRight, minBottom, maxBottom, persist]);
 
   const startResizingLeft = useCallback(
     (e: ReactPointerEvent) => {
-      dragRef.current = { pane: "left", startClientX: e.clientX, startWidth: leftWidth };
+      dragRef.current = { pane: "left", startClient: e.clientX, startSize: leftWidth };
     },
     [leftWidth],
   );
 
   const startResizingRight = useCallback(
     (e: ReactPointerEvent) => {
-      dragRef.current = { pane: "right", startClientX: e.clientX, startWidth: rightWidth };
+      dragRef.current = { pane: "right", startClient: e.clientX, startSize: rightWidth };
     },
     [rightWidth],
   );
 
-  return { leftWidth, rightWidth, startResizingLeft, startResizingRight };
+  const startResizingBottom = useCallback(
+    (e: ReactPointerEvent) => {
+      dragRef.current = { pane: "bottom", startClient: e.clientY, startSize: bottomHeight };
+    },
+    [bottomHeight],
+  );
+
+  return { leftWidth, rightWidth, bottomHeight, startResizingLeft, startResizingRight, startResizingBottom };
 }

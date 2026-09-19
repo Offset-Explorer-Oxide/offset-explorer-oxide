@@ -27,6 +27,7 @@ import { IdleTimerProvider } from "./features/idle/IdleTimerProvider";
 import { SettingsPanel } from "./features/settings/SettingsPanel";
 import { SETTINGS_TAB_ID, useSettingsPanelStore } from "./features/settings/useSettingsPanelStore";
 import { useMessageViewerStore } from "./features/workspace/useMessageViewerStore";
+import { useMessageViewerPrefsStore } from "./features/workspace/useMessageViewerPrefsStore";
 import "./styles/themes.css";
 import "./styles/global.css";
 
@@ -96,6 +97,10 @@ function AppShell() {
   const viewedTopic = useMessageViewerStore((s) => s.topic);
   const viewedPartitionId = useMessageViewerStore((s) => s.partitionId);
   const clearViewedMessage = useMessageViewerStore((s) => s.clear);
+  // App-wide, not per tab: the payload panel's dock changes the shape of the
+  // whole window, so it is a property of the workspace rather than of
+  // whichever tab happens to be in front.
+  const viewerPlacement = useMessageViewerPrefsStore((s) => s.placement);
 
   useEffect(() => {
     loadTabs();
@@ -258,6 +263,7 @@ function AppShell() {
             )
           }
           right={hasSelectedMessage ? <MessagePayloadViewer key={activeTabId ?? "no-tab"} /> : undefined}
+          rightPlacement={viewerPlacement}
         />
       </div>
       <BottomPanel />

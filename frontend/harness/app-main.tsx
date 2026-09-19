@@ -50,7 +50,26 @@ w.__fetchLog = [];
   };
 };
 
-const PAYLOAD_B64 = "QQ".repeat(2000); // 4000 chars ~ 3KB decoded
+// A realistic JSON document, so the payload panel's JSON/XML/Raw/Hex/Base64
+// views all have something meaningful to render.
+const PAYLOAD_JSON = JSON.stringify(
+  {
+    orderId: "ORD-10042",
+    customer: { id: "CUST-7", name: "Ada Lovelace", email: "ada@example.com" },
+    items: [
+      { sku: "SKU-1", qty: 2, price: 19.99 },
+      { sku: "SKU-2", qty: 1, price: 149.0 },
+    ],
+    total: 188.98,
+    currency: "GBP",
+    placedAt: "2026-09-18T09:14:22Z",
+    notes: null,
+    paid: true,
+  },
+  null,
+  2,
+);
+const PAYLOAD_B64 = btoa(PAYLOAD_JSON);
 
 Object.assign(w.__handlers, {
   connection_list: () => [conn],
@@ -65,19 +84,99 @@ Object.assign(w.__handlers, {
   tab_rename: () => null,
   tab_reorder: () => null,
   trim_process_memory: () => null,
-  connection_list_topics: () => [
-    { name: "orders", partitionCount: 2 },
-    { name: "payments", partitionCount: 2 },
-  ],
+  connection_cancel_fetch: () => null,
+  connection_create: (a: Record<string, unknown>) => ({ ...conn, id: "conn-2", ...(a.newConnection as object) }),
+  connection_update: () => conn,
+  connection_delete: () => null,
+  connections_export: () => null,
+  connections_import: () => ({ imported: 1, skipped: 0 }),
+  connection_ping_bootstrap: () => "REACHABLE",
+  connection_ping_zookeeper: () => "REACHABLE",
+  connection_test: () => "REACHABLE",
+  // Shape must match `ConsumerGroupLag` in lib/tauri.ts: { state, partitions }.
+  connection_fetch_consumer_group_lag: () => ({
+    state: "Stable",
+    partitions: [
+      { topic: "orders", partition: 0, currentOffset: 90, logEndOffset: 100, lag: 10, clientId: "c-1", clientHost: "/127.0.0.1" },
+      { topic: "orders", partition: 1, currentOffset: 140, logEndOffset: 140, lag: 0, clientId: "c-1", clientHost: "/127.0.0.1" },
+    ],
+  }),
+  connection_write_denied_reason: () => null,
+  connection_publish_messages: () => ({
+    delivered: [{ index: 0, partition: 0, offset: 1200 }],
+    failure: null,
+  }),
+  connection_decode_avro: () => ({
+    orderId: "ORD-10042",
+    customer: { name: "Ada Lovelace" },
+    total: 188.98,
+  }),
+  payload_save: (a: Record<string, unknown>) => {
+    (window as never as { __saved: unknown[] }).__saved ??= [];
+    (window as never as { __saved: unknown[] }).__saved.push({
+      path: a.path,
+      contents: atob(a.contentsBase64 as string),
+    });
+    return null;
+  },
+  connection_list_topics: () =>
+    // Well past ResourceCategory's VIRTUALIZE_THRESHOLD (50), so the
+    // react-window path is the one exercised.
+    [
+      { name: "orders", partitionCount: 2 },
+      { name: "payments", partitionCount: 2 },
+      ...Array.from({ length: 300 }, (_, i) => ({ name: `topic-${i}`, partitionCount: 1 })),
+    ],
   connection_list_brokers: () => [{ id: 1, host: "localhost", port: 9092 }],
-  connection_list_consumer_groups: () => [],
+  // Past ResourceCategory's VIRTUALIZE_THRESHOLD (50), so the react-window
+  // path is the one exercised. (Topics deliberately uses its own
+  // non-virtualized TopicCategory.)
+  connection_list_consumer_groups: () =>
+    Array.from({ length: 300 }, (_, i) => ({ groupId: `group-${i}`, state: "Stable", members: 1 })),
   connection_list_partitions: () => [
     { id: 0, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 100 },
     { id: 1, leader: 1, replicas: [1], isr: [1], lowOffset: 0, highOffset: 100 },
   ],
   connection_count_topic_messages: () => 200,
   connection_describe_topic_config: () => [],
-  topic_schema_get: () => null,
+  // Per-format, so the Schema tab's Avro/Protobuf switch can be exercised.
+  topic_schema_get: (a: Record<string, unknown>) =>
+    (window as never as { __schemas: Record<string, string> }).__schemas?.[a.format as string] ?? null,
+  topic_schema_set: (a: Record<string, unknown>) => {
+    const w = window as never as { __schemas: Record<string, string> };
+    w.__schemas ??= {};
+    w.__schemas[a.format as string] = a.schemaText as string;
+    return null;
+  },
+  topic_schema_delete: (a: Record<string, unknown>) => {
+    const w = window as never as { __schemas: Record<string, string> };
+    delete w.__schemas?.[a.format as string];
+    return null;
+  },
+  // Mirrors the real command's return shape. `__protobufSource` switches
+  // between the schema-decoded and the field-numbers-only renderings so both
+  // UI states can be looked at.
+  connection_decode_protobuf: () => {
+    const source = (window as never as { __protobufSource?: string }).__protobufSource ?? "manual";
+    if (source === "none") {
+      return {
+        value: { "1": "ORD-10042", "2": 2, "3": true, "5": { "1": "Ada Lovelace" } },
+        source: "none",
+        messageType: null,
+      };
+    }
+    return {
+      value: {
+        order_id: "ORD-10042",
+        quantity: 2,
+        paid: true,
+        customer: { name: "Ada Lovelace", email: "ada@example.com" },
+        tags: ["priority", "gift"],
+      },
+      source,
+      messageType: "shop.Order",
+    };
+  },
   connection_fetch_messages: async (a: Record<string, unknown>) => {
     const filter = a.filter as { includePayload: boolean };
     const requestId = a.requestId as string;

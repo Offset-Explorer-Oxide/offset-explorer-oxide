@@ -1,5 +1,6 @@
 use chrono::Utc;
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 use sqlx::sqlite::SqlitePool;
 
@@ -18,7 +19,7 @@ pub async fn get(
     .fetch_optional(pool)
     .await
     .change_context(AppError::Db)
-    .attach_printable_lazy(|| format!("failed to load schema for {connection_id}/{topic}/{format}"))
+    .attach_with(|| format!("failed to load schema for {connection_id}/{topic}/{format}"))
 }
 
 pub async fn set(
@@ -43,7 +44,7 @@ pub async fn set(
     .execute(pool)
     .await
     .change_context(AppError::Db)
-    .attach_printable_lazy(|| format!("failed to save schema for {connection_id}/{topic}/{format}"))?;
+    .attach_with(|| format!("failed to save schema for {connection_id}/{topic}/{format}"))?;
 
     Ok(())
 }
@@ -65,7 +66,7 @@ pub async fn delete(
     .execute(pool)
     .await
     .change_context(AppError::Db)
-    .attach_printable_lazy(|| {
+    .attach_with(|| {
         format!("failed to delete schema for {connection_id}/{topic}/{format}")
     })?;
 
@@ -84,7 +85,7 @@ pub async fn delete_all_for_connection(
         .execute(pool)
         .await
         .change_context(AppError::Db)
-        .attach_printable_lazy(|| {
+        .attach_with(|| {
             format!("failed to delete topic schemas for connection {connection_id}")
         })?;
 

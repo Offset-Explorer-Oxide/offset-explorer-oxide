@@ -108,3 +108,31 @@ describe("JsonTreeView", () => {
     expect(screen.getByText('"a-1"')).toBeInTheDocument();
   });
 });
+
+describe("JsonTreeView line numbers and toolbar", () => {
+  it("numbers the lines only when asked to", () => {
+    const { container, rerender } = render(<JsonTreeView value={{ a: 1 }} />);
+    expect(container.querySelector(".json-tree-body--numbered")).toBeNull();
+
+    rerender(<JsonTreeView value={{ a: 1 }} lineNumbers />);
+    expect(container.querySelector(".json-tree-body--numbered")).not.toBeNull();
+  });
+
+  // The indent has to sit on the line's content rather than on the line box,
+  // or the number column staggers right along with each node's depth.
+  it("keeps the indent off the line box so the number column stays straight", () => {
+    const { container } = render(<JsonTreeView value={{ outer: { inner: 1 } }} lineNumbers />);
+
+    for (const line of container.querySelectorAll<HTMLElement>(".json-tree-line")) {
+      expect(line.style.paddingLeft).toBe("");
+      expect(line.querySelector(".json-tree-line-content")).not.toBeNull();
+    }
+  });
+
+  it("hides its own toolbar when the surrounding panel provides one", () => {
+    const { container } = render(<JsonTreeView value={{ a: 1 }} onOpenInNewTab={() => {}} showToolbar={false} />);
+
+    expect(container.querySelector(".json-tree-toolbar")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+  });
+});

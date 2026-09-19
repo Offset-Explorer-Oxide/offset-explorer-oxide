@@ -1,5 +1,5 @@
 import { CSSProperties, useRef, useState } from "react";
-import { FixedSizeList } from "react-window";
+import { List } from "react-window";
 import { CategoryLoadWarning, CategoryWarningMarker } from "./CategoryLoadWarning";
 import { ContextMenu, ContextMenuItem } from "../../components/ContextMenu";
 import { ROW_HEIGHT_PX, useTreeListRows } from "./useTreeListHeight";
@@ -136,16 +136,21 @@ export function ResourceCategory<T>({
           {error && <CategoryLoadWarning label={label} error={error} />}
           {isLoading && <p>Loading…</p>}
           {filtered.length > VIRTUALIZE_THRESHOLD ? (
-            <FixedSizeList
+            // react-window v2 replaced `FixedSizeList` with a single `List`:
+            // rows come from a `rowComponent` rather than a child render
+            // function, the height moves from a `height` prop into `style`,
+            // and `tagName` sets the scroll container's element — which is
+            // where the `<ul>` now lives, since v2 renders rows as its direct
+            // children instead of wrapping them in an inner element.
+            <List
               className="resource-item-list"
-              innerElementType="ul"
-              height={Math.min(filtered.length, visibleRows) * ROW_HEIGHT_PX}
-              width="100%"
-              itemCount={filtered.length}
-              itemSize={ROW_HEIGHT_PX}
-            >
-              {({ index, style }) => renderItem(filtered[index], { ...style, marginBottom: 0 })}
-            </FixedSizeList>
+              tagName="ul"
+              style={{ height: Math.min(filtered.length, visibleRows) * ROW_HEIGHT_PX }}
+              rowCount={filtered.length}
+              rowHeight={ROW_HEIGHT_PX}
+              rowProps={{}}
+              rowComponent={({ index, style }) => renderItem(filtered[index], { ...style, marginBottom: 0 })}
+            />
           ) : (
             <ul className="resource-item-list">{filtered.map((item) => renderItem(item))}</ul>
           )}

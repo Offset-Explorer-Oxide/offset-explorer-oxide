@@ -1,4 +1,5 @@
-use error_stack::{Result, ResultExt};
+use error_stack::ResultExt;
+use kafkaoxide_core::Result;
 use kafkaoxide_core::AppError;
 
 /// Decodes a `GroupMemberInfo::assignment()` byte slice (Kafka's
@@ -47,7 +48,7 @@ impl<'a> Cursor<'a> {
             .bytes
             .get(self.pos..self.pos + 2)
             .ok_or_else(|| error_stack::Report::new(AppError::Kafka))
-            .attach_printable("truncated assignment: expected i16")?;
+            .attach("truncated assignment: expected i16")?;
         self.pos += 2;
         Ok(i16::from_be_bytes([slice[0], slice[1]]))
     }
@@ -57,7 +58,7 @@ impl<'a> Cursor<'a> {
             .bytes
             .get(self.pos..self.pos + 4)
             .ok_or_else(|| error_stack::Report::new(AppError::Kafka))
-            .attach_printable("truncated assignment: expected i32")?;
+            .attach("truncated assignment: expected i32")?;
         self.pos += 4;
         Ok(i32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
     }
@@ -66,18 +67,18 @@ impl<'a> Cursor<'a> {
         let len = self.read_i16()?;
         if len < 0 {
             return Err(error_stack::Report::new(AppError::Kafka))
-                .attach_printable("truncated assignment: null topic name");
+                .attach("truncated assignment: null topic name");
         }
         let len = len as usize;
         let slice = self
             .bytes
             .get(self.pos..self.pos + len)
             .ok_or_else(|| error_stack::Report::new(AppError::Kafka))
-            .attach_printable("truncated assignment: expected topic name bytes")?;
+            .attach("truncated assignment: expected topic name bytes")?;
         self.pos += len;
         String::from_utf8(slice.to_vec())
             .change_context(AppError::Kafka)
-            .attach_printable("assignment topic name is not valid UTF-8")
+            .attach("assignment topic name is not valid UTF-8")
     }
 }
 
