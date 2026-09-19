@@ -54,10 +54,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 24 — the current active LTS (node 20 reached EOL 2026-04-30; 22 has
+      # been in maintenance since 2025-10-21; 24 is supported to 2028-04-30).
+      #
+      # Node 20 is not merely old here, it is unsupported by the toolchain:
+      # vitest 5 declares `engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0` and
+      # jsdom 30 `^22.22.2 || ^24.15.0 || >=26.0.0`. The symptom of ignoring
+      # that was the npm 10.8.2 (node 20) arborist crashing while resolving
+      # vitest's optional peer set — a bare `Cannot read properties of null
+      # (reading 'edgesOut')` in `#loadPeerSet`, naming nothing useful.
+      # Reproduced from a clean checkout of the failing commit: npm 10.8.2
+      # fails, npm 10.9.7 (node 22) and 11.17.0 (node 24) both install the
+      # identical tree cleanly.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
