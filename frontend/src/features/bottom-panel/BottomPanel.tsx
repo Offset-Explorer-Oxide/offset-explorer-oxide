@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
+import { LogsIcon } from "../../components/AppIcons";
 import { LogsPanel } from "./LogsPanel";
 import { useLogsListener } from "./useLogsListener";
 import { useLogsPanelHeight } from "./useLogsPanelHeight";
@@ -135,14 +136,21 @@ export function BottomPanel() {
         />
       )}
       <div className="bottom-panel-status-strip">
+        {/* Icon-only, like the theme button beside it: the strip is the one
+            piece of chrome on screen at every moment, and "▸ Logs" spent a
+            word and a caret on a control whose glyph and pressed state say
+            both. `aria-label` and `title` carry the name that was dropped. */}
         <button
           type="button"
           aria-label="Toggle logs panel"
           aria-expanded={isExpanded}
-          className="bottom-panel-toggle"
+          title="Logs"
+          className={`bottom-panel-toggle bottom-panel-toggle--icon${
+            isExpanded ? " bottom-panel-toggle--active" : ""
+          }`}
           onClick={toggleExpanded}
         >
-          {isExpanded ? "▾" : "▸"} Logs
+          <LogsIcon />
         </button>
         <ThemeMenuButton />
         <div className="bottom-panel-memory">

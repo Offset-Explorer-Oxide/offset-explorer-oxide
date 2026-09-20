@@ -1,11 +1,30 @@
-import { KeyboardEvent, PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import { KeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { FileTreeIcon, GearIcon } from "../../components/AppIcons";
+import { JsonFormatIcon, RawFormatIcon, XmlFormatIcon } from "../../components/FormatIcons";
+import { valueFormat } from "../../components/ValueFormatSelect";
+import { JsonViewerTab, useJsonViewerTabsStore } from "./useJsonViewerTabsStore";
 import { useTabsStore } from "./useTabsStore";
-import { useJsonViewerTabsStore } from "./useJsonViewerTabsStore";
 import { mergeTabOrder, useTabOrderStore } from "./useTabOrderStore";
 import { SETTINGS_TAB_ID, useSettingsPanelStore } from "../settings/useSettingsPanelStore";
 import { closeAppWindow } from "../../lib/appWindow";
 
 type PendingClose = { kind: "tab" | "json"; id: string };
+
+/**
+ * The glyph a viewer tab is prefixed with.
+ *
+ * Prefers the format it was opened *as* — a Hex tab and a Raw tab are both
+ * `kind: "text"` and render identically, which is the right grouping for the
+ * panel and the wrong one for an icon. Falls back to the kind for a tab
+ * opened without a format (nothing in the app does today; the field is
+ * optional so nothing has to).
+ */
+function jsonTabIcon(tab: JsonViewerTab): ReactNode {
+  if (tab.format) return valueFormat(tab.format).icon;
+  if (tab.kind === "xml") return <XmlFormatIcon />;
+  if (tab.kind === "text") return <RawFormatIcon />;
+  return <JsonFormatIcon />;
+}
 
 export function TabBar() {
   const tabs = useTabsStore((s) => s.tabs);
@@ -217,7 +236,10 @@ export function TabBar() {
                   />
                 ) : (
                   <>
-                    <span>{tab.name}</span>
+                    <span className="tab-icon" aria-hidden="true">
+                      <FileTreeIcon />
+                    </span>
+                    <span className="tab-label">{tab.name}</span>
                     <button
                       type="button"
                       className="tab-close"
@@ -267,7 +289,10 @@ export function TabBar() {
                 />
               ) : (
                 <>
-                  <span>{jsonTab.name}</span>
+                  <span className="tab-icon" aria-hidden="true">
+                    {jsonTabIcon(jsonTab)}
+                  </span>
+                  <span className="tab-label">{jsonTab.name}</span>
                   <button
                     type="button"
                     className="tab-close"
@@ -294,7 +319,10 @@ export function TabBar() {
             onClick={() => handleTabClick(SETTINGS_TAB_ID)}
             onKeyDown={(e) => handleTabKeyDown(e, SETTINGS_TAB_ID)}
           >
-            <span>Settings</span>
+            <span className="tab-icon" aria-hidden="true">
+              <GearIcon />
+            </span>
+            <span className="tab-label">Settings</span>
             <button
               type="button"
               className="tab-close"

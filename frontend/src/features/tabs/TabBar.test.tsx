@@ -29,6 +29,61 @@ beforeEach(() => {
 });
 
 describe("TabBar", () => {
+  /**
+   * The icon is the part of a tab that survives a crowded strip — names
+   * ellipsise, glyphs don't — so what matters is that each kind of tab gets
+   * one, and that a viewer tab's glyph follows the *format* it was opened as
+   * rather than the render `kind` several formats share.
+   */
+  describe("tab icons", () => {
+    function iconMarkupFor(tab: HTMLElement): string {
+      const icon = tab.querySelector(".tab-icon");
+      expect(icon).not.toBeNull();
+      return (icon as HTMLElement).innerHTML;
+    }
+
+    it("prefixes every kind of tab with an icon", () => {
+      useTabsStore.setState({ tabs: [{ id: "1", name: "Alpha", position: 0 }], activeTabId: "1" });
+      useJsonViewerTabsStore.setState({
+        tabs: [{ id: "j1", title: "Offset 1", name: "Json", kind: "json", format: "json", value: {} }],
+      });
+      useSettingsPanelStore.setState({ isOpen: true });
+      render(<TabBar />);
+
+      for (const name of ["Alpha", "Offset 1", "Settings"]) {
+        iconMarkupFor(screen.getByRole("tab", { name }));
+      }
+    });
+
+    it("gives Hex and Raw viewer tabs different icons, though both render as text", () => {
+      useJsonViewerTabsStore.setState({
+        tabs: [
+          { id: "j1", title: "Offset 1 · Hex", name: "Hex", kind: "text", format: "hex", value: "" },
+          { id: "j2", title: "Offset 1 · Raw", name: "Raw", kind: "text", format: "raw", value: "" },
+        ],
+      });
+      render(<TabBar />);
+
+      const hex = iconMarkupFor(screen.getByRole("tab", { name: "Offset 1 · Hex" }));
+      const raw = iconMarkupFor(screen.getByRole("tab", { name: "Offset 1 · Raw" }));
+      expect(hex).not.toBe(raw);
+    });
+
+    it("falls back to the render kind when a viewer tab carries no format", () => {
+      useJsonViewerTabsStore.setState({
+        tabs: [
+          { id: "j1", title: "Doc", name: "Xml", kind: "xml", value: {} },
+          { id: "j2", title: "Text", name: "Text", kind: "text", value: "" },
+        ],
+      });
+      render(<TabBar />);
+
+      const xml = iconMarkupFor(screen.getByRole("tab", { name: "Doc" }));
+      const text = iconMarkupFor(screen.getByRole("tab", { name: "Text" }));
+      expect(xml).not.toBe(text);
+    });
+  });
+
   it("renders tabs and selects one on click", async () => {
     useTabsStore.setState({
       tabs: [

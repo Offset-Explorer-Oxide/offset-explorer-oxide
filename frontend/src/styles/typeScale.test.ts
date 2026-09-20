@@ -63,6 +63,38 @@ describe("global.css typography", () => {
     expect(css).toContain(".code-view--monospace");
   });
 
+  /**
+   * Guards the fix for "font format is not working on the payload".
+   *
+   * Form controls carry a UA font declaration of their own, which beats
+   * inheritance, so `body`'s family never reached a single button, input or
+   * textarea in the app — the panel tabs, the sidebar actions, the settings
+   * tabs and the value-format picker all rendered in the browser default
+   * whatever the user chose. One element-selector reset fixes every one of
+   * them, and nothing about writing a new `<button>` would ever remind
+   * anyone it has to be there.
+   */
+  it("makes form controls inherit the font instead of the UA's own", () => {
+    const start = css.indexOf("\nbutton,\ninput,\nselect,\ntextarea {");
+    expect(start, "a button/input/select/textarea reset should exist").toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf("}", start));
+    expect(block).toContain("font-family: inherit");
+    expect(block).toContain("font-size: inherit");
+  });
+
+  /**
+   * The gutter is a `<pre>`, and `pre { font-family: monospace }` in the UA
+   * stylesheet applies to it *directly* — so the family `.code-view` sets for
+   * the gutter and the body together reached only the body, and the line
+   * numbers ignored the font setting beside a payload that followed it.
+   */
+  it("gives the line-number gutter a family of its own", () => {
+    const start = css.indexOf("\n.code-gutter {");
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, css.indexOf("}", start));
+    expect(block).toContain("font-family:");
+  });
+
   it("routes the code surfaces through --font-family-mono", () => {
     for (const selector of [".logs-panel", ".code-view", ".message-payload-body", ".json-tree", ".topic-schema-editor"]) {
       const start = css.indexOf(`\n${selector} {`);

@@ -69,7 +69,7 @@ describe("App", () => {
 
     expect(screen.queryByRole("dialog", { name: "New Connection" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.click(screen.getByRole("button", { name: "Add Cluster" }));
 
     expect(screen.getByRole("dialog", { name: "New Connection" })).toBeInTheDocument();
   });
@@ -100,7 +100,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("No connections yet. Add one to get started.");
 
-    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.click(screen.getByRole("button", { name: "Add Cluster" }));
     await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
     await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
     await user.click(screen.getByRole("button", { name: "Add" }));
@@ -139,7 +139,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("No connections yet. Add one to get started.");
 
-    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.click(screen.getByRole("button", { name: "Add Cluster" }));
     await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
     await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
     await user.click(screen.getByRole("button", { name: "Add" }));
@@ -177,7 +177,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("No connections yet. Add one to get started.");
 
-    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.click(screen.getByRole("button", { name: "Add Cluster" }));
     await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
     await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
     await user.click(screen.getByRole("button", { name: "Add" }));
@@ -200,7 +200,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("No connections yet. Add one to get started.");
 
-    await user.click(screen.getByRole("button", { name: "+ Add Cluster" }));
+    await user.click(screen.getByRole("button", { name: "Add Cluster" }));
     await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
     await user.type(screen.getByLabelText("Bootstrap servers"), "localhost:9092");
     await user.click(screen.getByRole("button", { name: "Add" }));

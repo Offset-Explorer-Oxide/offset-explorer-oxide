@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { ValueMode } from "../workspace/useMessageViewerPrefsStore";
 import { useTabOrderStore } from "./useTabOrderStore";
 import { useTabsStore } from "./useTabsStore";
 
@@ -16,13 +17,27 @@ export interface JsonViewerTab {
   /** Short, user-renamable label shown in the tab strip — defaults to "Json"/"Xml". */
   name: string;
   kind: JsonViewerTabKind;
+  /**
+   * The payload format the tab was opened *as*, when it came from the
+   * message payload viewer — purely so the tab strip can show that format's
+   * own glyph.
+   *
+   * `kind` cannot stand in for it and is not meant to: three formats
+   * (Raw/Hex/Base64) share `"text"` because they render identically, and
+   * three more (JSON/Avro/Protobuf) share `"json"` for the same reason. That
+   * is the right grouping for *rendering* and the wrong one for an icon,
+   * where the whole point is telling a hex dump from a raw string at a
+   * glance. Optional because a tab can be opened without one, and the strip
+   * falls back to the `kind`.
+   */
+  format?: ValueMode;
   value: unknown;
 }
 
 interface JsonViewerTabsState {
   tabs: JsonViewerTab[];
   /** Creates a new ephemeral viewer tab and returns its id — doesn't activate it, callers do that via useTabsStore.selectTab. */
-  openTab: (title: string, value: unknown, kind?: JsonViewerTabKind) => string;
+  openTab: (title: string, value: unknown, kind?: JsonViewerTabKind, format?: ValueMode) => string;
   closeTab: (id: string) => void;
   /** Renames the tab strip's short label — the panel header (title) is unaffected. */
   renameTab: (id: string, name: string) => void;
@@ -48,10 +63,10 @@ function defaultName(kind: JsonViewerTabKind): string {
  */
 export const useJsonViewerTabsStore = create<JsonViewerTabsState>((set) => ({
   tabs: [],
-  openTab: (title, value, kind = "json") => {
+  openTab: (title, value, kind = "json", format) => {
     const id = generateId();
     useTabOrderStore.getState().registerAfter(id, useTabsStore.getState().activeTabId);
-    set((state) => ({ tabs: [...state.tabs, { id, title, value, kind, name: defaultName(kind) }] }));
+    set((state) => ({ tabs: [...state.tabs, { id, title, value, kind, format, name: defaultName(kind) }] }));
     return id;
   },
   closeTab: (id) => {
