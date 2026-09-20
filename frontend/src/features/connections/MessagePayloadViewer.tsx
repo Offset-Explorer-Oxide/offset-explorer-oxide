@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { LineNumberedText } from "../../components/LineNumberedText";
+import { CheckIcon, CopyIcon, DownloadIcon, SaveIcon } from "../../components/AppIcons";
 import { ValueFormatSelect, valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { api } from "../../lib/tauri";
@@ -17,10 +18,12 @@ import {
 } from "../workspace/useMessageViewerPrefsStore";
 import { tabDataKey } from "../workspace/useTabDataStore";
 import {
+  base64DecodedLength,
   base64ToBytes,
   base64ToDisplayText,
   bytesToHexDump,
   bytesToText,
+  formatPayloadSize,
   formatXmlNode,
   isPayloadTruncated,
   textToBase64,
@@ -83,48 +86,11 @@ function CloseIcon() {
   );
 }
 
-function CopyIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" stroke="currentColor" />
-      <path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1" stroke="currentColor" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function ExternalLinkIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <path d="M6.5 3.5h-3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3" stroke="currentColor" />
       <path d="M9.5 2.5h4v4M13.3 2.7L7.5 8.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-/** A floppy disk — Save, which writes what is on screen in the chosen format. */
-function SaveIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2.5 3.5a1 1 0 0 1 1-1h7.6l2.4 2.4v7.6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9Z" stroke="currentColor" />
-      <path d="M5 2.5v4h6v-4M5 13.5v-4h6v4" stroke="currentColor" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-/** An arrow into a tray — Download, which writes the payload's original bytes. */
-function DownloadIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M8 2v7.5m0 0L5.2 6.7M8 9.5l2.8-2.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.8 11v1.5a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1V11" stroke="currentColor" strokeLinecap="round" />
     </svg>
   );
 }
@@ -271,6 +237,20 @@ export function MessagePayloadViewer() {
   // otherwise indistinguishable from the whole of a small one.
   const payloadBase64 = needsFullPayload ? (fetchedPayloadBase64 ?? rowPayloadBase64) : rowPayloadBase64;
   const isShowingPreviewOnly = needsFullPayload && fetchedPayloadBase64 === null;
+  /**
+   * How big the *message* is, not how much of it is on screen.
+   *
+   * `payloadSizeBytes` is what the broker reported and the backend sends it
+   * on every row — including rows fetched without their payload — so it is
+   * the only figure that stays right while a bounded preview is what's
+   * loaded. Measuring `payloadBase64` instead would report the size of the
+   * slice, which is the one thing this label must never do: the whole reason
+   * to show it is to tell a 2 KB record from a 40 MB one before deciding to
+   * open it. The base64 is the fallback for the rare message the backend
+   * sent no size for.
+   */
+  const payloadSizeBytes =
+    message?.payloadSizeBytes ?? (payloadBase64 === null ? null : base64DecodedLength(payloadBase64));
   // A failed fetch is not still in flight: the banner above says why, and the
   // views below go back to reporting what they actually have rather than
   // spinning for a payload that is never going to arrive.
@@ -435,21 +415,40 @@ export function MessagePayloadViewer() {
     }
   }
 
+  /**
+   * What the opened tab is told about where its value came from: the format
+   * it was read as (its glyph in the tab strip), the payload's original
+   * bytes and a filename stem — so that tab can offer the same Copy/Save/
+   * Download this toolbar does rather than being a read-only dead end.
+   *
+   * The bytes are omitted while only a preview is loaded, for the reason
+   * `incompletePayloadReason` exists: a Download that silently writes a few
+   * KB of a multi-megabyte message is the worst version of this bug, and
+   * there is no banner in that tab to warn about it.
+   */
+  function origin(format: ValueMode) {
+    return {
+      format,
+      payloadBase64: isShowingPreviewOnly || payloadBase64 === null ? undefined : payloadBase64,
+      fileStem: fileStem(),
+    };
+  }
+
   function handleOpenInNewTab() {
     if (mode === "json" && json !== undefined) {
-      selectTab(openJsonTab(messageLabel(), json, "json", "json"));
+      selectTab(openJsonTab(messageLabel(), json, "json", origin("json")));
       return;
     }
     if (mode === "avro" && avroDecodeIsCurrent) {
-      selectTab(openJsonTab(messageLabel(), decodeAvro.data, "json", "avro"));
+      selectTab(openJsonTab(messageLabel(), decodeAvro.data, "json", origin("avro")));
       return;
     }
     if (mode === "protobuf" && protobufDecodeIsCurrent) {
-      selectTab(openJsonTab(messageLabel(), decodeProtobuf.data.value, "json", "protobuf"));
+      selectTab(openJsonTab(messageLabel(), decodeProtobuf.data.value, "json", origin("protobuf")));
       return;
     }
     if (mode === "xml" && xml !== undefined) {
-      selectTab(openJsonTab(messageLabel(), xml, "xml", "xml"));
+      selectTab(openJsonTab(messageLabel(), xml, "xml", origin("xml")));
       return;
     }
     // Deliberately `literal.text`, not `currentViewText()`: the tab gets
@@ -464,7 +463,7 @@ export function MessagePayloadViewer() {
       report("error", "open", `Nothing to open — the payload isn't valid ${valueFormat(mode).label}.`);
       return;
     }
-    selectTab(openJsonTab(`${messageLabel()} · ${valueFormat(mode).label}`, content, "text", mode));
+    selectTab(openJsonTab(`${messageLabel()} · ${valueFormat(mode).label}`, content, "text", origin(mode)));
   }
 
   /**
@@ -632,6 +631,14 @@ export function MessagePayloadViewer() {
               <div className="message-payload-toolbar">
                 <ValueFormatSelect value={mode} onChange={setMode} />
                 <div className="message-payload-toolbar-actions">
+                  {payloadSizeBytes !== null && (
+                    <span
+                      className="message-payload-size"
+                      title={`Payload size: ${payloadSizeBytes.toLocaleString()} bytes`}
+                    >
+                      {formatPayloadSize(payloadSizeBytes)}
+                    </span>
+                  )}
                   <button
                     type="button"
                     className="json-tree-icon-button"

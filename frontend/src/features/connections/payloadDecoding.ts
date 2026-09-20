@@ -253,6 +253,26 @@ export function searchSeesPartialValue(
 }
 
 /**
+ * A payload's size, in the unit that makes it readable — bytes under a
+ * kilobyte, then KB, then MB.
+ *
+ * Scaled rather than always in bytes (which is what `formatBytes` in
+ * `publishMessages.ts` does, deliberately, because a *draft* being published
+ * is usually a few hundred bytes and the exact count is the interesting
+ * number). A fetched message is as likely to be four megabytes, and
+ * "4,194,304 bytes" in a toolbar is a number to be counted rather than read.
+ *
+ * One decimal for KB and two for MB, so the figure stays the same width as
+ * it grows and a 1.05 MB payload doesn't render as "1 MB" — the difference
+ * between one and four megabytes is exactly what this is for.
+ */
+export function formatPayloadSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/**
  * Whether `payloadBase64` holds only part of the message it came from.
  *
  * The Data tab's fetch asks the backend for a bounded slice of each payload,

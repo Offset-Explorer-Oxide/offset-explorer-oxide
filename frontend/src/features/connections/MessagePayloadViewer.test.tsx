@@ -1190,6 +1190,69 @@ describe("MessagePayloadViewer font handling", () => {
   });
 });
 
+describe("MessagePayloadViewer payload size", () => {
+  it("shows the size beside the toolbar actions, scaled to a readable unit", () => {
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("hello"),
+        payloadSizeBytes: 4 * 1024 * 1024,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByText("4.00 MB")).toBeInTheDocument();
+  });
+
+  /**
+   * The row's `payloadBase64` is a bounded preview — the size label has to
+   * report the *message*, or it would say "4 KB" for the 40 MB record the
+   * user is deciding whether to open, which is the one thing it exists to
+   * prevent.
+   */
+  it("reports the message's size, not the size of the preview slice it was handed", () => {
+    setInvokeHandlers({ connection_fetch_messages: () => new Promise(() => {}) });
+    useMessageViewerStore.setState({
+      connectionId: "1",
+      topic: "orders",
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("x".repeat(4096)),
+        payloadSizeBytes: 40 * 1024 * 1024,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByText("40.00 MB")).toBeInTheDocument();
+    expect(screen.queryByText("4.0 KB")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the payload itself when the backend reported no size", () => {
+    useMessageViewerStore.setState({
+      message: {
+        partition: 0,
+        offset: 1,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("x".repeat(2048)),
+        payloadSizeBytes: null,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+  });
+});
+
 describe("MessagePayloadViewer protobuf", () => {
   function viewMessage() {
     useMessageViewerStore.setState({

@@ -1,9 +1,8 @@
-import { DataTab } from "./DataTab";
 import { PartitionPropertiesTab } from "./PartitionPropertiesTab";
-import { PartitionReplicasTab } from "./PartitionReplicasTab";
 import { PublishTab } from "./PublishTab";
 import { PartitionTabId, usePartitionPanelTabStore } from "./usePartitionPanelTabStore";
 import { useTabsStore } from "../tabs/useTabsStore";
+import { DataTab, PartitionReplicasTab } from "./gridTabs";
 
 export interface PartitionDetailPanelProps {
   connectionId: string;

@@ -31,13 +31,38 @@ export interface JsonViewerTab {
    * falls back to the `kind`.
    */
   format?: ValueMode;
+  /**
+   * The message's original bytes, when this tab was opened from one.
+   *
+   * Carried so the tab can offer the same **Download** the payload viewer
+   * does — the bytes exactly as the broker holds them. `value` cannot stand
+   * in for it: by the time it reaches here it has been through a lossy UTF-8
+   * decode and, for JSON/XML/Avro, a parse — saving that back produces a
+   * file that no longer round-trips. Absent for a tab opened from anything
+   * that isn't a message, and Download is then not offered rather than
+   * offered and wrong.
+   */
+  payloadBase64?: string;
+  /** `partition-0-offset-42` — the filename stem Save and Download default to. */
+  fileStem?: string;
   value: unknown;
+}
+
+/**
+ * What a tab opened from the message payload viewer knows about where its
+ * value came from. Grouped into one argument rather than three more
+ * positional parameters on `openTab`, which would otherwise take five.
+ */
+export interface JsonViewerTabOrigin {
+  format?: ValueMode;
+  payloadBase64?: string;
+  fileStem?: string;
 }
 
 interface JsonViewerTabsState {
   tabs: JsonViewerTab[];
   /** Creates a new ephemeral viewer tab and returns its id — doesn't activate it, callers do that via useTabsStore.selectTab. */
-  openTab: (title: string, value: unknown, kind?: JsonViewerTabKind, format?: ValueMode) => string;
+  openTab: (title: string, value: unknown, kind?: JsonViewerTabKind, origin?: JsonViewerTabOrigin) => string;
   closeTab: (id: string) => void;
   /** Renames the tab strip's short label — the panel header (title) is unaffected. */
   renameTab: (id: string, name: string) => void;
@@ -63,10 +88,10 @@ function defaultName(kind: JsonViewerTabKind): string {
  */
 export const useJsonViewerTabsStore = create<JsonViewerTabsState>((set) => ({
   tabs: [],
-  openTab: (title, value, kind = "json", format) => {
+  openTab: (title, value, kind = "json", origin) => {
     const id = generateId();
     useTabOrderStore.getState().registerAfter(id, useTabsStore.getState().activeTabId);
-    set((state) => ({ tabs: [...state.tabs, { id, title, value, kind, format, name: defaultName(kind) }] }));
+    set((state) => ({ tabs: [...state.tabs, { id, title, value, kind, ...origin, name: defaultName(kind) }] }));
     return id;
   },
   closeTab: (id) => {

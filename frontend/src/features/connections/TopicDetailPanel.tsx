@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { ConfigTab } from "./ConfigTab";
-import { DataTab } from "./DataTab";
 import { PartitionsTab } from "./PartitionsTab";
 import { TopicPropertiesTab } from "./TopicPropertiesTab";
 import { TopicSchemaTab } from "./TopicSchemaTab";
+import { DataTab } from "./gridTabs";
 
 export interface TopicDetailPanelProps {
   connectionId: string;

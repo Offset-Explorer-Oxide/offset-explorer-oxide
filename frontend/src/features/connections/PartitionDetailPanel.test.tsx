@@ -29,12 +29,16 @@ describe("PartitionDetailPanel", () => {
     expect(screen.getByRole("heading", { name: "orders · Partition 2" })).toBeInTheDocument();
   });
 
-  it("opens on the Data tab by default, pre-filling and disabling the partition filter", () => {
+  // The tab bar is immediate; the Data tab's body is not. It lives behind a
+  // `lazy()` boundary because it pulls AG Grid, two thirds of the bundle (see
+  // `gridTabs.tsx`), so its fields have to be awaited rather than queried
+  // synchronously.
+  it("opens on the Data tab by default, pre-filling and disabling the partition filter", async () => {
     setInvokeHandlers({ connection_list_partitions: () => [] });
     renderWithClient(<PartitionDetailPanel connectionId="1" topicName="orders" partitionId={2} />);
 
     expect(screen.getByRole("tab", { name: "Data" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("2");
+    expect(await screen.findByLabelText("Partition filter")).toHaveValue("2");
     expect(screen.getByLabelText("Partition filter")).toBeDisabled();
   });
 
@@ -119,7 +123,11 @@ describe("PartitionDetailPanel", () => {
     expect(await screen.findByLabelText("Id")).toHaveValue("0");
   });
 
-  it("updates the Data tab's partition filter when switching to a different partition while already on Data", () => {
+  // `findBy`, not `getBy`, for the first query: the Data tab is behind a
+  // `lazy()` boundary (see `gridTabs.tsx`). Without the await this passed only
+  // because an earlier case in this file had already resolved that chunk —
+  // run on its own with `-t`, it failed.
+  it("updates the Data tab's partition filter when switching to a different partition while already on Data", async () => {
     setInvokeHandlers({ connection_list_partitions: () => [] });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     const { rerender } = render(
@@ -127,7 +135,7 @@ describe("PartitionDetailPanel", () => {
         <PartitionDetailPanel connectionId="1" topicName="orders" partitionId={0} />
       </QueryClientProvider>,
     );
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("0");
+    expect(await screen.findByLabelText("Partition filter")).toHaveValue("0");
 
     rerender(
       <QueryClientProvider client={client}>

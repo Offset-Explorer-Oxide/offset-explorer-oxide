@@ -19,16 +19,32 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 24, in step with `release.yml` — and not merely because 20 is old.
+      # Node 20 is unsupported by this toolchain: vitest 5 declares
+      # `engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0` and jsdom 30
+      # `^22.22.2 || ^24.15.0 || >=26.0.0`. The symptom of ignoring that is
+      # npm 10.8.2 (the one node 20 ships) crashing in arborist while it
+      # resolves vitest's optional peer set — a bare `Cannot read properties
+      # of null (reading 'edgesOut')` naming nothing useful, ten seconds into
+      # `npm install`, which is exactly how this job was failing. Release was
+      # moved off node 20 for this; coverage was not, and kept failing on its
+      # own.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install frontend dependencies
         run: npm --prefix frontend install
 
+      # Pinned to the same version as `rust-toolchain.toml` and
+      # `release.yml`, not `@stable`. With a toolchain file in the repo,
+      # `@stable` installs `llvm-tools-preview` onto *stable* and then every
+      # `cargo` call in the tree is overridden to 1.98.1, which does not have
+      # it — so `cargo llvm-cov` is left asking rustup to install the
+      # component it was supposed to already have.
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: llvm-tools-preview
 
