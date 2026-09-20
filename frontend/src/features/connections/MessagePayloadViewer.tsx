@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { LineNumberedText } from "../../components/LineNumberedText";
-import { CheckIcon, CopyIcon, DownloadIcon, SaveIcon } from "../../components/AppIcons";
+import { CheckIcon, CopyIcon, DownloadIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
+import { useJsonTreeControl } from "../../components/jsonTreeExpansion";
 import { ValueFormatSelect, valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { api } from "../../lib/tauri";
@@ -52,6 +53,13 @@ export const TEXT_PREVIEW_CHARS = 256 * 1024;
  * byte by byte.
  */
 export const HEX_PREVIEW_BYTES = 64 * 1024;
+
+/**
+ * The formats that render as a collapsible tree, and so the ones Expand all
+ * has anything to act on. XML is a tree too, but `XmlTreeView`'s own, with
+ * its own collapse state — this button doesn't reach it.
+ */
+const TREE_MODES: ValueMode[] = ["json", "avro", "protobuf"];
 
 /** Which toolbar button a status line came from. */
 type ToolbarAction = "copy" | "open" | "save" | "download";
@@ -209,6 +217,10 @@ export function MessagePayloadViewer() {
   const [status, setStatus] = useState<{ kind: "ok" | "error"; action: ToolbarAction; message: string } | null>(null);
   /** The pending clear for `status`, so a new action cancels the old one's timer rather than racing it. */
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keyed by the payload *and* the format: a different message, or the same
+  // one read as something else, is a different tree, and starts from the
+  // auto-expand rules rather than inheriting an earlier Expand all.
+  const treeControl = useJsonTreeControl(`${mode}:${message?.payloadBase64 ?? ""}`);
   const decodeAvro = useDecodeAvro();
   const { mutate: runDecodeAvro } = decodeAvro;
   const decodeProtobuf = useDecodeProtobuf();
@@ -639,6 +651,27 @@ export function MessagePayloadViewer() {
                       {formatPayloadSize(payloadSizeBytes)}
                     </span>
                   )}
+                  {TREE_MODES.includes(mode) && (
+                    // Disabled rather than hidden when nothing is collapsed:
+                    // a control that vanishes once you've used it reads as a
+                    // bug, and its absence would otherwise be the only
+                    // difference between "this tree is fully open" and "this
+                    // format has no tree".
+                    <button
+                      type="button"
+                      className="json-tree-icon-button"
+                      title={
+                        treeControl.collapsedCount === 0
+                          ? "Everything is already expanded"
+                          : `Expand all (${treeControl.collapsedCount} collapsed)`
+                      }
+                      aria-label="Expand all"
+                      disabled={treeControl.collapsedCount === 0}
+                      onClick={treeControl.expandAll}
+                    >
+                      <ExpandAllIcon />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="json-tree-icon-button"
@@ -738,7 +771,7 @@ export function MessagePayloadViewer() {
                     // message with three entries stays expanded on the next
                     // message where it holds three thousand, rendering all of
                     // them in one pass.
-                    <JsonTreeView key={payloadBase64} value={json} lineNumbers showToolbar={false} />
+                    <JsonTreeView key={payloadBase64} value={json} lineNumbers showToolbar={false} control={treeControl} />
                   ) : (
                     <p role="alert">Payload is not valid JSON.</p>
                   ))}
@@ -749,7 +782,13 @@ export function MessagePayloadViewer() {
                     {decodeAvro.isError && <p role="alert">{decodeAvro.error?.message}</p>}
                     {decodeAvro.isSuccess && (
                       // Same reason as the JSON view above.
-                      <JsonTreeView key={payloadBase64} value={decodeAvro.data} lineNumbers showToolbar={false} />
+                      <JsonTreeView
+                        key={payloadBase64}
+                        value={decodeAvro.data}
+                        lineNumbers
+                        showToolbar={false}
+                        control={treeControl}
+                      />
                     )}
                   </>
                 )}
@@ -781,7 +820,13 @@ export function MessagePayloadViewer() {
                           )}
                         </p>
                         {/* Same reason as the JSON view above. */}
-                        <JsonTreeView key={payloadBase64} value={decodeProtobuf.data.value} lineNumbers showToolbar={false} />
+                        <JsonTreeView
+                          key={payloadBase64}
+                          value={decodeProtobuf.data.value}
+                          lineNumbers
+                          showToolbar={false}
+                          control={treeControl}
+                        />
                       </>
                     )}
                   </>

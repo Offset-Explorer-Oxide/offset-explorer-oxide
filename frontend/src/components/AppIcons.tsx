@@ -145,3 +145,13 @@ export function DownloadIcon() {
     </svg>
   );
 }
+
+/** Two chevrons pushing apart — Expand all, which opens every collapsed node in the tree. */
+export function ExpandAllIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M5 6.2L8 3.2l3 3" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 9.8l3 3 3-3" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

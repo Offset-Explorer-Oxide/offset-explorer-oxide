@@ -233,32 +233,54 @@ textarea {
   border-top: 1px solid var(--color-border);
 }
 
+/* 9px of grab area around a 1px line.
+   The divider used to be a 4px block painted edge to edge in the border
+   colour: a thick rule to look at and a thin target to hit, and hitting it
+   mattered — miss by two pixels and you select the tree item or the grid cell
+   underneath instead. The line is drawn by ::before now, so the visible
+   weight and the pointer target are separate numbers. The target is real
+   layout width rather than an overlay spilling onto the neighbouring panes,
+   which would swallow clicks on the sidebar's and the grid's scrollbars. */
 .resizable-divider {
+  position: relative;
   flex: 0 0 auto;
-  width: 4px;
+  width: 9px;
   cursor: col-resize;
   background: transparent;
   border: none;
   padding: 0;
   touch-action: none;
 }
-.resizable-divider:hover,
-.resizable-divider:active {
+.resizable-divider::before {
+  content: "";
+  position: absolute;
+  /* Centred in the target along the dragged axis, full length across it. */
+  inset: 0 4px;
+  background: transparent;
+}
+.resizable-divider:hover::before,
+.resizable-divider:active::before {
+  /* Thickens as well as colours on hover: the feedback for "you have the
+     handle" reads at a glance, where a 1px colour change does not. */
+  inset: 0 3px;
   background: var(--color-accent);
 }
-.resizable-divider--persistent {
+.resizable-divider--persistent::before {
   background: var(--color-border);
-}
-.resizable-divider--persistent:hover,
-.resizable-divider--persistent:active {
-  background: var(--color-accent);
 }
 /* The divider above a bottom-docked payload panel — the same control one axis
    over, so it only has to restate what the axis changes. */
 .resizable-divider--horizontal {
   width: auto;
-  height: 4px;
+  height: 9px;
   cursor: row-resize;
+}
+.resizable-divider--horizontal::before {
+  inset: 4px 0;
+}
+.resizable-divider--horizontal:hover::before,
+.resizable-divider--horizontal:active::before {
+  inset: 3px 0;
 }
 
 @media (max-width: 900px) {
@@ -1652,6 +1674,16 @@ textarea {
 .json-tree-icon-button:hover {
   color: var(--color-fg);
   border-color: var(--color-accent);
+}
+/* Expand all is disabled when nothing is collapsed, so it needs to *look*
+   inert — the hover rule above otherwise lights it up like a live control. */
+.json-tree-icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.json-tree-icon-button:disabled:hover {
+  color: var(--color-fg-muted);
+  border-color: var(--color-border);
 }
 .json-tree-body {
   background: var(--color-bg);

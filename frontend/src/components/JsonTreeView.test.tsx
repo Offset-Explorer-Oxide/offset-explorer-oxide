@@ -90,9 +90,16 @@ describe("JsonTreeView", () => {
    * for a multi-megabyte one: it renders every node of the document into the
    * DOM at once and the app stops responding until layout finishes.
    */
-  it("starts a large array collapsed instead of rendering all of its children", async () => {
+  it("starts a heavy array collapsed instead of rendering all of its children", async () => {
     const user = userEvent.setup();
-    const items = Array.from({ length: 500 }, (_, i) => `item-${i}`);
+    // 300 objects of four fields is around 1,800 rendered lines — over the
+    // budget, and the shape that actually makes payloads megabytes long.
+    const items = Array.from({ length: 300 }, (_, i) => ({
+      id: `item-${i}`,
+      quantity: i,
+      sku: `sku-${i}`,
+      note: "…",
+    }));
 
     render(<JsonTreeView value={{ events: items }} />);
 
@@ -100,6 +107,34 @@ describe("JsonTreeView", () => {
 
     await user.click(screen.getByRole("button", { name: "Expand events" }));
     expect(screen.getByText('"item-0"')).toBeInTheDocument();
+  });
+
+  /**
+   * The rule counts rendered lines, not entries. A long list of primitives is
+   * one line each — cheap — and used to collapse anyway on a count of 100,
+   * while a much heavier list of 80 fat objects stayed open.
+   */
+  it("expands a long list of primitives, which is cheap to render", () => {
+    const items = Array.from({ length: 500 }, (_, i) => `item-${i}`);
+
+    render(<JsonTreeView value={{ events: items }} />);
+
+    expect(screen.getByText('"item-0"')).toBeInTheDocument();
+    expect(screen.getByText('"item-499"')).toBeInTheDocument();
+  });
+
+  /**
+   * Collapsing the root would render the whole view as a single
+   * `{ 3 keys }` line, so the outline stays open and the weight inside it is
+   * what collapses.
+   */
+  it("keeps the root open on a document too big to expand, collapsing only the heavy node", () => {
+    const items = Array.from({ length: 300 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}`, note: "…" }));
+
+    render(<JsonTreeView value={{ orderId: "a-1", events: items }} />);
+
+    expect(screen.getByText('"a-1"')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand events" })).toBeInTheDocument();
   });
 
   it("still expands an ordinary-sized container on sight", () => {

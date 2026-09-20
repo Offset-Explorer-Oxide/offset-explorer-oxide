@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, afterEach, beforeEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useResizablePanes } from "./useResizablePanes";
@@ -41,8 +41,23 @@ function release() {
   });
 }
 
+/**
+ * jsdom reports a fixed 1024px window, and the pane maxima are capped against
+ * the real one — so a test that wants to drag past 1024px has to say how wide
+ * the window is. Restored after each test so the cap stays predictable.
+ */
+function withViewportWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true, writable: true });
+}
+
+const originalInnerWidth = window.innerWidth;
+
 beforeEach(() => {
   localStorage.clear();
+});
+
+afterEach(() => {
+  withViewportWidth(originalInnerWidth);
 });
 
 describe("useResizablePanes", () => {
@@ -138,6 +153,86 @@ describe("useResizablePanes", () => {
 
     const stored = JSON.parse(localStorage.getItem("test-persist") ?? "{}");
     expect(stored.left).toBe(310);
+  });
+
+  // The static maxima are generous (1000/1100), so on any ordinary window it
+  // is the viewport cap below — not those numbers — that stops a drag.
+  it("lets the left pane be dragged far wider than the old 560px ceiling", () => {
+    withViewportWidth(2560);
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "test-left-wide", defaultLeft: 260 }));
+
+    drag(100, 900, result.current.startResizingLeft);
+
+    expect(result.current.leftWidth).toBe(1000);
+  });
+
+  it("lets the right pane be dragged far wider than the old 640px ceiling", () => {
+    withViewportWidth(2560);
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "test-right-wide", defaultRight: 320 }));
+
+    drag(900, 100, result.current.startResizingRight);
+
+    expect(result.current.rightWidth).toBe(1120 > 1100 ? 1100 : 1120);
+  });
+
+  it("stops a drag before the middle pane is squeezed out", () => {
+    withViewportWidth(1000);
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "test-left-viewport", defaultLeft: 260 }));
+
+    drag(100, 5000, result.current.startResizingLeft);
+
+    // 1000 window - 320 middle - 200 (the right pane's minimum, which is
+    // reserved for it) = 480.
+    expect(result.current.leftWidth).toBe(480);
+  });
+
+  it("gives the right pane the width the left one is not using", () => {
+    withViewportWidth(1000);
+    const { result } = renderHook(() =>
+      useResizablePanes({ storageKey: "test-right-viewport", defaultLeft: 200, defaultRight: 320 }),
+    );
+
+    drag(500, -5000, result.current.startResizingRight);
+
+    // 1000 - 320 middle - the left pane's actual 200 = 480.
+    expect(result.current.rightWidth).toBe(480);
+  });
+
+  it("hands the whole side allowance to the left pane when the right one is docked below", () => {
+    withViewportWidth(1000);
+    const { result } = renderHook(() =>
+      useResizablePanes({ storageKey: "test-left-alone", defaultLeft: 260, rightPaneVisible: false }),
+    );
+
+    drag(100, 5000, result.current.startResizingLeft);
+
+    expect(result.current.leftWidth).toBe(680);
+  });
+
+  // The stored width is the one the user chose on the window they chose it
+  // on; a narrower window shows less of it without overwriting it.
+  it("caps a restored width against the current window", () => {
+    withViewportWidth(1000);
+    localStorage.setItem("test-restore-narrow", JSON.stringify({ left: 900 }));
+
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "test-restore-narrow" }));
+
+    expect(result.current.leftWidth).toBe(480);
+  });
+
+  it("re-caps the panes when the window is resized", () => {
+    withViewportWidth(2560);
+    const { result } = renderHook(() => useResizablePanes({ storageKey: "test-resize", defaultLeft: 260 }));
+
+    drag(100, 900, result.current.startResizingLeft);
+    expect(result.current.leftWidth).toBe(1000);
+
+    act(() => {
+      withViewportWidth(1000);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    expect(result.current.leftWidth).toBe(480);
   });
 
   it("restores persisted widths on mount", () => {

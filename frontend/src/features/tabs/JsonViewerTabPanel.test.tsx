@@ -74,6 +74,47 @@ describe("JsonViewerTabPanel", () => {
  * button and nothing else. These cover the two that write files, including
  * the distinction that makes them two buttons rather than one.
  */
+describe("JsonViewerTabPanel expand all", () => {
+  const heavy = {
+    orderId: "a-1",
+    events: Array.from({ length: 300 }, (_, i) => ({ id: `event-${i}`, seq: i, note: "n" })),
+  };
+
+  it("expands the whole tree, including the levels that weren't rendered yet", async () => {
+    const user = userEvent.setup();
+    render(
+      <JsonViewerTabPanel tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: heavy }} />,
+    );
+
+    expect(screen.queryByText('"event-0"')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+
+    expect(screen.getByText('"event-0"')).toBeInTheDocument();
+    expect(screen.getByText('"event-299"')).toBeInTheDocument();
+  });
+
+  it("disables the button when nothing is collapsed", () => {
+    render(
+      <JsonViewerTabPanel
+        tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: { order: { id: "a-1" } } }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
+  });
+
+  // The XML tab is `XmlTreeView`, which keeps its own collapse state — this
+  // button would have nothing to act on there.
+  it("offers no Expand all on a non-JSON tab", () => {
+    render(
+      <JsonViewerTabPanel tab={{ id: "text-1", title: "Offset 1", name: "Text", kind: "text", value: "plain" }} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Expand all" })).not.toBeInTheDocument();
+  });
+});
+
 describe("JsonViewerTabPanel toolbar", () => {
   const PAYLOAD = btoa('{"orderId":1}');
 

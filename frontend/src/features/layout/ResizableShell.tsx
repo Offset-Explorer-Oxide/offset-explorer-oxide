@@ -29,9 +29,16 @@ export function ResizableShell({
   rightPlacement = "right",
   storageKey = "kafkaoxide.pane-widths",
 }: ResizableShellProps) {
-  const { leftWidth, rightWidth, bottomHeight, startResizingLeft, startResizingRight, startResizingBottom } =
-    useResizablePanes({ storageKey });
   const dockedBelow = rightPlacement === "bottom";
+  // Which panes are really beside the middle one, so each divider's range can
+  // use the width the other pane isn't taking — a hidden sidebar or a
+  // bottom-docked payload panel hands its share back.
+  const { leftWidth, rightWidth, bottomHeight, startResizingLeft, startResizingRight, startResizingBottom } =
+    useResizablePanes({
+      storageKey,
+      leftPaneVisible: Boolean(left) && !leftHidden,
+      rightPaneVisible: Boolean(right) && !dockedBelow,
+    });
 
   return (
     <div className={`resizable-shell resizable-shell--${rightPlacement}`}>
