@@ -675,7 +675,9 @@ describe("MessagePayloadViewer", () => {
 
   it("collapses a large array in a newly selected message even where the previous one was expanded", async () => {
     const small = JSON.stringify({ events: ["only-one"] });
-    const large = JSON.stringify({ events: Array.from({ length: 300 }, (_, i) => `event-${i}`) });
+    const large = JSON.stringify({
+      events: Array.from({ length: 300 }, (_, i) => ({ id: `event-${i}`, seq: i, note: "n" })),
+    });
     const user = userEvent.setup();
     viewMessage(btoa(small));
     renderWithClient(<MessagePayloadViewer />);
@@ -688,6 +690,89 @@ describe("MessagePayloadViewer", () => {
     expect(await screen.findByRole("button", { name: /expand events/i })).toBeInTheDocument();
     expect(screen.queryByText('"event-0"')).not.toBeInTheDocument();
   });
+  // --- Expand all ----------------------------------------------------------
+  //
+  // The auto-expand rule keeps a heavy node behind a click so the view opens
+  // instantly; this is the way out of it for someone who does want the whole
+  // document, and it has to reach the levels that aren't rendered yet.
+
+  const heavy = () =>
+    JSON.stringify({
+      orderId: "a-1",
+      events: Array.from({ length: 300 }, (_, i) => ({ id: `event-${i}`, seq: i, note: "n" })),
+    });
+
+  it("expands every collapsed node in the tree, however deep, in one click", async () => {
+    const user = userEvent.setup();
+    viewMessage(btoa(heavy()));
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "JSON");
+
+    expect(screen.queryByText('"event-0"')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+
+    // The array itself, and the objects inside it that only came into
+    // existence as it opened.
+    expect(screen.getByText('"event-0"')).toBeInTheDocument();
+    expect(screen.getByText('"event-299"')).toBeInTheDocument();
+  });
+
+  it("disables the button while there is nothing left to expand", async () => {
+    const user = userEvent.setup();
+    viewMessage(btoa(JSON.stringify({ order: { id: "a-1" } })));
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "JSON");
+
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
+  });
+
+  it("enables the button again the moment a node is collapsed by hand", async () => {
+    const user = userEvent.setup();
+    viewMessage(btoa(JSON.stringify({ order: { id: "a-1" } })));
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "JSON");
+
+    await user.click(screen.getByRole("button", { name: "Collapse order" }));
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(screen.getByText('"a-1"')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled());
+  });
+
+  /**
+   * The viewer stays mounted as the user clicks through the grid, so "I
+   * pressed Expand all" must not follow them onto the next message — that
+   * would dump a multi-megabyte tree into the DOM on a single click in the
+   * grid, which is the freeze the collapsing exists to prevent.
+   */
+  it("does not carry Expand all over to the next message", async () => {
+    const user = userEvent.setup();
+    viewMessage(btoa(heavy()));
+    renderWithClient(<MessagePayloadViewer />);
+    await selectFormat(user, "JSON");
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+    expect(screen.getByText('"event-0"')).toBeInTheDocument();
+
+    viewMessage(btoa(heavy().replace(/event-/g, "later-")), 2);
+
+    expect(await screen.findByRole("button", { name: /expand events/i })).toBeInTheDocument();
+    expect(screen.queryByText('"later-0"')).not.toBeInTheDocument();
+  });
+
+  it("offers no Expand all on the formats that have no tree", async () => {
+    const user = userEvent.setup();
+    viewMessage(btoa(JSON.stringify({ order: { id: "a-1" } })));
+    renderWithClient(<MessagePayloadViewer />);
+
+    await selectFormat(user, "JSON");
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeInTheDocument();
+
+    await selectFormat(user, "Raw");
+    expect(screen.queryByRole("button", { name: "Expand all" })).not.toBeInTheDocument();
+  });
+
   // --- The chosen view survives a top-level tab switch ---------------------
   //
   // App.tsx renders this component `key={activeTabId}`, so leaving a tab and

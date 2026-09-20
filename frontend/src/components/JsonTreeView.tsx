@@ -1,4 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  JsonTreeControl,
+  JsonTreeExpansionContext,
+  childCount,
+  shouldAutoExpand,
+  useJsonTreeControl,
+  useJsonTreeExpansion,
+} from "./jsonTreeExpansion";
 
 export interface JsonTreeViewProps {
   value: unknown;
@@ -8,6 +16,12 @@ export interface JsonTreeViewProps {
   lineNumbers?: boolean;
   /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
   showToolbar?: boolean;
+  /**
+   * Drives Expand all from a button outside this component — the payload
+   * panel's toolbar sits above the tree, not in it. Omit and the tree makes
+   * its own, so nodes behave identically either way.
+   */
+  control?: JsonTreeControl;
 }
 
 function CopyIcon() {
@@ -53,21 +67,6 @@ function primitiveTypeClass(value: unknown): string {
   return `json-tree-value--${typeof value}`;
 }
 
-/**
- * How many entries a container can hold and still be expanded on sight. Sized
- * to cover an ordinary message comfortably while keeping the arrays that make
- * a payload megabytes long — event lists, line items, embedded documents —
- * behind a click.
- */
-const AUTO_EXPAND_MAX_CHILDREN = 100;
-
-/** Entries in an object or array; 0 for anything that isn't expandable. */
-function childCount(value: unknown): number {
-  if (Array.isArray(value)) return value.length;
-  if (isExpandable(value)) return Object.keys(value as Record<string, unknown>).length;
-  return 0;
-}
-
 interface JsonNodeProps {
   label: string | null;
   value: unknown;
@@ -75,14 +74,34 @@ interface JsonNodeProps {
 }
 
 function JsonNode({ label, value, depth }: JsonNodeProps) {
-  // Large containers start collapsed. Everything expanded is the right
-  // default for the documents this view was built for — a Kafka message of a
-  // few KB — but the same default on a multi-megabyte payload renders every
-  // node of it into the DOM at once, and the app stops responding until the
-  // browser finishes laying out a tree nobody asked to see in full. A
-  // container past this size is one the user has to scroll anyway, so it
-  // costs a click and saves the freeze.
-  const [expanded, setExpanded] = useState(() => childCount(value) <= AUTO_EXPAND_MAX_CHILDREN);
+  // Containers worth more lines than the budget start collapsed. Everything
+  // expanded is the right default for the documents this view was built for —
+  // a Kafka message of a few KB — but the same default on a multi-megabyte
+  // payload renders every node of it into the DOM at once, and the app stops
+  // responding until the browser finishes laying out a tree nobody asked to
+  // see in full. A container past that size is one the user has to scroll
+  // anyway, so it costs a click and saves the freeze. See `shouldAutoExpand`
+  // for why the measure is lines rather than entries.
+  const [expanded, setExpanded] = useState(() => shouldAutoExpand(value, depth));
+  const expansion = useJsonTreeExpansion();
+  const expandAllToken = expansion?.expandAllToken ?? 0;
+  const reportCollapsed = expansion?.reportCollapsed;
+
+  // Fires on mount as well as on a later bump, which is the point: Expand all
+  // has to reach the nodes that only come into existence as their parents
+  // open. `useJsonTreeControl` resets the token for a new document so this
+  // can't force-expand the next message the user clicks on.
+  useEffect(() => {
+    if (expandAllToken > 0) setExpanded(true);
+  }, [expandAllToken]);
+
+  // One collapsed node on screen is one thing Expand all can still do.
+  useEffect(() => {
+    if (!reportCollapsed || expanded || !isExpandable(value)) return;
+    reportCollapsed(1);
+    return () => reportCollapsed(-1);
+  }, [expanded, reportCollapsed, value]);
+
   const indent = { paddingLeft: `${depth * 14}px` };
 
   if (!isExpandable(value)) {
@@ -151,8 +170,18 @@ function JsonNode({ label, value, depth }: JsonNodeProps) {
  * on hover): copy the whole pretty-printed value to the clipboard, or open
  * it in its own tab in the app.
  */
-export function JsonTreeView({ value, onOpenInNewTab, lineNumbers = false, showToolbar = true }: JsonTreeViewProps) {
+export function JsonTreeView({
+  value,
+  onOpenInNewTab,
+  lineNumbers = false,
+  showToolbar = true,
+  control,
+}: JsonTreeViewProps) {
   const [copied, setCopied] = useState(false);
+  // Hooks can't be called conditionally, so the fallback control is always
+  // built; it just goes unused when the caller brought its own.
+  const ownControl = useJsonTreeControl(value);
+  const expansion = control ?? ownControl;
 
   async function handleCopy() {
     await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
@@ -186,9 +215,11 @@ export function JsonTreeView({ value, onOpenInNewTab, lineNumbers = false, showT
         </button>
       </div>
       )}
-      <div className={`json-tree-body${lineNumbers ? " json-tree-body--numbered" : ""}`} role="tree">
-        <JsonNode label={null} value={value} depth={0} />
-      </div>
+      <JsonTreeExpansionContext.Provider value={expansion}>
+        <div className={`json-tree-body${lineNumbers ? " json-tree-body--numbered" : ""}`} role="tree">
+          <JsonNode label={null} value={value} depth={0} />
+        </div>
+      </JsonTreeExpansionContext.Provider>
     </div>
   );
 }
