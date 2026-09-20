@@ -125,6 +125,14 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   `source: "none"` so the UI can say the keys are numbers, not names. Note the
   Confluent message-index shorthand: an all-zero path is a single `0` byte,
   not a length-prefixed array.
+- AG Grid is **two thirds of the frontend bundle** and is reached from exactly
+  two tab panels, so both load through `features/connections/gridTabs.tsx`
+  (`React.lazy` + `Suspense`) rather than being imported directly. Import
+  `DataTab`/`PartitionReplicasTab` from there, not from their own modules, or
+  AG Grid lands back in the initial chunk. Measured: initial bundle 1545 kB ->
+  415 kB, startup 111 ms -> 43 ms. A test that renders one of those panels has
+  to `findBy` its contents, not `getBy` — the tab body now resolves
+  asynchronously.
 - Only `ResourceCategory` (Brokers, Consumers) virtualizes its list, via
   `react-window`'s `List` past a 50-item threshold. **Topics is a separate,
   deliberately non-virtualized `TopicCategory`** — so a change to the

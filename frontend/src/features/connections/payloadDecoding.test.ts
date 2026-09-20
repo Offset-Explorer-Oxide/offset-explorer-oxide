@@ -13,6 +13,7 @@ import {
   decodeValuePreview,
   detectConfluentAvro,
   formatXmlNode,
+  formatPayloadSize,
   isPayloadTruncated,
   retainedPayloadBytes,
   retainedRowBytes,
@@ -241,6 +242,31 @@ describe("base64DecodedLength", () => {
 
   it("is zero for an empty string", () => {
     expect(base64DecodedLength("")).toBe(0);
+  });
+});
+
+describe("formatPayloadSize", () => {
+  it("shows exact bytes below a kilobyte", () => {
+    expect(formatPayloadSize(0)).toBe("0 B");
+    expect(formatPayloadSize(842)).toBe("842 B");
+    expect(formatPayloadSize(1023)).toBe("1023 B");
+  });
+
+  it("switches to KB at a kilobyte, with one decimal", () => {
+    expect(formatPayloadSize(1024)).toBe("1.0 KB");
+    expect(formatPayloadSize(4096)).toBe("4.0 KB");
+    expect(formatPayloadSize(1024 * 1024 - 1)).toBe("1024.0 KB");
+  });
+
+  it("switches to MB at a megabyte, with two decimals", () => {
+    expect(formatPayloadSize(1024 * 1024)).toBe("1.00 MB");
+    expect(formatPayloadSize(4 * 1024 * 1024)).toBe("4.00 MB");
+  });
+
+  // The point of the second decimal: a payload just over the line must not
+  // render as a flat "1 MB" beside one four times its size.
+  it("keeps a megabyte and a bit distinguishable from a flat megabyte", () => {
+    expect(formatPayloadSize(1024 * 1024)).not.toBe(formatPayloadSize(1.05 * 1024 * 1024));
   });
 });
 

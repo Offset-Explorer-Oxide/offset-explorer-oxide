@@ -108,3 +108,40 @@ export function ImportIcon() {
     </svg>
   );
 }
+
+export function CopyIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" stroke="currentColor" />
+      <path d="M3.5 10.5h-1a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1" stroke="currentColor" />
+    </svg>
+  );
+}
+
+export function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M3 8.5l3 3 7-7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** A floppy disk — Save, which writes what is on screen in the chosen format. */
+export function SaveIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.5 3.5a1 1 0 0 1 1-1h7.6l2.4 2.4v7.6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9Z" stroke="currentColor" />
+      <path d="M5 2.5v4h6v-4M5 13.5v-4h6v4" stroke="currentColor" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** An arrow into a tray — Download, which writes the payload's original bytes. */
+export function DownloadIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 2v7.5m0 0L5.2 6.7M8 9.5l2.8-2.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.8 11v1.5a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1V11" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  );
+}

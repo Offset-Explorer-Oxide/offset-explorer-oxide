@@ -1076,6 +1076,23 @@ textarea {
   margin: 0;
   font-size: var(--font-size-lg);
 }
+/* Only this panel's header carries controls, so the row layout is a
+   modifier rather than a change to the header every detail panel shares. */
+.json-viewer-tab-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.json-viewer-tab-header h2 {
+  /* Ellipsises rather than pushing the buttons off the row — the title is a
+     whole message label ("Partition 0 · Offset 1000 · Base64"). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 .cluster-detail-footer {
   display: flex;
@@ -1372,10 +1389,33 @@ textarea {
   gap: 8px;
   margin-bottom: 8px;
   flex: 0 0 auto;
+  /* The action group drops to a second line rather than off the edge of a
+     narrow pane. Measured: at a 220px pane the group ran 61px past the
+     toolbar and at 150px it ran 131px past — and the pane clips
+     (`overflow: hidden`), so what is pushed out is unreachable rather than
+     merely off-screen. */
+  flex-wrap: wrap;
 }
 .message-payload-toolbar-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
+  /* Wraps within itself as well as onto its own line: the group is wider
+     than the pane once the pane is dragged past about 150px, and wrapping
+     only the outer row leaves the last button clipped just the same. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* The payload's size, sitting at the head of the action group. Tabular
+   figures so the number doesn't jostle its neighbours as you click through
+   rows of different sizes, and a little air before the first button so it
+   reads as a label rather than as another control. */
+.message-payload-size {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-right: 4px;
 }
 .message-payload-header-actions {
   display: flex;
