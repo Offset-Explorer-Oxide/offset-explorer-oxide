@@ -437,19 +437,19 @@ export function MessagePayloadViewer() {
 
   function handleOpenInNewTab() {
     if (mode === "json" && json !== undefined) {
-      selectTab(openJsonTab(messageLabel(), json));
+      selectTab(openJsonTab(messageLabel(), json, "json", "json"));
       return;
     }
     if (mode === "avro" && avroDecodeIsCurrent) {
-      selectTab(openJsonTab(messageLabel(), decodeAvro.data));
+      selectTab(openJsonTab(messageLabel(), decodeAvro.data, "json", "avro"));
       return;
     }
     if (mode === "protobuf" && protobufDecodeIsCurrent) {
-      selectTab(openJsonTab(messageLabel(), decodeProtobuf.data.value));
+      selectTab(openJsonTab(messageLabel(), decodeProtobuf.data.value, "json", "protobuf"));
       return;
     }
     if (mode === "xml" && xml !== undefined) {
-      selectTab(openJsonTab(messageLabel(), xml, "xml"));
+      selectTab(openJsonTab(messageLabel(), xml, "xml", "xml"));
       return;
     }
     // Deliberately `literal.text`, not `currentViewText()`: the tab gets
@@ -464,7 +464,7 @@ export function MessagePayloadViewer() {
       report("error", "open", `Nothing to open — the payload isn't valid ${valueFormat(mode).label}.`);
       return;
     }
-    selectTab(openJsonTab(`${messageLabel()} · ${valueFormat(mode).label}`, content, "text"));
+    selectTab(openJsonTab(`${messageLabel()} · ${valueFormat(mode).label}`, content, "text", mode));
   }
 
   /**
@@ -691,12 +691,19 @@ export function MessagePayloadViewer() {
                     <LineNumberedText
                       text={literal.text}
                       ariaLabel={`Payload as ${valueFormat(mode).label}`}
-                      // Hex and Base64 both lay their content out in fixed
-                      // columns — the hex dump's offset/byte/ASCII grid, and
-                      // `wrapBase64`'s 76-character MIME lines — and neither
-                      // reads as aligned in a proportional font. Raw text
-                      // has no such structure and follows the font setting.
-                      forceMonospace={mode === "hex" || mode === "base64"}
+                      // The hex dump only: its offset/byte/ASCII grid is
+                      // the view, and in a proportional font the three
+                      // columns stop lining up at all.
+                      //
+                      // Base64 used to be pinned here too, on the grounds
+                      // that `wrapBase64` lays it out in 76-character MIME
+                      // lines. It doesn't need it: those lines are 76
+                      // characters in any font, and nothing lines up
+                      // *across* them — the only thing a proportional face
+                      // costs is a ragged right edge. Pinning it meant the
+                      // Font style setting visibly did nothing on two of the
+                      // seven payload formats instead of one.
+                      forceMonospace={mode === "hex"}
                     />
                     {literal.truncated && (
                       <p className="message-payload-truncation">

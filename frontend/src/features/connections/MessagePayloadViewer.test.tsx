@@ -1174,17 +1174,19 @@ describe("MessagePayloadViewer font handling", () => {
     expect(container.querySelector(".code-view")).toHaveClass("code-view--monospace");
   });
 
-  // Base64 is wrapped to 76-character MIME lines, which only read as
-  // fixed-width columns in a monospace font — the same argument as the hex
-  // dump, and it was inconsistent to apply it to one and not the other.
-  it("pins base64 to monospace too, for its fixed-width lines", async () => {
+  // Base64 was pinned here too, on the grounds that `wrapBase64` lays it out
+  // in 76-character MIME lines. It doesn't need to be: those lines are 76
+  // characters in any font and nothing lines up *across* them, so the only
+  // thing a proportional face costs is a ragged right edge — against the
+  // Font style setting visibly doing nothing on a second payload format.
+  it("lets base64 follow the chosen font, unlike the hex dump", async () => {
     const user = userEvent.setup();
     viewText("plain text");
     const { container } = renderWithClient(<MessagePayloadViewer />);
 
     await selectFormat(user, "Base64");
 
-    expect(container.querySelector(".code-view")).toHaveClass("code-view--monospace");
+    expect(container.querySelector(".code-view")).not.toHaveClass("code-view--monospace");
   });
 });
 

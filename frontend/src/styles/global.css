@@ -40,6 +40,28 @@ body {
   font-size: var(--font-size-base, 13px);
 }
 
+/* Form controls do not inherit the document font. Every UA stylesheet gives
+   `button`, `input`, `select` and `textarea` a font of their own, and that
+   declaration beats inheritance — which is why Settings → Appearance → Font
+   style reached every *label* in the app and none of its *controls*: the
+   panel tabs, the sidebar actions, the settings tabs, the value-format
+   picker and even the theme picker's own option labels all rendered in the
+   browser's default face whatever was chosen. `font-size` goes the same way,
+   for controls that don't set one.
+
+   `inherit` rather than `var(--font-family-base)` on purpose: a control
+   inside a surface that has deliberately chosen another family — a button in
+   a monospace payload view — should follow that surface rather than jump
+   back to the UI font. Rules that set a family or size explicitly still win:
+   this is a single element selector, the weakest thing in the file. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
 .app-shell {
   display: flex;
   flex-direction: column;
@@ -77,12 +99,61 @@ body {
      it has to be the one the sidebar actually shows. */
   background: var(--color-bg);
 }
+/* The sidebar's three actions: Add Cluster on its own full-width row in the
+   accent fill, Export All and Import sharing the row below at equal width.
+   Both rows are one control tall and the pair never reflows, which the old
+   `flex-wrap` row did at every sidebar width. */
 .app-sidebar-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   padding-top: 8px;
   margin-bottom: 10px;
+}
+.app-sidebar-actions-row {
+  display: flex;
+  gap: 6px;
+}
+.sidebar-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  /* Equal halves however long the two labels are: `flex-basis: 0` measures
+     from nothing rather than from the text, so "Export All" and "Import"
+     come out the same width instead of in the ratio of their labels. */
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  color: var(--color-fg);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.sidebar-action:hover {
+  background: color-mix(in srgb, var(--color-fg) 8%, var(--color-bg-elevated));
+  border-color: color-mix(in srgb, var(--color-fg) 20%, var(--color-border));
+}
+.sidebar-action:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.sidebar-action--primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  /* The content-area colour, not a hard-coded white: half the themes have a
+     light accent and would otherwise print white on pale blue. */
+  color: var(--color-bg);
+  font-weight: 600;
+}
+.sidebar-action--primary:hover {
+  background: color-mix(in srgb, var(--color-fg) 12%, var(--color-accent));
+  border-color: color-mix(in srgb, var(--color-fg) 12%, var(--color-accent));
 }
 
 .app-main {
@@ -264,6 +335,24 @@ body {
 .bottom-panel-toggle:hover {
   color: var(--color-fg);
 }
+/* Square, icon-sized, and sharing its metrics with `.theme-menu__button`
+   beside it, so the strip's two controls read as a pair rather than as a
+   word and a glyph. */
+.bottom-panel-toggle--icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+.bottom-panel-toggle--icon:hover {
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+/* The pressed state the dropped "▸/▾" used to carry. */
+.bottom-panel-toggle--active {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
 .bottom-panel-memory {
   display: flex;
   align-items: center;
@@ -358,26 +447,41 @@ body {
   color: var(--color-fg-muted);
 }
 
-/* The tab strip. Square-edged tabs sitting flush in the header, with the
-   active one lifted out by three signals at once rather than by one:
+/* The tab strip. Chrome-style: rounded, compact tabs sitting on the header,
+   with the active one drawn as the front edge of the pane below it.
 
-   1. **Background.** The active tab is painted in `--color-bg`, the colour of
-      the content area below it, so it reads as the front edge of the pane it
-      opens. Inactive tabs stay on the header's own `--color-bg-elevated`.
-   2. **An accent bar along its top edge**, in `--color-accent` — the signal
-      that survives when a theme's `bg` and `bg-elevated` are close enough
-      that (1) alone is a guess.
-   3. **Text.** Full `--color-fg` at weight 600 against `--color-fg-muted` at
+   Four signals separate selected from unselected, rather than one:
+
+   1. **Shape.** Only the active tab draws an outline, and its rounded top
+      corners plus square bottom ones read as a card whose bottom edge is the
+      content area. Inactive tabs are unoutlined text, divided from each other
+      by a hairline the way Chrome divides them.
+   2. **Background.** The active tab is painted in `--color-bg`, the colour of
+      the content area below it, and overlaps the header's bottom rule
+      (`.tab-bar`'s negative bottom margin plus the tab's missing bottom
+      border) so the two genuinely join. Inactive tabs stay transparent over
+      the header's `--color-bg-elevated`.
+   3. **An accent bar along its top edge**, inset so the corner radius clips
+      it — the signal that survives when a theme's `bg` and `bg-elevated` are
+      close enough that (2) alone is a guess.
+   4. **Text.** Full `--color-fg` at weight 600 against `--color-fg-muted` at
       weight 400 for the rest.
 
-   The old styling had only (1), in the *opposite* direction (the active tab
-   was elevated, the strip was transparent), which on several themes came out
-   as a few percent of lightness between a selected tab and an unselected
-   one. */
+   The negative margin lives on `.tab-bar`, not on `.tab`: the strip scrolls
+   horizontally (`overflow-x: auto`), which makes it a scroll container on
+   *both* axes, so a tab reaching past its bottom edge would be clipped
+   instead of overlapping the header rule. */
 .tab-bar {
   display: flex;
-  align-items: stretch;
+  /* Tabs sit on the floor of the strip whatever height the header ends up —
+     the active one has to meet the content area. */
+  align-items: flex-end;
   gap: 0;
+  flex: 1 1 auto;
+  padding: 5px 0 0 6px;
+  /* Overlaps the header's 1px bottom border, so the active tab's fill covers
+     it and the tab opens into the pane. */
+  margin-bottom: -1px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -389,34 +493,74 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 9px 10px 9px 14px;
+  padding: 6px 8px 7px 12px;
   font-size: var(--font-size-md);
   cursor: pointer;
   background: transparent;
   color: var(--color-fg-muted);
-  /* A hairline between tabs, and a transparent top edge that the active tab
-     fills in — reserved on every tab so activating one doesn't shift the
-     row by 2px. */
-  border-right: 1px solid var(--color-border);
-  border-top: 2px solid transparent;
-  min-width: 110px;
-  max-width: 220px;
+  /* Reserved on every tab, transparent until active, so activating one
+     doesn't shift the row by a pixel. No bottom border at all: the active
+     tab's fill is what covers the header rule. */
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  min-width: 96px;
+  max-width: 200px;
   flex: 0 0 auto;
   user-select: none;
 }
+/* Chrome's inter-tab hairline: short, centred, and only drawn where neither
+   neighbour is showing an edge of its own. */
+.tab::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 1px;
+  background: var(--color-border);
+}
+.tab:last-of-type::after,
+.tab:hover::after,
+.tab[aria-selected="true"]::after,
+.tab:has(+ .tab:hover)::after,
+.tab:has(+ .tab[aria-selected="true"])::after {
+  opacity: 0;
+}
 .tab:hover {
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
   color: var(--color-fg);
 }
 .tab:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: -2px;
 }
-.tab span {
+/* The name, not every span in the tab: as `.tab span` this also matched
+   `.tab-icon` — and at (0,1,1) it outranked it — so the icon box grew to
+   take the row and ellipsised the label it sits in front of. */
+.tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+/* The per-kind glyph in front of a tab's name: a file tree for a workspace
+   tab, the payload format's own icon for a viewer tab, a gear for Settings.
+   Fixed-size and never shrinking, so a long name ellipsises against a mark
+   that is still there to read — the icon is the part that survives a strip
+   crowded with tabs. */
+.tab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  opacity: 0.75;
+}
+.tab[aria-selected="true"] .tab-icon {
+  opacity: 1;
+  color: var(--color-accent);
 }
 .tab-close {
   background: none;
@@ -427,7 +571,7 @@ body {
   width: 18px;
   height: 18px;
   min-width: 18px;
-  border-radius: 4px;
+  border-radius: 50%;
   cursor: pointer;
   opacity: 0;
   margin-left: auto;
@@ -451,25 +595,31 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font-weight: 600;
-  border-top-color: var(--color-accent);
+  border-color: var(--color-border);
+  /* Inset rather than a `border-top`: a differently-coloured border on one
+     side of a rounded box leaves a visible mitre where it meets the sides,
+     and an inset shadow is clipped by the radius instead. */
+  box-shadow: inset 0 2px 0 0 var(--color-accent);
 }
 .tab--dragging {
   opacity: 0.6;
   cursor: grabbing;
 }
 .tab-new {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  border-radius: 4px;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 50%;
   border: none;
   background: none;
   color: var(--color-fg-muted);
   font-size: var(--font-size-xl);
   line-height: 1;
   cursor: pointer;
-  margin-left: 6px;
-  align-self: center;
+  margin: 0 6px 2px;
+  /* On the tab row's own baseline, not the strip's centre — with the strip
+     stretched to the header's height, centring floats it above the tabs. */
+  align-self: flex-end;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1192,6 +1342,9 @@ body {
    never let them shrink to make room for the scrolling payload. */
 .message-payload-viewer > .connection-modal-tabs {
   flex: 0 0 auto;
+  /* The modal's 16px gutters are a sizeable share of a pane this narrow. */
+  padding-left: 8px;
+  padding-right: 8px;
 }
 .message-payload-meta {
   color: var(--color-fg-muted);
@@ -1334,6 +1487,11 @@ body {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 .code-gutter {
+  /* A `<pre>`, so the UA's own `pre { font-family: monospace }` applied to it
+     directly and beat the family `.code-view` sets for the pair — the gutter
+     ignored the font setting while the body beside it followed it, in a
+     layout whose whole premise is that the two lay out identically. */
+  font-family: inherit;
   /* Sticks to the left edge while the payload scrolls sideways — without
      this the numbers slide off screen exactly when a long line makes them
      useful. */
@@ -1566,20 +1724,48 @@ body {
 
 .connection-modal-tabs {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   padding: 8px 16px 0;
   border-bottom: 1px solid var(--color-border);
 }
+/* Bruno-style panel tabs: no chrome at all until one is selected, and then a
+   single accent underline sitting *on* the strip's own rule rather than
+   above it (that's the -1px bottom margin), with the label recoloured to
+   match it.
+
+   Two signals, not one. The 2px rule alone is a thin line at the bottom edge
+   of a control whose label is several times its height, which in a narrow
+   pane — the message payload viewer's Headers/Value strip is often only a
+   couple of hundred pixels wide — is easy to miss entirely. Carrying the
+   accent up into the text is what makes the selection legible at a glance,
+   and it is the contrast Bruno's own tabs get from the same pairing. */
 .connection-modal-tab {
   background: none;
   border: none;
   color: var(--color-fg-muted);
+  font-size: var(--font-size-md);
+  font-weight: 500;
   padding: 6px 10px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  /* Drops the underline onto the strip's 1px rule, so the two read as one
+     line broken by the selection instead of as two stacked rules. */
+  margin-bottom: -1px;
 }
-.connection-modal-tab--active {
+.connection-modal-tab:hover {
   color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.connection-modal-tab:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.connection-modal-tab--active,
+.connection-modal-tab--active:hover {
+  color: var(--color-accent);
+  font-weight: 600;
+  background: none;
   border-bottom-color: var(--color-accent);
 }
 

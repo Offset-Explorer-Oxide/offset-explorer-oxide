@@ -16,6 +16,7 @@ import { ClusterDetailPanel } from "./features/connections/ClusterDetailPanel";
 import { BrokerDetailPanel } from "./features/connections/BrokerDetailPanel";
 import { TopicDetailPanel } from "./features/connections/TopicDetailPanel";
 import { PartitionDetailPanel } from "./features/connections/PartitionDetailPanel";
+import { ExportIcon, ImportIcon, PlusIcon } from "./components/AppIcons";
 import { MessagePayloadViewer } from "./features/connections/MessagePayloadViewer";
 import { ConsumerGroupDetailPanel } from "./features/connections/ConsumerGroupDetailPanel";
 import { useCreateConnection, useExportConnections, useImportConnections } from "./features/connections/useConnections";
@@ -173,16 +174,31 @@ function AppShell() {
         <ResizableShell
           left={
             <aside className="app-sidebar">
+              {/* Add Cluster is the primary action of this pane — it is what
+                  an empty sidebar is waiting for — so it takes the accent
+                  fill and a row of its own, with Export/Import as the two
+                  secondary actions sharing the row below. Previously all
+                  three were unstyled buttons of equal weight, wrapping
+                  arbitrarily against the sidebar's width. */}
               <div className="app-sidebar-actions">
-                <button type="button" onClick={() => setShowModal(true)}>
-                  + Add Cluster
+                <button
+                  type="button"
+                  className="sidebar-action sidebar-action--primary"
+                  onClick={() => setShowModal(true)}
+                >
+                  <PlusIcon />
+                  Add Cluster
                 </button>
-                <button type="button" onClick={handleExportAll}>
-                  Export All
-                </button>
-                <button type="button" onClick={handleImport}>
-                  Import
-                </button>
+                <div className="app-sidebar-actions-row">
+                  <button type="button" className="sidebar-action" onClick={handleExportAll}>
+                    <ExportIcon />
+                    Export All
+                  </button>
+                  <button type="button" className="sidebar-action" onClick={handleImport}>
+                    <ImportIcon />
+                    Import
+                  </button>
+                </div>
               </div>
               {showModal && (
                 <ConnectionModal

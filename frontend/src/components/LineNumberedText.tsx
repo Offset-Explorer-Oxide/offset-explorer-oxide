@@ -9,8 +9,9 @@ export interface LineNumberedTextProps {
    *
    * For the hex dump only, where the columns *are* the view: a proportional
    * font turns an aligned grid of byte pairs into ragged text and the offset
-   * and ASCII columns stop lining up at all. Everywhere else the chosen font
-   * is what the user asked to read payloads in.
+   * and ASCII columns stop lining up at all. Everywhere else — Raw and
+   * Base64 included — the chosen font is what the user asked to read
+   * payloads in.
    */
   forceMonospace?: boolean;
 }
