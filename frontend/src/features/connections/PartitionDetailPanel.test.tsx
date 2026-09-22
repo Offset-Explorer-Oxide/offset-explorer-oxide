@@ -38,8 +38,8 @@ describe("PartitionDetailPanel", () => {
     renderWithClient(<PartitionDetailPanel connectionId="1" topicName="orders" partitionId={2} />);
 
     expect(screen.getByRole("tab", { name: "Data" })).toHaveAttribute("aria-selected", "true");
-    expect(await screen.findByLabelText("Partition filter")).toHaveValue("2");
-    expect(screen.getByLabelText("Partition filter")).toBeDisabled();
+    expect(await screen.findByLabelText("Partition")).toHaveValue("2");
+    expect(screen.getByLabelText("Partition")).toBeDisabled();
   });
 
   it("renders Properties, Data, Replicas and Publish tabs, with Publish last", () => {
@@ -135,7 +135,7 @@ describe("PartitionDetailPanel", () => {
         <PartitionDetailPanel connectionId="1" topicName="orders" partitionId={0} />
       </QueryClientProvider>,
     );
-    expect(await screen.findByLabelText("Partition filter")).toHaveValue("0");
+    expect(await screen.findByLabelText("Partition")).toHaveValue("0");
 
     rerender(
       <QueryClientProvider client={client}>
@@ -144,7 +144,7 @@ describe("PartitionDetailPanel", () => {
     );
 
     expect(screen.getByRole("tab", { name: "Data" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("1");
+    expect(screen.getByLabelText("Partition")).toHaveValue("1");
   });
 
   it("switches to the Replicas tab when clicked", async () => {

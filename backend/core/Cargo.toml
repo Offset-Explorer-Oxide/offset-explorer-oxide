@@ -1,5 +1,5 @@
 [package]
-name = "kafkaoxide-core"
+name = "salty-core"
 version = "0.1.0"
 edition = "2024"
 

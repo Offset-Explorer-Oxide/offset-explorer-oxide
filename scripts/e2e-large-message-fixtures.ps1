@@ -16,8 +16,8 @@ over `max.request.size`.
 
 .EXAMPLE
 pwsh scripts/e2e-large-message-fixtures.ps1
-$env:KAFKAOXIDE_E2E_BOOTSTRAP = "localhost:9092"
-cargo test -p kafkaoxide-kafka --test fetch_budget -- --nocapture
+$env:SALTY_E2E_BOOTSTRAP = "localhost:9092"
+cargo test -p salty-kafka --test fetch_budget -- --nocapture
 #>
 [CmdletBinding()]
 param(
@@ -47,5 +47,5 @@ $limit = $RecordBytes + 8 * 1024 * 1024
 
 Write-Host "`n$Records x $([math]::Round($RecordBytes / 1MB, 1)) MB records in $Topic across $Partitions partitions."
 Write-Host "Now run:"
-Write-Host "  `$env:KAFKAOXIDE_E2E_BOOTSTRAP = `"$Bootstrap`""
-Write-Host "  cargo test -p kafkaoxide-kafka --test fetch_budget -- --nocapture"
+Write-Host "  `$env:SALTY_E2E_BOOTSTRAP = `"$Bootstrap`""
+Write-Host "  cargo test -p salty-kafka --test fetch_budget -- --nocapture"

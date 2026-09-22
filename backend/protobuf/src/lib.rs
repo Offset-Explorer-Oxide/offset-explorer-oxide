@@ -1,4 +1,4 @@
-//! Protobuf payload decoding, deliberately shaped like `kafkaoxide_avro` so
+//! Protobuf payload decoding, deliberately shaped like `salty_avro` so
 //! the two read the same way: detect the framing, decide a strategy without
 //! doing any I/O, then decode.
 //!
@@ -9,9 +9,9 @@
 pub mod wire;
 
 use error_stack::{Report, ResultExt};
-use kafkaoxide_core::Result;
+use salty_core::Result;
 use std::sync::{Mutex, OnceLock};
-use kafkaoxide_core::AppError;
+use salty_core::AppError;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, SerializeOptions};
 use protox::file::{ChainFileResolver, File, FileResolver, GoogleFileResolver};
 use protox::Compiler;
@@ -105,7 +105,7 @@ pub enum ProtobufDecodeStrategy {
 /// Decides how to decode, from what the bytes say and what is configured.
 ///
 /// Pure, so the precedence is testable without a desktop toolchain — the same
-/// reason `kafkaoxide_avro::decide_decode_strategy` exists.
+/// reason `salty_avro::decide_decode_strategy` exists.
 ///
 /// Two things differ from the Avro rule, both because of how protobuf is
 /// framed:

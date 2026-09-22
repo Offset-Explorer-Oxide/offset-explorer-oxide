@@ -36,7 +36,7 @@
 # into the released Windows binary — provably, since librdkafka only compiles
 # the string "snappy not enabled at build time" (rdkafka_conf.c's
 # `_UNSUPPORTED_SNAPPY`) into the library when the codec is *missing*, and that
-# string is present in the shipped `kafkaoxide-app.exe`. A toolchain file that
+# string is present in the shipped `salty-app.exe`. A toolchain file that
 # is never delivered fails silently and looks exactly like one that worked, so
 # `.cargo/config.toml` now sets the variable with `force = true` (a
 # `CMAKE_TOOLCHAIN_FILE` already present in the environment — vcpkg

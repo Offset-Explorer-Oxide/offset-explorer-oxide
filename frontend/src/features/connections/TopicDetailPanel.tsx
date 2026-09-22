@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { ConfigTab } from "./ConfigTab";
 import { PartitionsTab } from "./PartitionsTab";
-import { TopicPropertiesTab } from "./TopicPropertiesTab";
+import { TopicMetadataTab } from "./TopicMetadataTab";
 import { TopicSchemaTab } from "./TopicSchemaTab";
+// Via `gridTabs`, never directly: that wrapper is what keeps AG Grid out of
+// the initial bundle.
 import { DataTab } from "./gridTabs";
 
 export interface TopicDetailPanelProps {
@@ -10,14 +12,27 @@ export interface TopicDetailPanelProps {
   topicName: string;
 }
 
-type TopicTabId = "properties" | "data" | "partitions" | "config" | "schema";
+type TopicTabId = "data" | "metadata" | "partitions" | "schema" | "config";
 
+/**
+ * Data leads because it is what opening a topic is for — reading its
+ * messages. It is also the default tab, so the first tab and the landing tab
+ * are the same one and the tab strip doesn't open with its selection in the
+ * middle.
+ *
+ * "Meta Data" was "Properties", which collided with the Properties tab on
+ * every other panel while holding something different: the topic's name and a
+ * message count, not settings.
+ *
+ * Config is last because it is the only tab that is purely read-back — the
+ * broker's own view of the topic's settings, which nothing here can change.
+ */
 const TOPIC_TABS: { id: TopicTabId; label: string }[] = [
-  { id: "properties", label: "Properties" },
   { id: "data", label: "Data" },
+  { id: "metadata", label: "Meta Data" },
   { id: "partitions", label: "Partitions" },
-  { id: "config", label: "Config" },
   { id: "schema", label: "Schema" },
+  { id: "config", label: "Config" },
 ];
 
 export function TopicDetailPanel({ connectionId, topicName }: TopicDetailPanelProps) {
@@ -45,13 +60,11 @@ export function TopicDetailPanel({ connectionId, topicName }: TopicDetailPanelPr
       </div>
 
       <div className="connection-modal-body">
-        {activeTab === "properties" && (
-          <TopicPropertiesTab connectionId={connectionId} topicName={topicName} />
-        )}
         {activeTab === "data" && <DataTab connectionId={connectionId} topicName={topicName} />}
+        {activeTab === "metadata" && <TopicMetadataTab connectionId={connectionId} topicName={topicName} />}
         {activeTab === "partitions" && <PartitionsTab connectionId={connectionId} topicName={topicName} />}
-        {activeTab === "config" && <ConfigTab connectionId={connectionId} topicName={topicName} />}
         {activeTab === "schema" && <TopicSchemaTab connectionId={connectionId} topicName={topicName} />}
+        {activeTab === "config" && <ConfigTab connectionId={connectionId} topicName={topicName} />}
       </div>
     </div>
   );

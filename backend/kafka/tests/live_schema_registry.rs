@@ -1,7 +1,7 @@
 //! One Avro message, followed the whole way.
 //!
 //! The unit tests cover each link separately — `SchemaRegistryClient` against
-//! a hand-rolled TCP server, `kafkaoxide_avro` against hand-built bytes — and
+//! a hand-rolled TCP server, `salty_avro` against hand-built bytes — and
 //! each passes while saying nothing about whether the links join up: whether a
 //! real producer's framing is what `detect_wire_format` expects, whether a
 //! real registry's response parses, and whether the schema it returns actually
@@ -16,9 +16,9 @@
 //!   -e SCHEMA_REGISTRY_LISTENERS=http://0.0.0.0:8081 \
 //!   confluentinc/cp-schema-registry:7.6.0
 //! # produce into `avro-orders` with kafka-avro-console-producer
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//! KAFKAOXIDE_E2E_SCHEMA_REGISTRY=http://localhost:8081 \
-//!   cargo test -p kafkaoxide-kafka --test live_schema_registry -- --nocapture
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//! SALTY_E2E_SCHEMA_REGISTRY=http://localhost:8081 \
+//!   cargo test -p salty-kafka --test live_schema_registry -- --nocapture
 //! ```
 
 use std::sync::atomic::AtomicBool;
@@ -27,18 +27,18 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
-use kafkaoxide_schema_registry::{SchemaRegistryAuth, SchemaRegistryClients};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
+use salty_schema_registry::{SchemaRegistryAuth, SchemaRegistryClients};
 
 const TOPIC: &str = "avro-orders";
 
 fn bootstrap() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|v| !v.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|v| !v.is_empty())
 }
 
 fn registry() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_SCHEMA_REGISTRY").ok().filter(|v| !v.is_empty())
+    std::env::var("SALTY_E2E_SCHEMA_REGISTRY").ok().filter(|v| !v.is_empty())
 }
 
 fn connection(bootstrap_servers: String, schema_registry_endpoint: Option<String>) -> Connection {
@@ -119,7 +119,7 @@ async fn fetch_payloads(bootstrap: String) -> Vec<Vec<u8>> {
 #[tokio::test(flavor = "multi_thread")]
 async fn decodes_a_real_producers_avro_message_using_a_real_registry() {
     let (Some(bootstrap), Some(registry)) = (bootstrap(), registry()) else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP and KAFKAOXIDE_E2E_SCHEMA_REGISTRY");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP and SALTY_E2E_SCHEMA_REGISTRY");
         return;
     };
 
@@ -134,13 +134,13 @@ async fn decodes_a_real_producers_avro_message_using_a_real_registry() {
     let mut decoded = Vec::new();
     for payload in &payloads {
         // 1. A real producer's framing is the framing we detect.
-        let schema_id = kafkaoxide_avro::detect_wire_format(payload)
+        let schema_id = salty_avro::detect_wire_format(payload)
             .expect("a Confluent-produced payload must be recognised as wire format");
         // 2. A real registry's response parses, over real HTTP.
         let schema = client.fetch_schema_by_id(schema_id).await.expect("failed to fetch schema");
         // 3. That schema actually decodes those bytes — after the 5-byte header.
         let value =
-            kafkaoxide_avro::decode(&payload[5..], &schema).expect("failed to decode with the fetched schema");
+            salty_avro::decode(&payload[5..], &schema).expect("failed to decode with the fetched schema");
         println!("offset payload -> schema id {schema_id} -> {value}");
         decoded.push(value);
     }
@@ -174,7 +174,7 @@ async fn the_registry_is_asked_once_however_many_messages_share_a_schema() {
     let clients = SchemaRegistryClients::default();
     let client = clients.get_or_create("e2e", &registry, SchemaRegistryAuth::default()).unwrap();
 
-    let schema_id = kafkaoxide_avro::detect_wire_format(&payloads[0]).unwrap();
+    let schema_id = salty_avro::detect_wire_format(&payloads[0]).unwrap();
     let first = client.fetch_schema_by_id(schema_id).await.expect("first fetch");
 
     // Point the client at an endpoint that cannot answer. A cached schema is
@@ -187,7 +187,7 @@ async fn the_registry_is_asked_once_however_many_messages_share_a_schema() {
     );
 
     for payload in &payloads {
-        let id = kafkaoxide_avro::detect_wire_format(payload).unwrap();
+        let id = salty_avro::detect_wire_format(payload).unwrap();
         assert_eq!(id, schema_id, "the fixtures were produced with one schema");
         assert_eq!(client.fetch_schema_by_id(id).await.expect("cached fetch"), first);
     }
@@ -201,12 +201,12 @@ async fn the_registry_is_asked_once_however_many_messages_share_a_schema() {
 /// "the header looks right" is not enough on its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn authenticates_against_a_registry_that_requires_basic_auth() {
-    let Some(registry) = std::env::var("KAFKAOXIDE_E2E_SCHEMA_REGISTRY_AUTH").ok().filter(|v| !v.is_empty()) else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_SCHEMA_REGISTRY_AUTH to run this test");
+    let Some(registry) = std::env::var("SALTY_E2E_SCHEMA_REGISTRY_AUTH").ok().filter(|v| !v.is_empty()) else {
+        eprintln!("skipped: set SALTY_E2E_SCHEMA_REGISTRY_AUTH to run this test");
         return;
     };
     let credentials =
-        std::env::var("KAFKAOXIDE_E2E_SCHEMA_REGISTRY_CREDENTIALS").expect("set ..._CREDENTIALS as user:password");
+        std::env::var("SALTY_E2E_SCHEMA_REGISTRY_CREDENTIALS").expect("set ..._CREDENTIALS as user:password");
     let clients = SchemaRegistryClients::default();
 
     // Without credentials the registry refuses, so this must fail rather than

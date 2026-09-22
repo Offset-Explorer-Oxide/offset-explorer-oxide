@@ -90,7 +90,7 @@ pub struct Connection {
 }
 
 /// The full set of fields submitted from the New/Edit Connection modal,
-/// including secrets — persisted as-is (see `kafkaoxide_db::connections`).
+/// including secrets — persisted as-is (see `salty_db::connections`).
 /// `Debug` still redacts secret values (see below), so they never end up in
 /// logs even though they're stored in plain columns.
 #[derive(Clone, Serialize, Deserialize)]

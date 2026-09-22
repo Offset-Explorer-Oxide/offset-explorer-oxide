@@ -1,5 +1,5 @@
 {
-  "name": "kafkaoxide",
+  "name": "salty",
   "private": true,
   "scripts": {
     "tauri": "npx --prefix frontend tauri",

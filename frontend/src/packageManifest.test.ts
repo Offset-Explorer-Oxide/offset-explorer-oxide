@@ -8,12 +8,13 @@ import { describe, expect, it } from "vitest";
  *
  * This exists because of a dependency that broke CI on Windows with a bare
  * `npm error Cannot read properties of null (reading 'edgesOut')`: this
- * package is named `kafkaoxide` *and* declared `"kafkaoxide": "file:.."`,
- * pointing at the repo root — which is also named `kafkaoxide`, and which
- * contains this directory. npm materialised that as a symlink from
- * `frontend/node_modules/kafkaoxide` back to the repo root, so the tree
- * walked `frontend/node_modules/kafkaoxide/frontend/node_modules/...`
- * forever. Nothing ever imported it.
+ * package was then named `kafkaoxide` *and* declared
+ * `"kafkaoxide": "file:.."`, pointing at the repo root — which carried the
+ * same name, and which contains this directory. npm materialised that as a
+ * symlink from `frontend/node_modules/kafkaoxide` back to the repo root, so
+ * the tree walked `.../frontend/node_modules/...` forever. Nothing ever
+ * imported it. Both packages are called `salty` now; the rule is what
+ * matters, not the name.
  *
  * None of that is visible reading the file — `"file:.."` looks like an
  * ordinary local dependency — so the rule is asserted rather than left to be

@@ -1336,10 +1336,20 @@ textarea {
    filling the pane when the content is narrower. Scoped to this pane: the
    same tree opened as its own tab scrolls inside the middle pane and is fine
    as it is. */
-.message-payload-scroll .json-tree-body {
+.message-payload-scroll .json-tree-body:not(.json-tree-body--virtual) {
   overflow-x: visible;
   width: max-content;
   min-width: 100%;
+}
+/* The JSON tree needs none of that, and must not have it: being virtualized,
+   it is a scroll box of its own that stops at the bottom of the pane, so its
+   horizontal scrollbar is already on a visible edge. What it needs instead is
+   a definite height to fill, which means this pane hands its own scrolling
+   over for the formats that render as one. */
+.message-payload-scroll--tree {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 /* Drawn rather than left to the platform's overlay scrollbars, which fade out
    when idle: this pane is narrow and its content routinely runs off the right
@@ -1587,10 +1597,12 @@ textarea {
 /* Line numbers down a JSON/XML tree, counted in document order by CSS rather
    than threaded through the recursive node components as a prop — the nodes
    render in order, so the browser can do the counting. */
-.json-tree-body--numbered {
+/* The XML tree is not virtualized, so every one of its lines is in the DOM
+   in document order and the browser can do the counting. */
+.json-tree-body--numbered:not(.json-tree-body--virtual) {
   counter-reset: json-tree-line;
 }
-.json-tree-body--numbered .json-tree-line::before {
+.json-tree-body--numbered:not(.json-tree-body--virtual) .json-tree-line::before {
   counter-increment: json-tree-line;
   content: counter(json-tree-line);
   position: sticky;
@@ -1599,6 +1611,27 @@ textarea {
   width: 3.2em;
   margin-right: 8px;
   padding-right: 6px;
+  text-align: right;
+  color: var(--color-fg-muted);
+  background: var(--color-bg);
+  border-right: 1px solid var(--color-border);
+  user-select: none;
+}
+/* The JSON tree is. Only a windowful of its lines exists, so a counter would
+   restart at 1 on every screen; `JsonTreeView` passes the row's index in the
+   flattened document instead. */
+.json-tree-body--numbered .json-tree-line-number {
+  position: sticky;
+  left: 0;
+  flex: 0 0 auto;
+  /* Wide enough for the document's last line number, which `JsonTreeView`
+     works out and passes down — the column must not resize as the user
+     scrolls from line 9 to line 10,000. */
+  width: var(--json-tree-gutter, 3.2em);
+  margin-right: 8px;
+  padding-left: 6px;
+  padding-right: 6px;
+  box-sizing: content-box;
   text-align: right;
   color: var(--color-fg-muted);
   background: var(--color-bg);
@@ -1648,9 +1681,43 @@ textarea {
   box-sizing: border-box;
 }
 
+/* A column so the body can take whatever height is left over, and
+   `position: relative` so the hidden measuring rows have something to be
+   absolute against. The body is a virtualized list: it positions its rows by
+   a pixel offset inside a scroll box of its own, so unlike the old tree it
+   cannot simply grow as tall as the document and let an outer pane scroll
+   it — it has to be given a height. */
 .json-tree {
   font-family: var(--font-family-mono, ui-monospace, "SF Mono", Consolas, monospace);
   font-size: var(--font-size-sm);
+}
+/* A column so the body can take whatever height is left over, and
+   `position: relative` so the hidden measuring rows have something to be
+   absolute against. Only the JSON tree: it is a virtualized list, positioning
+   its rows by a pixel offset inside a scroll box of its own, so unlike the
+   XML tree it cannot simply grow as tall as the document and let an outer
+   pane scroll it — it has to be given a height. */
+.json-tree--virtual {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* The row the tree's pixel measurements are taken from: a real line in the
+   real font, laid out and never painted. Zero-width and clipped so it adds
+   nothing to any scroll extent — the sample inside it is a flex item of
+   `white-space: pre` text, so it keeps its true width regardless and
+   `getBoundingClientRect()` still reports it. Height is left to the content:
+   it is what the list uses as its row height. */
+.json-tree-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
 }
 .json-tree-toolbar {
   display: flex;
@@ -1691,6 +1758,25 @@ textarea {
   border-radius: 4px;
   padding: 6px 8px;
   overflow-x: auto;
+}
+/* The virtualized body is the scroll box itself, on both axes. Its padding
+   moves onto the rows: they are positioned absolutely from the padding box's
+   top edge, so vertical padding here would push the last row under the
+   border. */
+.json-tree-body--virtual {
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.json-tree-body--virtual > .json-tree-line {
+  padding-right: 8px;
+}
+/* Only when there is no number column: the gutter is `position: sticky` at
+   the scrollport's left edge, and a padding on the row would leave it
+   snapping 8px leftwards the moment a long line is scrolled. */
+.json-tree-body--virtual:not(.json-tree-body--numbered) > .json-tree-line {
+  padding-left: 8px;
 }
 .json-tree-line {
   display: flex;

@@ -1,6 +1,6 @@
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
+use salty_core::Result;
+use salty_core::AppError;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
 use sqlx::FromRow;

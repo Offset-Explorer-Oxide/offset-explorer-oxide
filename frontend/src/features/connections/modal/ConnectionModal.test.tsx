@@ -31,32 +31,39 @@ describe("ConnectionModal", () => {
     expect(screen.getByLabelText("Cluster name")).toBeInTheDocument();
   });
 
-  it("switches to the Security tab when clicked", async () => {
+  it("switches to the Security & Authentication tab when clicked", async () => {
     const user = userEvent.setup();
     renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
 
-    await user.click(screen.getByRole("tab", { name: "Security" }));
+    await user.click(screen.getByRole("tab", { name: "Security & Authentication" }));
 
-    expect(screen.getByRole("tab", { name: "Security" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Security & Authentication" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // Both halves, on the one tab: the protocol dropdown and the SASL one.
     expect(screen.getByRole("button", { name: /PLAINTEXT/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /None/ })).toBeInTheDocument();
   });
 
-  it("switches to the Advanced tab when clicked", async () => {
+  /** Security and Authentication were two tabs until they were merged. */
+  it("offers exactly three tabs, with no separate Authentication or Advanced tab", () => {
+    renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Properties",
+      "Security & Authentication",
+      "Schema",
+    ]);
+  });
+
+  it("switches to the Schema tab when clicked", async () => {
     const user = userEvent.setup();
     renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
 
-    await user.click(screen.getByRole("tab", { name: "Advanced" }));
+    await user.click(screen.getByRole("tab", { name: "Schema" }));
 
     expect(screen.getByLabelText("Endpoint")).toBeInTheDocument();
-  });
-
-  it("switches to the Authentication tab when clicked", async () => {
-    const user = userEvent.setup();
-    renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
-
-    await user.click(screen.getByRole("tab", { name: "Authentication" }));
-
-    expect(screen.getByRole("button", { name: /None/ })).toBeInTheDocument();
   });
 
   it("preserves field values entered on one tab after switching away and back", async () => {
@@ -64,7 +71,7 @@ describe("ConnectionModal", () => {
     renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
 
     await user.type(screen.getByLabelText("Cluster name"), "Local Kafka");
-    await user.click(screen.getByRole("tab", { name: "Security" }));
+    await user.click(screen.getByRole("tab", { name: "Security & Authentication" }));
     await user.click(screen.getByRole("tab", { name: "Properties" }));
 
     expect(screen.getByLabelText("Cluster name")).toHaveValue("Local Kafka");
@@ -97,7 +104,7 @@ describe("ConnectionModal", () => {
     const user = userEvent.setup();
     renderWithClient(<ConnectionModal onAdd={vi.fn()} onCancel={vi.fn()} />);
 
-    await user.click(screen.getByRole("tab", { name: "Security" }));
+    await user.click(screen.getByRole("tab", { name: "Security & Authentication" }));
     await user.click(screen.getByRole("button", { name: "Add" }));
 
     expect(screen.getByRole("tab", { name: "Properties" })).toHaveAttribute("aria-selected", "true");

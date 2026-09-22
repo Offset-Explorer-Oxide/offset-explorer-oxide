@@ -1,12 +1,12 @@
-# Offset Explorer Oxide
+# Salty
 
-A modern, lightweight desktop client for Apache Kafka — a fast, native alternative to Offset Explorer, built with [Tauri](https://tauri.app), Rust, and React.
+A fast, native desktop client for Apache Kafka — browse topics, read messages, and publish, built with [Tauri](https://tauri.app), Rust, and React.
 
 ## Features
 
 - **Cluster explorer** — browse brokers, topics, partitions, and consumer groups in a resizable tree/detail workspace, with tabs for keeping multiple resources open at once.
 - **Message browsing** — inspect topic data with a JSON tree viewer, including automatic **Avro decoding** (via a connection's Confluent Schema Registry, or a manually supplied schema).
-- **Connection management** — save and reuse cluster connections with `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, and `SASL_SSL` security protocols; secrets are stored in the OS keychain, never in plain config.
+- **Connection management** — save and reuse cluster connections with `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, and `SASL_SSL` security protocols. Credentials are stored in the app's local SQLite database, not in the OS keychain; exported connection files deliberately carry no secrets at all.
 - **Consumer group insight** — inspect group membership, partition assignment, and lag.
 - **Light/dark themes**, a resizable multi-pane layout, and a built-in logs panel for troubleshooting connections.
 

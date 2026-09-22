@@ -10,26 +10,26 @@
 //!
 //! ```bash
 //! scripts/e2e-fixtures.sh
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test timestamp_filter -- --nocapture
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test timestamp_filter -- --nocapture
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Written by `scripts/e2e-fixtures.sh`.
 const DEFAULT_TOPIC: &str = "e2e-basic";
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 fn topic() -> String {
-    std::env::var("KAFKAOXIDE_E2E_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
+    std::env::var("SALTY_E2E_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
 }
 
 fn connection(bootstrap_servers: String) -> Connection {
@@ -125,7 +125,7 @@ async fn bounds(client: &RdKafkaClient, connection: &Connection, topic: &str) ->
 #[tokio::test(flavor = "multi_thread")]
 async fn a_from_after_every_message_matches_nothing_rather_than_everything() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
     let client = RdKafkaClient::new();
@@ -151,7 +151,7 @@ async fn a_from_after_every_message_matches_nothing_rather_than_everything() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_to_after_every_message_matches_the_whole_topic() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
     let client = RdKafkaClient::new();
@@ -169,7 +169,7 @@ async fn a_to_after_every_message_matches_the_whole_topic() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_to_before_every_message_matches_nothing() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
     let client = RdKafkaClient::new();
@@ -187,7 +187,7 @@ async fn a_to_before_every_message_matches_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_from_at_the_oldest_message_matches_the_whole_topic() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
     let client = RdKafkaClient::new();
@@ -206,7 +206,7 @@ async fn a_from_at_the_oldest_message_matches_the_whole_topic() {
 #[tokio::test(flavor = "multi_thread")]
 async fn messages_returned_for_a_window_all_carry_timestamps_inside_it() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
     let client = RdKafkaClient::new();

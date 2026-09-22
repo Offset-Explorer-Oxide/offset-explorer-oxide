@@ -18,7 +18,7 @@ export interface FilterFormState {
    * partition's watermarks rather than rejected.
    */
   offset: string;
-  /** The "Fetch message payload" checkbox below Fetch. */
+  /** The "Fetch message payload" checkbox above Fetch. */
   includePayload: boolean;
 }
 

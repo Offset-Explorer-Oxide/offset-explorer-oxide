@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use kafkaoxide_core::ConnectionStatus;
+use salty_core::ConnectionStatus;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;

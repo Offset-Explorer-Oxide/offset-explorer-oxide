@@ -8,8 +8,8 @@
 # which to test that a read-only user cannot publish. This one denies by default.
 #
 #   ./scripts/e2e-acl-fixtures.sh
-#   KAFKAOXIDE_E2E_ACL_BOOTSTRAP=localhost:9192 \
-#     cargo test -p kafkaoxide-kafka --test publish_authorization
+#   SALTY_E2E_ACL_BOOTSTRAP=localhost:9192 \
+#     cargo test -p salty-kafka --test publish_authorization
 #
 # Every step is idempotent, so re-running against an already-configured broker
 # is harmless. Tear down with:
@@ -83,6 +83,6 @@ cat <<EOF
 
 Ready. Run the authorization tests with:
 
-  KAFKAOXIDE_E2E_ACL_BOOTSTRAP=localhost:$HOST_PORT \\
-    cargo test -p kafkaoxide-kafka --test publish_authorization
+  SALTY_E2E_ACL_BOOTSTRAP=localhost:$HOST_PORT \\
+    cargo test -p salty-kafka --test publish_authorization
 EOF

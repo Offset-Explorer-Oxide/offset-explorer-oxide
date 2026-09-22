@@ -3,8 +3,8 @@ pub mod tabs;
 pub mod topic_schemas;
 
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
+use salty_core::Result;
+use salty_core::AppError;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
 use std::str::FromStr;
 
@@ -93,7 +93,7 @@ mod tests {
     /// borrows has them.
     #[tokio::test]
     async fn init_pool_opens_the_database_in_wal_mode_with_synchronous_normal() {
-        let dir = std::env::temp_dir().join(format!("kafkaoxide-db-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("salty-db-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("failed to create temp dir");
         let url = format!("sqlite://{}?mode=rwc", dir.join("app.db").display());
 
@@ -121,7 +121,7 @@ mod tests {
     /// converting it, rather than failing or silently staying in rollback.
     #[tokio::test]
     async fn init_pool_converts_an_existing_rollback_mode_database_to_wal() {
-        let dir = std::env::temp_dir().join(format!("kafkaoxide-db-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("salty-db-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("failed to create temp dir");
         let path = dir.join("app.db");
         let url = format!("sqlite://{}?mode=rwc", path.display());
@@ -164,7 +164,7 @@ mod tests {
     /// error about migrations that have already been applied.
     #[tokio::test]
     async fn init_pool_is_idempotent_against_an_existing_database() {
-        let dir = std::env::temp_dir().join(format!("kafkaoxide-db-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("salty-db-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("failed to create temp dir");
         let url = format!("sqlite://{}?mode=rwc", dir.join("app.db").display());
 
@@ -179,7 +179,7 @@ mod tests {
     /// directory is missing or unwritable.
     #[tokio::test]
     async fn init_pool_reports_a_db_error_for_an_unopenable_path() {
-        let error = init_pool("sqlite:///nonexistent-directory/kafkaoxide/app.db")
+        let error = init_pool("sqlite:///nonexistent-directory/salty/app.db")
             .await
             .expect_err("opening a database under a missing directory must fail");
 

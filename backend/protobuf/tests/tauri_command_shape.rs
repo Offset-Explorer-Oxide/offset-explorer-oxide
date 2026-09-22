@@ -15,9 +15,9 @@
 #![allow(clippy::needless_question_mark)]
 
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
-use kafkaoxide_protobuf::{decide_decode_strategy, ProtobufDecodeStrategy, ProtobufDecoded, ProtobufSchemaSource};
+use salty_core::Result;
+use salty_core::AppError;
+use salty_protobuf::{decide_decode_strategy, ProtobufDecodeStrategy, ProtobufDecoded, ProtobufSchemaSource};
 
 async fn decode_protobuf(
     bytes: Vec<u8>,
@@ -29,7 +29,7 @@ async fn decode_protobuf(
     let (body_offset, message_index) = match strategy {
         ProtobufDecodeStrategy::RawFields { body_offset } => {
             return Ok(tokio::task::spawn_blocking(move || {
-                kafkaoxide_protobuf::decode_without_schema(&bytes[body_offset..])
+                salty_protobuf::decode_without_schema(&bytes[body_offset..])
             })
             .await
             .change_context(AppError::Decode)
@@ -41,7 +41,7 @@ async fn decode_protobuf(
         } => {
             let schema = manual_schema.expect("the strategy is only chosen when a manual schema exists");
             return Ok(tokio::task::spawn_blocking(move || {
-                kafkaoxide_protobuf::decode(
+                salty_protobuf::decode(
                     &bytes[body_offset..],
                     &schema,
                     &message_index,
@@ -61,7 +61,7 @@ async fn decode_protobuf(
 
     let schema_text = registry_schema.expect("the strategy is only chosen when an endpoint is configured");
     Ok(tokio::task::spawn_blocking(move || {
-        kafkaoxide_protobuf::decode(
+        salty_protobuf::decode(
             &bytes[body_offset..],
             &schema_text,
             &message_index,
@@ -141,7 +141,7 @@ async fn falls_back_to_field_numbers_with_no_schema_at_all() {
 /// in the camelCase shape the frontend's `ProtobufDecodeResult` expects.
 #[test]
 fn serialises_across_the_ipc_boundary_in_camel_case() {
-    let decoded = kafkaoxide_protobuf::decode(&encoded_order(), ORDER_PROTO, &[0], ProtobufSchemaSource::Manual).unwrap();
+    let decoded = salty_protobuf::decode(&encoded_order(), ORDER_PROTO, &[0], ProtobufSchemaSource::Manual).unwrap();
 
     let json = serde_json::to_value(&decoded).unwrap();
     assert_eq!(json["source"], "manual");

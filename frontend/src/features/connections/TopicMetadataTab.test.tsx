@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setInvokeHandlers } from "../../lib/testInvoke";
-import { TopicPropertiesTab } from "./TopicPropertiesTab";
+import { TopicMetadataTab } from "./TopicMetadataTab";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -16,9 +16,9 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("TopicPropertiesTab", () => {
+describe("TopicMetadataTab", () => {
   it("shows the topic name, pre-filled and disabled for editing", () => {
-    renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
 
     const nameInput = screen.getByLabelText("Topic name");
     expect(nameInput).toHaveValue("orders");
@@ -28,7 +28,7 @@ describe("TopicPropertiesTab", () => {
   it("does not fetch the message count on render", () => {
     const countMessages = vi.fn(() => 42);
     setInvokeHandlers({ connection_count_topic_messages: countMessages });
-    renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
 
     expect(countMessages).not.toHaveBeenCalled();
   });
@@ -37,7 +37,7 @@ describe("TopicPropertiesTab", () => {
     const countMessages = vi.fn(() => 42);
     setInvokeHandlers({ connection_count_topic_messages: countMessages });
     const user = userEvent.setup();
-    renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
@@ -54,7 +54,7 @@ describe("TopicPropertiesTab", () => {
       },
     });
     const user = userEvent.setup();
-    renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
@@ -64,13 +64,13 @@ describe("TopicPropertiesTab", () => {
   it("clears a previously loaded count when the topic changes without this component unmounting", async () => {
     setInvokeHandlers({ connection_count_topic_messages: () => 42 });
     const user = userEvent.setup();
-    const { rerender } = renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    const { rerender } = renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByLabelText("Total number of messages")).toHaveValue("42");
 
     rerender(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <TopicPropertiesTab connectionId="1" topicName="payments" />
+        <TopicMetadataTab connectionId="1" topicName="payments" />
       </QueryClientProvider>,
     );
 
@@ -84,13 +84,13 @@ describe("TopicPropertiesTab", () => {
       },
     });
     const user = userEvent.setup();
-    const { rerender } = renderWithClient(<TopicPropertiesTab connectionId="1" topicName="orders" />);
+    const { rerender } = renderWithClient(<TopicMetadataTab connectionId="1" topicName="orders" />);
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await screen.findByRole("alert");
 
     rerender(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <TopicPropertiesTab connectionId="1" topicName="payments" />
+        <TopicMetadataTab connectionId="1" topicName="payments" />
       </QueryClientProvider>,
     );
 

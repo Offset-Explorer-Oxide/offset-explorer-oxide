@@ -76,7 +76,7 @@ jobs:
       # rdkafka success path is unreachable without one.
       - name: Generate coverage
         env:
-          KAFKAOXIDE_E2E_BOOTSTRAP: localhost:9092
+          SALTY_E2E_BOOTSTRAP: localhost:9092
         run: ./scripts/coverage.sh
 
       - name: Upload coverage reports

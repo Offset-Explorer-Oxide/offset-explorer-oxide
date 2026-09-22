@@ -2,6 +2,7 @@ mod auth;
 mod cluster;
 mod connection;
 mod connection_export;
+mod data_migration;
 mod error;
 mod fetch_cancellation;
 mod message;
@@ -27,6 +28,7 @@ pub use connection_export::{
     partition_importable, select_for_export, ConnectionExportFile, PortableConnection,
     CURRENT_EXPORT_VERSION,
 };
+pub use data_migration::{adopt_legacy_app_data, AdoptedData, DB_FILE, LEGACY_DB_FILE, LEGACY_IDENTIFIER};
 pub use auth::is_auth_failure_reason;
 pub use registry::MAX_AUTH_ATTEMPTS;
 pub use error::AppError;

@@ -5,8 +5,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use chrono::{DateTime, NaiveTime, Timelike};
 use error_stack::{Report, ResultExt};
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
+use salty_core::Result;
+use salty_core::AppError;
 use num_bigint::BigInt;
 
 /// Confluent wire-format header: a leading magic byte (0x00) followed by a

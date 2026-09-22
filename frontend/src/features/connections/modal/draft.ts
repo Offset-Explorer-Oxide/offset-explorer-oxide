@@ -127,7 +127,7 @@ export function toNewConnection(draft: ConnectionDraft): NewConnection {
 
 /**
  * Loads a saved `Connection` (returned by the backend, including secrets —
- * see `Connection`'s doc comment in kafkaoxide-core) into editable draft
+ * see `Connection`'s doc comment in salty-core) into editable draft
  * state for the cluster detail panel. Secret fields pre-fill the same as
  * every other field; there's no longer a distinction to preserve here.
  */

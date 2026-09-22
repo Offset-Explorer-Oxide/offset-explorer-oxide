@@ -1,7 +1,7 @@
 use chrono::Utc;
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::{AppError, Connection, NewConnection, SaslMechanism, SecurityProtocol};
+use salty_core::Result;
+use salty_core::{AppError, Connection, NewConnection, SaslMechanism, SecurityProtocol};
 use sqlx::sqlite::SqlitePool;
 use sqlx::FromRow;
 use std::str::FromStr;
@@ -348,7 +348,7 @@ mod tests {
     #[tokio::test]
     async fn persists_and_returns_every_secret_field() {
         // Secrets live in plain columns now (see the module doc comment on
-        // `Connection` in kafkaoxide-core) — deliberately the opposite of
+        // `Connection` in salty-core) — deliberately the opposite of
         // this test's old name/assertion, from when they lived in the OS
         // keychain instead.
         let pool = test_pool().await;

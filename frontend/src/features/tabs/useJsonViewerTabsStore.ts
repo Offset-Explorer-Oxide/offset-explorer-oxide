@@ -32,18 +32,17 @@ export interface JsonViewerTab {
    */
   format?: ValueMode;
   /**
-   * The message's original bytes, when this tab was opened from one.
+   * The size of the message this tab's value came from, in bytes.
    *
-   * Carried so the tab can offer the same **Download** the payload viewer
-   * does — the bytes exactly as the broker holds them. `value` cannot stand
-   * in for it: by the time it reaches here it has been through a lossy UTF-8
-   * decode and, for JSON/XML/Avro, a parse — saving that back produces a
-   * file that no longer round-trips. Absent for a tab opened from anything
-   * that isn't a message, and Download is then not offered rather than
-   * offered and wrong.
+   * Shown in the tab's toolbar exactly as the payload viewer shows it, so a
+   * value opened into its own tab doesn't lose the one fact the pane it came
+   * from was telling you about it. It is the *message's* size as the broker
+   * reported it — not the length of the text rendered here, which for a
+   * pretty-printed tree or a hex dump is a different number entirely.
+   * Absent for a tab opened from anything that isn't a message.
    */
-  payloadBase64?: string;
-  /** `partition-0-offset-42` — the filename stem Save and Download default to. */
+  payloadSizeBytes?: number;
+  /** `partition-0-offset-42` — the filename stem Save defaults to. */
   fileStem?: string;
   value: unknown;
 }
@@ -55,7 +54,7 @@ export interface JsonViewerTab {
  */
 export interface JsonViewerTabOrigin {
   format?: ValueMode;
-  payloadBase64?: string;
+  payloadSizeBytes?: number;
   fileStem?: string;
 }
 

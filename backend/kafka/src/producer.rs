@@ -6,13 +6,13 @@
 //! next is sent, and a stop at the first failure.
 //!
 //! The rules about *whether* a publish may happen live in
-//! `kafkaoxide_core::publish` (and are enforced by the command layer before
+//! `salty_core::publish` (and are enforced by the command layer before
 //! anything here is called). What is left for this module is the produce
 //! itself, and turning librdkafka's failures into the error the rest of the app
 //! can act on.
 
 use error_stack::Report;
-use kafkaoxide_core::{
+use salty_core::{
     AppError, Connection, DeliveredRecord, EncodedRecord, PublishFailure, PublishFailureKind,
     PublishOutcome,
 };
@@ -86,7 +86,7 @@ impl ClientContext for ProducerErrorContext {
             .last_error
             .lock()
             .unwrap_or_else(|err| err.into_inner()) = Some(reason.to_string());
-        if kafkaoxide_core::is_auth_failure_reason(reason) {
+        if salty_core::is_auth_failure_reason(reason) {
             let mut auth = self
                 .auth_error
                 .lock()
@@ -274,7 +274,7 @@ pub async fn publish_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kafkaoxide_core::SecurityProtocol;
+    use salty_core::SecurityProtocol;
 
     fn connection(bootstrap: &str) -> Connection {
         Connection {

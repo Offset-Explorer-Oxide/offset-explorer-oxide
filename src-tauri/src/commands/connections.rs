@@ -1,10 +1,10 @@
 use crate::state::AppState;
 use error_stack::ResultExt;
-use kafkaoxide_core::{
+use salty_core::{
     partition_importable, select_for_export, AppError, Connection, ConnectionExportFile, ConnectionStatus,
     MessagesBatchEvent, NewConnection,
 };
-use kafkaoxide_kafka::BrokerSslConfig;
+use salty_kafka::BrokerSslConfig;
 use std::collections::HashSet;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
@@ -14,8 +14,8 @@ pub struct CommandError {
     pub message: String,
 }
 
-impl From<error_stack::Report<kafkaoxide_core::AppError>> for CommandError {
-    fn from(report: error_stack::Report<kafkaoxide_core::AppError>) -> Self {
+impl From<error_stack::Report<salty_core::AppError>> for CommandError {
+    fn from(report: error_stack::Report<salty_core::AppError>) -> Self {
         CommandError {
             message: format_report(&report),
         }
@@ -27,7 +27,7 @@ impl From<error_stack::Report<kafkaoxide_core::AppError>> for CommandError {
 /// `.attach(...)` reason in the chain. Plain `{report:?}` isn't
 /// fit for end users — it includes box-drawing characters and `at
 /// file:line` source locations meant for developers reading logs.
-fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
+fn format_report(report: &error_stack::Report<salty_core::AppError>) -> String {
     let mut parts = vec![report.current_context().to_string()];
     parts.push(report_reasons(report));
     parts.retain(|part| !part.is_empty());
@@ -38,7 +38,7 @@ fn format_report(report: &error_stack::Report<kafkaoxide_core::AppError>) -> Str
 /// `AppError` heading — for callers that already say what went wrong and
 /// only need the detail (e.g. the reason stored against a connection whose
 /// credentials were rejected, which is shown under its name in the tree).
-pub(crate) fn report_reasons(report: &error_stack::Report<kafkaoxide_core::AppError>) -> String {
+pub(crate) fn report_reasons(report: &error_stack::Report<salty_core::AppError>) -> String {
     use error_stack::{AttachmentKind, FrameKind};
 
     report
@@ -77,13 +77,13 @@ pub(crate) async fn connection_for_request(state: &AppState, id: &str) -> Result
             ),
         });
     }
-    Ok(kafkaoxide_db::connections::get(&state.pool, id).await?)
+    Ok(salty_db::connections::get(&state.pool, id).await?)
 }
 
 /// Feeds a broker call's outcome back to the connection's circuit breaker:
 /// a rejection counts against its attempt allowance, and any success clears
 /// the slate. Only `AppError::Authentication` counts — a timeout or a
-/// transport failure must stay retryable (see `kafkaoxide_kafka::auth`).
+/// transport failure must stay retryable (see `salty_kafka::auth`).
 fn record_auth_outcome<T>(
     state: &AppState,
     id: &str,
@@ -147,7 +147,7 @@ pub(crate) fn log_broker_call(app: &AppHandle, what: &str, started: std::time::I
 
 #[tauri::command]
 pub async fn connection_list(state: State<'_, AppState>) -> Result<Vec<Connection>, CommandError> {
-    Ok(kafkaoxide_db::connections::list(&state.pool).await?)
+    Ok(salty_db::connections::list(&state.pool).await?)
 }
 
 #[tauri::command]
@@ -157,7 +157,7 @@ pub async fn connection_create(
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
     let started = std::time::Instant::now();
-    let connection = kafkaoxide_db::connections::create(&state.pool, &new_connection).await?;
+    let connection = salty_db::connections::create(&state.pool, &new_connection).await?;
     crate::logging::emit_log(
         &app,
         "info",
@@ -174,7 +174,7 @@ pub async fn connection_update(
     new_connection: NewConnection,
 ) -> Result<Connection, CommandError> {
     let started = std::time::Instant::now();
-    let connection = kafkaoxide_db::connections::update(&state.pool, &id, &new_connection).await?;
+    let connection = salty_db::connections::update(&state.pool, &id, &new_connection).await?;
     // The settings the broker rejected no longer exist, so the verdict on
     // them is meaningless — give the edited connection a clean slate.
     state.connections.clear_auth_failures(&id);
@@ -201,8 +201,8 @@ pub async fn connection_delete(
     id: String,
 ) -> Result<(), CommandError> {
     let started = std::time::Instant::now();
-    kafkaoxide_db::connections::delete(&state.pool, &id).await?;
-    kafkaoxide_db::topic_schemas::delete_all_for_connection(&state.pool, &id).await?;
+    salty_db::connections::delete(&state.pool, &id).await?;
+    salty_db::topic_schemas::delete_all_for_connection(&state.pool, &id).await?;
     state.connections.mark_disconnected(&id);
     state.connections.clear_auth_failures(&id);
     state.kafka.release(&id);
@@ -236,7 +236,7 @@ pub async fn connections_export(
     ids: Option<Vec<String>>,
     path: String,
 ) -> Result<(), CommandError> {
-    let all = kafkaoxide_db::connections::list(&state.pool).await?;
+    let all = salty_db::connections::list(&state.pool).await?;
     let portable = select_for_export(&all, ids.as_deref());
     let file = ConnectionExportFile::new(portable);
     let json = file
@@ -261,14 +261,14 @@ pub async fn connections_import(state: State<'_, AppState>, path: String) -> Res
         .attach("failed to read the connections export file")?;
     let file = ConnectionExportFile::parse(&text)?;
 
-    let existing = kafkaoxide_db::connections::list(&state.pool).await?;
+    let existing = salty_db::connections::list(&state.pool).await?;
     let existing_names: HashSet<String> = existing.into_iter().map(|connection| connection.name).collect();
     let (importable, skipped) = partition_importable(&file.connections, &existing_names);
     let imported = importable.len();
 
     for portable in importable {
         let new_connection: NewConnection = portable.clone().into();
-        kafkaoxide_db::connections::create(&state.pool, &new_connection).await?;
+        salty_db::connections::create(&state.pool, &new_connection).await?;
     }
 
     Ok(ImportSummary { imported, skipped })
@@ -279,7 +279,7 @@ pub async fn connection_check_status(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<ConnectionStatus, CommandError> {
-    let connection = kafkaoxide_db::connections::get(&state.pool, &id).await?;
+    let connection = salty_db::connections::get(&state.pool, &id).await?;
     Ok(state.kafka.check_status(&connection).await?)
 }
 
@@ -442,7 +442,7 @@ pub async fn connection_list_brokers(
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
-) -> Result<Vec<kafkaoxide_core::BrokerSummary>, CommandError> {
+) -> Result<Vec<salty_core::BrokerSummary>, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state.kafka.list_brokers(&connection, Duration::from_millis(read_timeout_ms)).await;
@@ -458,7 +458,7 @@ pub async fn connection_list_topics(
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
-) -> Result<Vec<kafkaoxide_core::TopicSummary>, CommandError> {
+) -> Result<Vec<salty_core::TopicSummary>, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state.kafka.list_topics(&connection, Duration::from_millis(read_timeout_ms)).await;
@@ -474,7 +474,7 @@ pub async fn connection_list_consumer_groups(
     state: State<'_, AppState>,
     id: String,
     read_timeout_ms: u64,
-) -> Result<Vec<kafkaoxide_core::ConsumerGroupSummary>, CommandError> {
+) -> Result<Vec<salty_core::ConsumerGroupSummary>, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state
@@ -579,13 +579,13 @@ pub async fn connection_fetch_messages(
     state: State<'_, AppState>,
     id: String,
     topic: String,
-    filter: kafkaoxide_core::MessageFilter,
+    filter: salty_core::MessageFilter,
     request_id: String,
     read_timeout_ms: u64,
     max_message_size_bytes: u32,
     max_total_payload_bytes: Option<u64>,
     stream_updates: bool,
-) -> Result<kafkaoxide_core::MessageFetchResult, CommandError> {
+) -> Result<salty_core::MessageFetchResult, CommandError> {
     // Registered before anything that can await, so the window in which a
     // Stop click has nothing to cancel is as small as the IPC hop that
     // carries it. `connection_for_request` reads SQLite, and doing that
@@ -613,13 +613,13 @@ pub async fn connection_fetch_messages(
     // Only when the caller is streaming. Handing the fetch a sender it does
     // not need would have it clone every message into a channel nobody reads.
     //
-    // The batching itself lives in `kafkaoxide_core::forward_in_batches`,
+    // The batching itself lives in `salty_core::forward_in_batches`,
     // which is where it can be tested — this crate needs a desktop toolchain
     // and a running Tauri app to exercise at all. What stays here is the part
     // that is genuinely Tauri's: turning a batch into an event, and a running
     // total into a Logs panel line.
     let (sender, forward_task) = if stream_updates {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<kafkaoxide_core::TopicMessage>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<salty_core::TopicMessage>();
         let cancelled = std::sync::Arc::clone(&cancelled);
         let emit_app = app.clone();
         let emit_request_id = request_id.clone();
@@ -628,7 +628,7 @@ pub async fn connection_fetch_messages(
         // Returns how many messages it actually emitted, which is what lets
         // the result below carry the remainder and nothing more.
         let task = tokio::spawn(async move {
-            kafkaoxide_core::forward_in_batches(
+            salty_core::forward_in_batches(
                 rx,
                 cancelled,
                 STREAM_BATCH_SIZE,
@@ -783,7 +783,7 @@ pub async fn connection_list_partitions(
     id: String,
     topic: String,
     read_timeout_ms: u64,
-) -> Result<Vec<kafkaoxide_core::PartitionSummary>, CommandError> {
+) -> Result<Vec<salty_core::PartitionSummary>, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state
@@ -803,7 +803,7 @@ pub async fn connection_describe_topic_config(
     id: String,
     topic: String,
     read_timeout_ms: u64,
-) -> Result<Vec<kafkaoxide_core::ConfigEntry>, CommandError> {
+) -> Result<Vec<salty_core::ConfigEntry>, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state
@@ -823,7 +823,7 @@ pub async fn connection_fetch_consumer_group_lag(
     id: String,
     group_id: String,
     read_timeout_ms: u64,
-) -> Result<kafkaoxide_core::ConsumerGroupLag, CommandError> {
+) -> Result<salty_core::ConsumerGroupLag, CommandError> {
     let connection = connection_for_request(&state, &id).await?;
     let started = std::time::Instant::now();
     let result = state

@@ -10,24 +10,24 @@
 //! It needs a cluster with an authorizer and `allow.everyone.if.no.acl.found`
 //! off. The ordinary e2e broker has neither, and on it `reader` would publish
 //! perfectly happily — the test would pass for the wrong reason, which is why
-//! this file is gated on its own variable rather than `KAFKAOXIDE_E2E_BOOTSTRAP`.
+//! this file is gated on its own variable rather than `SALTY_E2E_BOOTSTRAP`.
 //!
 //! ```bash
 //! ./scripts/e2e-acl-fixtures.sh
-//! KAFKAOXIDE_E2E_ACL_BOOTSTRAP=localhost:9192 \
-//!   cargo test -p kafkaoxide-kafka --test publish_authorization
+//! SALTY_E2E_ACL_BOOTSTRAP=localhost:9192 \
+//!   cargo test -p salty-kafka --test publish_authorization
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kafkaoxide_core::{
+use salty_core::{
     encode_messages, AppError, Connection, ConnectionRegistry, MessageFilter, NewPublishMessage,
     PublishField, PublishFailureKind, PublishLimits, PublishOutcome, PublishRefusal, SaslMechanism,
     SecurityProtocol,
 };
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Created by `scripts/e2e-acl-fixtures.sh`, with Write granted to `writer` and
 /// deliberately not to `reader`.
@@ -37,7 +37,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_ACL_BOOTSTRAP")
+    std::env::var("SALTY_E2E_ACL_BOOTSTRAP")
         .ok()
         .filter(|value| !value.is_empty())
 }
@@ -49,7 +49,7 @@ macro_rules! acl_broker {
             None => {
                 eprintln!(
                     "skipped: run ./scripts/e2e-acl-fixtures.sh and set \
-                     KAFKAOXIDE_E2E_ACL_BOOTSTRAP to run this test"
+                     SALTY_E2E_ACL_BOOTSTRAP to run this test"
                 );
                 return;
             }
@@ -326,7 +326,7 @@ async fn a_denial_blocks_the_next_attempt_without_asking_the_broker_again() {
 
     // Nothing is blocked before the first attempt: the app cannot know.
     assert_eq!(
-        kafkaoxide_core::publish_refusal(true, true, registry.write_denied_reason(&reader.id, TOPIC).as_deref()),
+        salty_core::publish_refusal(true, true, registry.write_denied_reason(&reader.id, TOPIC).as_deref()),
         None
     );
 
@@ -337,7 +337,7 @@ async fn a_denial_blocks_the_next_attempt_without_asking_the_broker_again() {
 
     // Now it is, and the refusal reports as an authorization failure rather than
     // as the app's own state.
-    let refusal = kafkaoxide_core::publish_refusal(
+    let refusal = salty_core::publish_refusal(
         true,
         true,
         registry.write_denied_reason(&reader.id, TOPIC).as_deref(),
@@ -350,7 +350,7 @@ async fn a_denial_blocks_the_next_attempt_without_asking_the_broker_again() {
     // Another topic is unaffected — the denial is about one topic, not the
     // connection.
     assert_eq!(
-        kafkaoxide_core::publish_refusal(
+        salty_core::publish_refusal(
             true,
             true,
             registry.write_denied_reason(&reader.id, "some-other-topic").as_deref()
@@ -362,7 +362,7 @@ async fn a_denial_blocks_the_next_attempt_without_asking_the_broker_again() {
     // restart.
     registry.clear_auth_failures(&reader.id);
     assert_eq!(
-        kafkaoxide_core::publish_refusal(
+        salty_core::publish_refusal(
             true,
             true,
             registry.write_denied_reason(&reader.id, TOPIC).as_deref()

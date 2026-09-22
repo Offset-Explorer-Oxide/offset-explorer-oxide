@@ -3,7 +3,7 @@ import { FilterFormState } from "./dataFilters";
 import { dataTabKeyBelongsTo } from "../workspace/useTabDataStore";
 
 /**
- * The Data tab's filter form (Max messages per partition, Partition filter,
+ * The Data tab's filter form (Max messages per partition, Partition,
  * Offset, From/To, ...), keyed the same way as `useTabDataStore`'s cached
  * messages (`dataTabCacheKey`) — tab + connection + topic + partition. Without
  * this, the form lived in `DataTab`'s own `useState`, reset on every topic

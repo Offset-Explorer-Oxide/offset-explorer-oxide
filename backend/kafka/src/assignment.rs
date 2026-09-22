@@ -1,6 +1,6 @@
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
+use salty_core::Result;
+use salty_core::AppError;
 
 /// Decodes a `GroupMemberInfo::assignment()` byte slice (Kafka's
 /// `ConsumerProtocolAssignment` wire format) into the flat list of

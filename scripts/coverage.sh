@@ -14,12 +14,12 @@
 #
 # The backend's e2e tests (`backend/kafka/tests/*`) need a real broker and
 # skip themselves without one — but they are what covers `client.rs`'s
-# rdkafka paths, which is most of the file. Export KAFKAOXIDE_E2E_BOOTSTRAP
+# rdkafka paths, which is most of the file. Export SALTY_E2E_BOOTSTRAP
 # to include them:
 #
 #   docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 #   ./scripts/e2e-fixtures.sh
-#   KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 ./scripts/coverage.sh
+#   SALTY_E2E_BOOTSTRAP=localhost:9092 ./scripts/coverage.sh
 #
 # `src-tauri` is deliberately not measured: it needs a desktop toolchain to
 # build and a running Tauri app to invoke, so it is excluded from the
@@ -49,20 +49,20 @@ fi
 
 cargo llvm-cov \
   --lcov --output-path coverage/backend.lcov \
-  -p kafkaoxide-core \
-  -p kafkaoxide-db \
-  -p kafkaoxide-avro \
-  -p kafkaoxide-protobuf \
-  -p kafkaoxide-schema-registry \
-  -p kafkaoxide-kafka
+  -p salty-core \
+  -p salty-db \
+  -p salty-avro \
+  -p salty-protobuf \
+  -p salty-schema-registry \
+  -p salty-kafka
 echo "    -> coverage/backend.lcov"
 
 echo
 echo "==> summary"
 cargo llvm-cov report --summary-only \
-  -p kafkaoxide-core \
-  -p kafkaoxide-db \
-  -p kafkaoxide-avro \
-  -p kafkaoxide-protobuf \
-  -p kafkaoxide-schema-registry \
-  -p kafkaoxide-kafka
+  -p salty-core \
+  -p salty-db \
+  -p salty-avro \
+  -p salty-protobuf \
+  -p salty-schema-registry \
+  -p salty-kafka

@@ -6,9 +6,9 @@
 //! module.
 //!
 //! **This file holds no logic of its own.** Whether a publish may proceed is
-//! `kafkaoxide_core::publish_refusal`; what the entered text becomes is
-//! `kafkaoxide_core::encode_messages`; how a produce failure is classified is
-//! `kafkaoxide_kafka::producer::classify_produce_error`. All three live in
+//! `salty_core::publish_refusal`; what the entered text becomes is
+//! `salty_core::encode_messages`; how a produce failure is classified is
+//! `salty_kafka::producer::classify_produce_error`. All three live in
 //! crates that can be built and tested anywhere, because `src-tauri` needs a
 //! desktop toolchain and is excluded from coverage (see CLAUDE.md). What is
 //! left here is the order the gates run in, and what their verdicts are
@@ -16,7 +16,7 @@
 
 use crate::commands::connections::{connection_for_request, log_broker_call, CommandError};
 use crate::state::AppState;
-use kafkaoxide_core::{
+use salty_core::{
     encode_messages, publish_refusal, NewPublishMessage, PublishFailureKind, PublishLimits,
     PublishOutcome,
 };

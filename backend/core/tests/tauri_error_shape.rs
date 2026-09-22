@@ -10,7 +10,7 @@
 //! the old variant would compile in 0.5 and silently match nothing in 0.8.
 
 use error_stack::{Report, ResultExt};
-use kafkaoxide_core::AppError;
+use salty_core::AppError;
 
 #[derive(serde::Serialize)]
 pub struct CommandError {

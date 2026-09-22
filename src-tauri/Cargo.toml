@@ -1,5 +1,5 @@
 [package]
-name = "kafkaoxide-app"
+name = "salty-app"
 version = "0.1.0"
 # Deliberately still 2021 while every `backend/*` crate is on 2024. Editions
 # are per-crate and mix freely, and this is the one crate that cannot be
@@ -14,12 +14,12 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-kafkaoxide-core = { workspace = true }
-kafkaoxide-db = { workspace = true }
-kafkaoxide-kafka = { workspace = true }
-kafkaoxide-avro = { workspace = true }
-kafkaoxide-protobuf = { workspace = true }
-kafkaoxide-schema-registry = { workspace = true }
+salty-core = { workspace = true }
+salty-db = { workspace = true }
+salty-kafka = { workspace = true }
+salty-avro = { workspace = true }
+salty-protobuf = { workspace = true }
+salty-schema-registry = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tokio = { workspace = true }

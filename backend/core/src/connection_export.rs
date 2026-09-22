@@ -101,14 +101,23 @@ impl From<PortableConnection> for NewConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionExportFile {
-    pub kafkaoxide_connections_version: u32,
+    /// Serialises as `saltyConnectionsVersion`.
+    ///
+    /// The alias is the app's previous name, and it is load-bearing: this
+    /// field is the first thing [`parse`] checks, so without it every file
+    /// exported before the rename would be rejected as "not a valid
+    /// connections export file" — a user's saved export silently becoming
+    /// unreadable because the product changed its name. Exports written from
+    /// here use the new spelling; both are accepted on the way in.
+    #[serde(alias = "kafkaoxideConnectionsVersion")]
+    pub salty_connections_version: u32,
     pub connections: Vec<PortableConnection>,
 }
 
 impl ConnectionExportFile {
     pub fn new(connections: Vec<PortableConnection>) -> Self {
         ConnectionExportFile {
-            kafkaoxide_connections_version: CURRENT_EXPORT_VERSION,
+            salty_connections_version: CURRENT_EXPORT_VERSION,
             connections,
         }
     }
@@ -120,11 +129,11 @@ impl ConnectionExportFile {
     pub fn parse(text: &str) -> Result<Self, AppError> {
         let file: Self = serde_json::from_str(text)
             .change_context(AppError::Validation)
-            .attach("not a valid kafkaoxide connections export file")?;
-        if file.kafkaoxide_connections_version != CURRENT_EXPORT_VERSION {
+            .attach("not a valid salty connections export file")?;
+        if file.salty_connections_version != CURRENT_EXPORT_VERSION {
             return Err(Report::new(AppError::Validation).attach(format!(
                 "unsupported connections export file version {} (expected {CURRENT_EXPORT_VERSION})",
-                file.kafkaoxide_connections_version
+                file.salty_connections_version
             )));
         }
         Ok(file)
@@ -316,13 +325,34 @@ mod tests {
         let parsed = ConnectionExportFile::parse(&json).unwrap();
 
         assert_eq!(parsed.connections, portables);
-        assert_eq!(parsed.kafkaoxide_connections_version, CURRENT_EXPORT_VERSION);
+        assert_eq!(parsed.salty_connections_version, CURRENT_EXPORT_VERSION);
     }
 
     #[test]
     fn parse_rejects_a_future_export_version() {
-        let json = r#"{"kafkaoxideConnectionsVersion":999,"connections":[]}"#;
+        let json = r#"{"saltyConnectionsVersion":999,"connections":[]}"#;
         assert!(ConnectionExportFile::parse(json).is_err());
+    }
+
+    /// A file exported before the app was renamed spells the version field
+    /// with the old product name. Those files sit in users' folders and must
+    /// keep importing.
+    #[test]
+    fn parse_accepts_an_export_written_under_the_old_name() {
+        let json = r#"{"kafkaoxideConnectionsVersion":1,"connections":[]}"#;
+
+        let parsed = ConnectionExportFile::parse(json).expect("legacy export should still import");
+
+        assert_eq!(parsed.salty_connections_version, CURRENT_EXPORT_VERSION);
+    }
+
+    /// ...but only for reading. Anything written now carries the new spelling.
+    #[test]
+    fn exports_are_written_with_the_current_name() {
+        let json = ConnectionExportFile::new(vec![]).to_json_pretty().unwrap();
+
+        assert!(json.contains("saltyConnectionsVersion"), "got {json}");
+        assert!(!json.contains("kafkaoxide"), "got {json}");
     }
 
     #[test]

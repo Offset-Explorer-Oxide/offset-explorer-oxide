@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use error_stack::ResultExt;
-use kafkaoxide_core::Result;
-use kafkaoxide_core::{
+use salty_core::Result;
+use salty_core::{
     AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
     ConsumerGroupSummary, EncodedRecord, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag,
     PartitionSummary, PublishOutcome, SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
@@ -246,7 +246,7 @@ pub trait KafkaClient: Send + Sync {
     /// `cancelled` is checked once per poll slice (~500ms) so a Stop click,
     /// or a topic switch that implies one, can interrupt the fetch instead
     /// of only hiding its result once it eventually finishes — see
-    /// `kafkaoxide_core::FetchCancellations`.
+    /// `salty_core::FetchCancellations`.
     ///
     /// `max_total_payload_bytes` bounds the fetch by size rather than by
     /// message count — see `byte_budget_reached`. `None` leaves it unbounded.
@@ -300,9 +300,9 @@ pub trait KafkaClient: Send + Sync {
     /// partition, in order, and reports what happened to each.
     ///
     /// The only write in this trait, and the only one whose caller must have
-    /// cleared a gate first — see `kafkaoxide_core::publish_refusal`, which the
+    /// cleared a gate first — see `salty_core::publish_refusal`, which the
     /// command layer applies before calling this. `records` arrive already
-    /// encoded and size-checked by `kafkaoxide_core::encode_messages`, so this
+    /// encoded and size-checked by `salty_core::encode_messages`, so this
     /// method neither parses nor validates user input: whatever reaches here is
     /// bytes that have already been agreed to.
     ///

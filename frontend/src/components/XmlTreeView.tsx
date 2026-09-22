@@ -5,7 +5,7 @@ export interface XmlTreeViewProps {
   value: XmlElementNode;
   /** Opens `value` as its own tab in the app (there's no browser to open a real new tab in). Omit to hide the button — e.g. a view that's already a dedicated XML tab has nothing new to open. */
   onOpenInNewTab?: () => void;
-  /** Numbers every rendered line down the left edge. Off by default — a tab-sized view of a small document reads better without the column. */
+  /** Numbers every rendered line down the left edge. On wherever a message payload is rendered — the payload panel and the viewer tab both — so a line in a long document can be pointed at; off by default for a caller showing something too small to need the column. */
   lineNumbers?: boolean;
   /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
   showToolbar?: boolean;

@@ -9,7 +9,7 @@
 #
 #   docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 #   ./scripts/e2e-fixtures.sh
-#   KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 cargo test -p kafkaoxide-kafka
+#   SALTY_E2E_BOOTSTRAP=localhost:9092 cargo test -p salty-kafka
 #
 # Every step is idempotent, so re-running it against a broker that already
 # has the fixtures is harmless.

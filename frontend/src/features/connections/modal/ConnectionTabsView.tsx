@@ -1,16 +1,18 @@
-import { AdvancedTab } from "./AdvancedTab";
-import { AuthenticationTab } from "./AuthenticationTab";
 import { ConnectionDraft } from "./draft";
 import { PropertiesTab } from "./PropertiesTab";
-import { SecurityTab } from "./SecurityTab";
+import { SchemaTab } from "./SchemaTab";
+import { SecurityAuthenticationTab } from "./SecurityAuthenticationTab";
 
-export type ConnectionTabId = "properties" | "security" | "advanced" | "authentication";
+export type ConnectionTabId = "properties" | "security" | "schema";
 
 export const CONNECTION_TABS: { id: ConnectionTabId; label: string }[] = [
   { id: "properties", label: "Properties" },
-  { id: "security", label: "Security" },
-  { id: "authentication", label: "Authentication" },
-  { id: "advanced", label: "Advanced" },
+  // One tab, not two: the security protocol decides whether a SASL mechanism
+  // is needed, so the two belong in front of the user together.
+  { id: "security", label: "Security & Authentication" },
+  // Named for what it holds. It was "Advanced", which said nothing — every
+  // field on it is a Schema Registry setting.
+  { id: "schema", label: "Schema" },
 ];
 
 export interface ConnectionTabsViewProps {
@@ -41,11 +43,10 @@ export function ConnectionTabsView({ activeTab, onTabChange, draft, onChange, di
       </div>
       <div className="connection-modal-body">
         {activeTab === "properties" && <PropertiesTab draft={draft} onChange={onChange} disabled={disabled} />}
-        {activeTab === "security" && <SecurityTab draft={draft} onChange={onChange} disabled={disabled} />}
-        {activeTab === "advanced" && <AdvancedTab draft={draft} onChange={onChange} disabled={disabled} />}
-        {activeTab === "authentication" && (
-          <AuthenticationTab draft={draft} onChange={onChange} disabled={disabled} />
+        {activeTab === "security" && (
+          <SecurityAuthenticationTab draft={draft} onChange={onChange} disabled={disabled} />
         )}
+        {activeTab === "schema" && <SchemaTab draft={draft} onChange={onChange} disabled={disabled} />}
       </div>
     </>
   );

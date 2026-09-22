@@ -1,6 +1,6 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use kafkaoxide_core::{Connection, SaslMechanism, SecurityProtocol};
+use salty_core::{Connection, SaslMechanism, SecurityProtocol};
 use rdkafka::ClientConfig;
 use std::sync::OnceLock;
 
@@ -96,7 +96,7 @@ pub fn build_client_config(
 /// compiled in from `CARGO_PKG_VERSION`: the crates in this workspace are all
 /// still at `0.1.0` and are not bumped per release, so the only true version
 /// of the app is the one in `tauri.conf.json` that Tauri reports at runtime.
-/// Baking in the crate version would have shipped `kafkaoxide/0.1.0` from
+/// Baking in the crate version would have shipped `salty/0.1.0` from
 /// every release — attributable, but useless for telling an operator (or a
 /// support thread) *which* build a user is running.
 fn client_id() -> &'static str {
@@ -105,12 +105,12 @@ fn client_id() -> &'static str {
 
 /// Used until [`set_app_version`] runs, and by this crate's own tests, which
 /// exercise the config builders directly with no Tauri app around them.
-const FALLBACK_CLIENT_ID: &str = "kafkaoxide";
+const FALLBACK_CLIENT_ID: &str = "salty";
 
 static APP_CLIENT_ID: OnceLock<String> = OnceLock::new();
 
 /// Records the running app's version so every client this module builds can
-/// identify itself as `kafkaoxide/<version>` — see [`client_id`].
+/// identify itself as `salty/<version>` — see [`client_id`].
 ///
 /// Called once at startup from `src-tauri`, which is the only place that
 /// knows the real version (`tauri.conf.json` via `package_info()`). Ignores
@@ -118,7 +118,7 @@ static APP_CLIENT_ID: OnceLock<String> = OnceLock::new();
 /// first caller is the authoritative one.
 ///
 /// Missing this call is not fatal — clients still identify themselves as
-/// `kafkaoxide`, just without a version — so `src-tauri` also logs the
+/// `salty`, just without a version — so `src-tauri` also logs the
 /// resulting id at startup, which is what makes a forgotten call visible
 /// instead of silent.
 pub fn set_app_version(version: &str) {
@@ -259,7 +259,7 @@ pub fn client_config(connection: &Connection) -> ClientConfig {
 /// interaction between two of them that no single value looked wrong in.
 pub fn fetch_consumer_config(connection: &Connection, max_message_size_bytes: u32) -> ClientConfig {
     let mut config = client_config(connection);
-    config.set("group.id", "kafkaoxide-message-browser");
+    config.set("group.id", "salty-message-browser");
     config.set("enable.auto.commit", "false");
     config.set("max.partition.fetch.bytes", max_message_size_bytes.to_string());
 
@@ -440,7 +440,7 @@ pub fn publish_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kafkaoxide_core::{SaslMechanism, SecurityProtocol};
+    use salty_core::{SaslMechanism, SecurityProtocol};
     use std::time::Duration;
 
     fn sample_connection() -> Connection {
@@ -645,8 +645,8 @@ mod tests {
         let client_id = config.get("client.id").expect("client.id must always be set");
 
         assert!(
-            client_id.starts_with("kafkaoxide"),
-            "expected a kafkaoxide client id, got {client_id:?}"
+            client_id.starts_with("salty"),
+            "expected a salty client id, got {client_id:?}"
         );
         assert_ne!(client_id, "rdkafka");
     }
@@ -687,7 +687,7 @@ mod tests {
 
     /// The crates in this workspace sit at 0.1.0 and are not bumped per
     /// release, so a `CARGO_PKG_VERSION`-derived id would have reported
-    /// `kafkaoxide/0.1.0` forever — attributable, but useless for telling
+    /// `salty/0.1.0` forever — attributable, but useless for telling
     /// which build a user is actually running.
     #[test]
     fn carries_the_app_version_once_the_app_supplies_it() {
@@ -695,15 +695,15 @@ mod tests {
         // whichever test set it first wins, and any of them supplies one.
         let id = stable_client_id();
 
-        assert!(id.starts_with("kafkaoxide/"), "expected a versioned id, got {id:?}");
-        assert!(id.len() > "kafkaoxide/".len(), "expected a version after the prefix, got {id:?}");
+        assert!(id.starts_with("salty/"), "expected a versioned id, got {id:?}");
+        assert!(id.len() > "salty/".len(), "expected a version after the prefix, got {id:?}");
     }
 
     #[test]
     fn falls_back_to_an_unversioned_id_rather_than_an_empty_one() {
         // A forgotten `set_app_version` must still leave the client
         // attributable — degraded, not broken.
-        assert_eq!(FALLBACK_CLIENT_ID, "kafkaoxide");
+        assert_eq!(FALLBACK_CLIENT_ID, "salty");
         assert!(!FALLBACK_CLIENT_ID.is_empty());
     }
 

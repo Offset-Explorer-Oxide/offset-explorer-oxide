@@ -13,16 +13,16 @@
 //! docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
 //!   --create --topic big-msgs --partitions 1 --replication-factor 1
 //! # ...produce 20 x 512 KB records into it...
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test payload_budget -- --nocapture
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test payload_budget -- --nocapture
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 const DEFAULT_TOPIC: &str = "big-msgs";
 
@@ -31,11 +31,11 @@ const DEFAULT_TOPIC: &str = "big-msgs";
 const BUDGET_BYTES: u64 = 2 * 1024 * 1024;
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 fn topic() -> String {
-    std::env::var("KAFKAOXIDE_E2E_LARGE_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
+    std::env::var("SALTY_E2E_LARGE_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
 }
 
 fn connection(bootstrap_servers: String) -> Connection {
@@ -87,7 +87,7 @@ fn filter(include_payload: bool) -> MessageFilter {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_byte_budget_charges_only_for_payloads_the_fetch_keeps() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
 
