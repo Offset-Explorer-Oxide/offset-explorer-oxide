@@ -25,3 +25,6 @@ PROGRESS.md
 
 ### Claude Code local session state ###
 .claude/RESUME.md
+
+# The harness Vite server keeps its dependency cache here, out of the app's.
+frontend/harness/.vite-cache/

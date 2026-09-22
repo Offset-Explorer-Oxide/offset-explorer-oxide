@@ -221,16 +221,17 @@ textarea {
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
 }
-.resizable-pane--right {
-  border-left: 1px solid var(--color-border);
-}
-/* Docked under the middle pane: full width, its own height, and the border
-   moves to the edge it now shares with the pane above it. */
+/* No border on the edge the divider sits against, on either placement.
+   `ResizableShell` renders the divider and this pane together — same guard,
+   same fragment — and the divider already paints a persistent 1px rule in the
+   border colour. A border here drew that same edge a second time, five pixels
+   from the first, which read as a doubled rule rather than as a seam. The
+   divider's line is the one to keep: it is the only one that highlights when
+   you take hold of it. */
 .resizable-pane--bottom {
   flex: 0 0 auto;
   width: 100%;
   box-sizing: border-box;
-  border-top: 1px solid var(--color-border);
 }
 
 /* 9px of grab area around a 1px line.
@@ -1340,6 +1341,17 @@ textarea {
   overflow-x: visible;
   width: max-content;
   min-width: 100%;
+}
+/* ...and in this pane the tree does not frame itself either. Its box sits 8px
+   inside the pane's edge, so its border became a third vertical line running
+   alongside the divider and the pane border above — for a box that fills the
+   pane and needs no outline to be found. The literal views (`.code-view`,
+   used for Raw/Hex/Base64) have never drawn one, so this also makes the seven
+   formats agree. The JSON viewer *tab* keeps its frame: there the tree sits
+   in the middle of a pane with other things around it. */
+.message-payload-scroll .json-tree-body {
+  border: none;
+  border-radius: 0;
 }
 /* The JSON tree needs none of that, and must not have it: being virtualized,
    it is a scroll box of its own that stops at the bottom of the pane, so its

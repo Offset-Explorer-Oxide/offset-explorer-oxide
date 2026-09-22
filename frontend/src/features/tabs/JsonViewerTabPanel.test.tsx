@@ -103,49 +103,40 @@ describe("JsonViewerTabPanel", () => {
   });
 });
 
-describe("JsonViewerTabPanel expand all", () => {
+describe("JsonViewerTabPanel expansion", () => {
   const heavy = {
     orderId: "a-1",
     events: Array.from({ length: 300 }, (_, i) => ({ id: `event-${i}`, seq: i, note: "n" })),
   };
 
-  it("expands the whole tree, including the levels that weren't rendered yet", async () => {
+  it("opens the tree fully, with nothing behind a click", () => {
+    render(
+      <JsonViewerTabPanel tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: heavy }} />,
+    );
+
+    expect(screen.getByText('"event-0"')).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Expand events" })).not.toBeInTheDocument();
+  });
+
+  /** The tree opens expanded, so there is nothing for an Expand all to do. */
+  it("offers no Expand all button", () => {
+    render(
+      <JsonViewerTabPanel tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: heavy }} />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Expand all" })).not.toBeInTheDocument();
+  });
+
+  it("still lets the reader close a section by hand", async () => {
     const user = userEvent.setup();
     render(
       <JsonViewerTabPanel tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: heavy }} />,
     );
 
+    await user.click(screen.getByRole("button", { name: "Collapse events" }));
+
     expect(screen.queryByText('"event-0"')).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Expand all" }));
-
-    // The array itself, and the objects inside it that only came into
-    // existence as it opened. The 300th is *not* asserted: the tree is
-    // windowed, so a row that far down the document exists only once it is
-    // scrolled to — "everything is expanded" is what the disabled button
-    // says, and it is asserted instead.
-    expect(screen.getByText('"event-0"')).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
-  });
-
-  it("disables the button when nothing is collapsed", () => {
-    render(
-      <JsonViewerTabPanel
-        tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: { order: { id: "a-1" } } }}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
-  });
-
-  // The XML tab is `XmlTreeView`, which keeps its own collapse state — this
-  // button would have nothing to act on there.
-  it("offers no Expand all on a non-JSON tab", () => {
-    render(
-      <JsonViewerTabPanel tab={{ id: "text-1", title: "Offset 1", name: "Text", kind: "text", value: "plain" }} />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Expand all" })).not.toBeInTheDocument();
+    expect(screen.getByText(/300 items/)).toBeInTheDocument();
   });
 });
 

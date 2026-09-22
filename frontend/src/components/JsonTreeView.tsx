@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { List, RowComponentProps } from "react-window";
-import { JsonTreeControl, useJsonTreeControl } from "./jsonTreeExpansion";
-import { INDENT_PX, JsonLine, LEAD_PX, flattenJsonTree } from "./jsonTreeLines";
+import { INDENT_PX, JsonLine, JsonTreeOverrides, LEAD_PX, NO_OVERRIDES, flattenJsonTree } from "./jsonTreeLines";
 
 export interface JsonTreeViewProps {
   value: unknown;
@@ -11,12 +10,6 @@ export interface JsonTreeViewProps {
   lineNumbers?: boolean;
   /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
   showToolbar?: boolean;
-  /**
-   * Drives Expand all from a button outside this component — the payload
-   * panel's toolbar sits above the tree, not in it. Omit and the tree makes
-   * its own, so nodes behave identically either way.
-   */
-  control?: JsonTreeControl;
 }
 
 /**
@@ -224,28 +217,27 @@ function useJsonTreeMetrics(probe: HTMLElement | null): Metrics {
  * it in its own tab in the app.
  *
  * The document is flattened to a list of lines and windowed, so the DOM holds
- * a screenful of rows however much of it is expanded. Before that, Expand all
- * on a 4 MB payload mounted ~1.5 million elements and killed the webview.
+ * a screenful of rows however much of it is expanded — which is why every node
+ * can start open. Rendering a line per element instead, a 4 MB payload mounted
+ * ~1.5 million of them and killed the webview.
  */
-export function JsonTreeView({
-  value,
-  onOpenInNewTab,
-  lineNumbers = false,
-  showToolbar = true,
-  control,
-}: JsonTreeViewProps) {
+export function JsonTreeView({ value, onOpenInNewTab, lineNumbers = false, showToolbar = true }: JsonTreeViewProps) {
   const [copied, setCopied] = useState(false);
-  // Hooks can't be called conditionally, so the fallback control is always
-  // built; it just goes unused when the caller brought its own.
-  const ownControl = useJsonTreeControl(value);
-  const expansion = control ?? ownControl;
   const [probe, setProbe] = useState<HTMLElement | null>(null);
   const { rowHeight, charWidth } = useJsonTreeMetrics(probe);
 
-  const { lines, collapsedCount, widestLines } = useMemo(
-    () => flattenJsonTree(value, expansion.state),
-    [value, expansion.state],
-  );
+  // Which containers the reader has closed. Everything starts open.
+  const [overrides, setOverrides] = useState<JsonTreeOverrides>(NO_OVERRIDES);
+  // A different document is a different set of paths, so the old clicks mean
+  // nothing — and a `payments` node the reader closed on one message must not
+  // arrive closed on the next one, where it holds something else entirely.
+  const [previousValue, setPreviousValue] = useState(value);
+  if (previousValue !== value) {
+    setPreviousValue(value);
+    setOverrides(NO_OVERRIDES);
+  }
+
+  const { lines, widestLines } = useMemo(() => flattenJsonTree(value, overrides), [value, overrides]);
 
   /** Digits in the last line's number — what the gutter has to be wide enough for. */
   const gutterChars = lineNumbers ? String(lines.length).length + 1 : 0;
@@ -264,12 +256,13 @@ export function JsonTreeView({
     return Math.ceil(widest + gutterChars * charWidth + GUTTER_CHROME_PX + 24);
   }, [widestLines, charWidth, gutterChars]);
 
-  const { reportCollapsedCount, setNodeExpanded } = expansion;
-  useEffect(() => {
-    reportCollapsedCount(collapsedCount);
-  }, [collapsedCount, reportCollapsedCount]);
-
-  const onToggle = useCallback((path: string, expanded: boolean) => setNodeExpanded(path, expanded), [setNodeExpanded]);
+  const onToggle = useCallback((path: string, expanded: boolean) => {
+    setOverrides((current) => {
+      const next = new Map(current);
+      next.set(path, expanded);
+      return next;
+    });
+  }, []);
 
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
