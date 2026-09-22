@@ -4,6 +4,14 @@ import { resolve } from "path";
 
 export default defineConfig({
   root: resolve(__dirname, ".."),
+  // The harness shares the app's root, so by default it would also share the
+  // app's dependency cache at `frontend/node_modules/.vite` — and it does not
+  // share the app's config (the aliases below swap the Tauri modules for
+  // stubs). Running the harness therefore invalidated the app's optimized
+  // deps, and the next `npm run dev` served a cache mid-re-optimization with
+  // imports that would not resolve. Its own cache directory keeps the two
+  // from ever touching.
+  cacheDir: resolve(__dirname, ".vite-cache"),
   plugins: [react()],
   resolve: {
     alias: {

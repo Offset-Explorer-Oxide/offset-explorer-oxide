@@ -141,6 +141,15 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   415 kB, startup 111 ms -> 43 ms. A test that renders one of those panels has
   to `findBy` its contents, not `getBy` — the tab body now resolves
   asynchronously.
+- **Every node in the JSON tree starts expanded**, and there is no Expand all
+  button — both were removed in favour of the tree simply opening. The
+  auto-collapse rule (`shouldAutoExpand`, a 1,000-line budget) existed only
+  because rendering meant a DOM element per line; virtualization removed the
+  reason, so `jsonTreeExpansion.ts` is gone and `jsonTreeLines.ts` keeps just a
+  map of the containers the reader clicked shut. `XmlTreeView` has always
+  opened every node (`useState(true)`) and is unchanged. The cost of the
+  default: a flatten now walks the whole document, so collapsing one node in a
+  4 MB payload rebuilds ~300k rows.
 - **`JsonTreeView` is virtualized and must stay that way.** It flattens the
   document to a list of lines (`jsonTreeLines.ts`) and renders it through
   `react-window`'s `List`, so the DOM holds a screenful of rows however much is
@@ -161,6 +170,18 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   measured 5,000 elements -> 688 ms, 20,000 -> 2.25 s, linear. It shares
   `.json-tree*` classes with the JSON tree, so scope changes to those away from
   it (`--virtual` modifiers) unless you mean to hit both.
+- **The pane divider is the only separator between panes.** `.resizable-pane--right`
+  and `--bottom` used to also carry a border on the edge the divider sits
+  against, and the payload pane's `.json-tree-body` drew its own box 8px
+  further in — three parallel 1px rules in the same colour. `ResizableShell`
+  always renders a divider alongside the pane, and only the divider's line
+  highlights when grabbed, so it is the one that stays.
+- **The viewer's fetched payload lives in `useMessageViewerStore.byTab`, not in
+  the query cache.** `MessagePayloadViewer` is rendered `key={activeTabId}`, so
+  every top-level tab switch destroys it — and `useFullPayload`'s `gcTime: 0`
+  dropped the result with it, re-fetching the same message from the broker on
+  every return to the tab. Held per tab it survives the remount and is still
+  cleared by "Clear memory" and by deleting the connection.
 - Only `ResourceCategory` (Brokers, Consumers) virtualizes its list, via
   `react-window`'s `List` past a 50-item threshold. **Topics is a separate,
   deliberately non-virtualized `TopicCategory`** — so a change to the

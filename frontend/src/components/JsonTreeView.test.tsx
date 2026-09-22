@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JsonTreeView } from "./JsonTreeView";
-import { useJsonTreeControl } from "./jsonTreeExpansion";
 
 describe("JsonTreeView", () => {
   it("renders primitive values with their keys", () => {
@@ -87,60 +86,28 @@ describe("JsonTreeView", () => {
   });
 
   /**
-   * Expanding everything on sight is fine for an ordinary message and ruinous
-   * for a multi-megabyte one: it renders every node of the document into the
-   * DOM at once and the app stops responding until layout finishes.
+   * There is no size rule any more. The tree is windowed, so a heavy node
+   * costs rows in an array rather than elements in the DOM, and a payload
+   * arrives readable instead of behind a click.
    */
-  it("starts a heavy array collapsed instead of rendering all of its children", async () => {
-    const user = userEvent.setup();
-    // 300 objects of four fields is around 1,800 rendered lines — over the
-    // budget, and the shape that actually makes payloads megabytes long.
-    const items = Array.from({ length: 300 }, (_, i) => ({
-      id: `item-${i}`,
-      quantity: i,
-      sku: `sku-${i}`,
-      note: "…",
-    }));
-
-    render(<JsonTreeView value={{ events: items }} />);
-
-    expect(screen.queryByText('"item-0"')).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Expand events" }));
-    expect(screen.getByText('"item-0"')).toBeInTheDocument();
-  });
-
-  /**
-   * The rule counts rendered lines, not entries. A long list of primitives is
-   * one line each — cheap — and used to collapse anyway on a count of 100,
-   * while a much heavier list of 80 fat objects stayed open.
-   */
-  it("expands a long list of primitives, which is cheap to render", () => {
-    const items = Array.from({ length: 500 }, (_, i) => `item-${i}`);
+  it("opens a heavy array on sight", () => {
+    const items = Array.from({ length: 300 }, (_, i) => ({ id: `item-${i}`, quantity: i, sku: `sku-${i}` }));
 
     render(<JsonTreeView value={{ events: items }} />);
 
     expect(screen.getByText('"item-0"')).toBeInTheDocument();
-    // Open, not merely started: a collapsed `events` would offer an Expand
-    // arrow and a `500 items` summary instead. The 500th item is *not*
-    // asserted to be in the DOM — the tree is windowed, and rows that far
-    // down the document only exist once they are scrolled to.
     expect(screen.queryByRole("button", { name: "Expand events" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/500 items/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/300 items/)).not.toBeInTheDocument();
   });
 
-  /**
-   * Collapsing the root would render the whole view as a single
-   * `{ 3 keys }` line, so the outline stays open and the weight inside it is
-   * what collapses.
-   */
-  it("keeps the root open on a document too big to expand, collapsing only the heavy node", () => {
-    const items = Array.from({ length: 300 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}`, note: "…" }));
+
+  it("opens the root, and every node under it, on a large document", () => {
+    const items = Array.from({ length: 300 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}` }));
 
     render(<JsonTreeView value={{ orderId: "a-1", events: items }} />);
 
     expect(screen.getByText('"a-1"')).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Expand events" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse events" })).toBeInTheDocument();
   });
 
   it("still expands an ordinary-sized container on sight", () => {
@@ -186,31 +153,25 @@ describe("JsonTreeView line numbers and toolbar", () => {
  * measured in a real browser before the change, a 1 MB payload blocked the
  * main thread for 6.6s and a 4 MB payload crashed the renderer outright.
  */
+/**
+ * The tree is virtualized: only the rows near the viewport are real DOM
+ * elements, however much of the document is expanded. Without this, opening a
+ * large payload fully expanded would mount every line at once — measured in a
+ * real browser, a 1 MB payload blocked the main thread for 6.6s and a 4 MB one
+ * crashed the renderer.
+ */
 describe("JsonTreeView virtualization", () => {
-  function ExpandAllHarness({ value }: { value: unknown }) {
-    const control = useJsonTreeControl(value);
-    return (
-      <>
-        <button type="button" onClick={control.expandAll}>
-          Expand all
-        </button>
-        <JsonTreeView value={value} showToolbar={false} control={control} />
-      </>
-    );
-  }
-
-  it("renders only a window of rows when everything is expanded", async () => {
-    const user = userEvent.setup();
-    // 2,000 three-field objects: 10,002 rendered lines once fully expanded.
-    const items = Array.from({ length: 2000 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}`, note: "…" }));
-    const { container } = render(<ExpandAllHarness value={{ events: items }} />);
-
-    await user.click(screen.getByRole("button", { name: "Expand all" }));
+  it("renders only a window of rows for a fully expanded document", () => {
+    // 2,000 three-field objects: 10,002 rendered lines, all of them open.
+    const items = Array.from({ length: 2000 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}`, note: "x" }));
+    const { container } = render(<JsonTreeView value={{ events: items }} showToolbar={false} />);
 
     const rendered = container.querySelectorAll(".json-tree-line").length;
     expect(rendered).toBeGreaterThan(0);
     expect(rendered).toBeLessThan(200);
     expect(screen.queryByText('"item-1999"')).not.toBeInTheDocument();
+    // Expanded, not collapsed: the first rows are the document's real content.
+    expect(screen.getByText('"item-0"')).toBeInTheDocument();
   });
 });
 

@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { LineNumberedText } from "../../components/LineNumberedText";
-import { CheckIcon, CopyIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
-import { useJsonTreeControl } from "../../components/jsonTreeExpansion";
+import { CheckIcon, CopyIcon, SaveIcon } from "../../components/AppIcons";
 import { ValueFormatSelect, valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { api } from "../../lib/tauri";
@@ -217,10 +216,6 @@ export function MessagePayloadViewer() {
   const [status, setStatus] = useState<{ kind: "ok" | "error"; action: ToolbarAction; message: string } | null>(null);
   /** The pending clear for `status`, so a new action cancels the old one's timer rather than racing it. */
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Keyed by the payload *and* the format: a different message, or the same
-  // one read as something else, is a different tree, and starts from the
-  // auto-expand rules rather than inheriting an earlier Expand all.
-  const treeControl = useJsonTreeControl(`${mode}:${message?.payloadBase64 ?? ""}`);
   const decodeAvro = useDecodeAvro();
   const { mutate: runDecodeAvro } = decodeAvro;
   const decodeProtobuf = useDecodeProtobuf();
@@ -232,7 +227,14 @@ export function MessagePayloadViewer() {
   // displaying or decoding the message means going back for the real bytes,
   // for this one message.
   const rowPayloadBase64 = message?.payloadBase64 ?? null;
-  const needsFullPayload = isPayloadTruncated(rowPayloadBase64, message?.payloadSizeBytes ?? null);
+  const isTruncated = isPayloadTruncated(rowPayloadBase64, message?.payloadSizeBytes ?? null);
+  // Kept per tab rather than in the query cache, because this component is
+  // rendered `key={activeTabId}` and so is destroyed on every top-level tab
+  // switch. Without this, leaving a tab and coming back re-fetched the open
+  // message's payload off the broker each time.
+  const rememberedPayloadBase64 = useMessageViewerStore((s) => s.fullPayloadBase64);
+  const rememberFullPayload = useMessageViewerStore((s) => s.setFullPayload);
+  const needsFullPayload = isTruncated && rememberedPayloadBase64 === undefined;
   const fullPayload = useFullPayload(
     connectionId,
     topic,
@@ -241,14 +243,24 @@ export function MessagePayloadViewer() {
     needsFullPayload,
   );
   const fetchedPayloadBase64 =
+    rememberedPayloadBase64 ??
     fullPayload.data?.messages.find((m) => m.partition === message?.partition && m.offset === message?.offset)
-      ?.payloadBase64 ?? null;
+      ?.payloadBase64 ??
+    null;
+
+  // Hand a freshly fetched payload to the store so the next visit to this tab
+  // finds it there. Guarded on it being new, or this would loop.
+  useEffect(() => {
+    if (fetchedPayloadBase64 !== null && rememberedPayloadBase64 === undefined) {
+      rememberFullPayload(fetchedPayloadBase64);
+    }
+  }, [fetchedPayloadBase64, rememberedPayloadBase64, rememberFullPayload]);
   // Falls back to the preview while the full fetch is in flight or if it
   // fails — a truncated payload beats a blank pane — but that fallback is
   // always labelled, because a few KB of a multi-megabyte message is
   // otherwise indistinguishable from the whole of a small one.
-  const payloadBase64 = needsFullPayload ? (fetchedPayloadBase64 ?? rowPayloadBase64) : rowPayloadBase64;
-  const isShowingPreviewOnly = needsFullPayload && fetchedPayloadBase64 === null;
+  const payloadBase64 = isTruncated ? (fetchedPayloadBase64 ?? rowPayloadBase64) : rowPayloadBase64;
+  const isShowingPreviewOnly = isTruncated && fetchedPayloadBase64 === null;
   /**
    * How big the *message* is, not how much of it is on screen.
    *
@@ -616,27 +628,6 @@ export function MessagePayloadViewer() {
                       {formatPayloadSize(payloadSizeBytes)}
                     </span>
                   )}
-                  {TREE_MODES.includes(mode) && (
-                    // Disabled rather than hidden when nothing is collapsed:
-                    // a control that vanishes once you've used it reads as a
-                    // bug, and its absence would otherwise be the only
-                    // difference between "this tree is fully open" and "this
-                    // format has no tree".
-                    <button
-                      type="button"
-                      className="json-tree-icon-button"
-                      title={
-                        treeControl.collapsedCount === 0
-                          ? "Everything is already expanded"
-                          : `Expand all (${treeControl.collapsedCount} collapsed)`
-                      }
-                      aria-label="Expand all"
-                      disabled={treeControl.collapsedCount === 0}
-                      onClick={treeControl.expandAll}
-                    >
-                      <ExpandAllIcon />
-                    </button>
-                  )}
                   <button
                     type="button"
                     className="json-tree-icon-button"
@@ -729,7 +720,7 @@ export function MessagePayloadViewer() {
                     // message with three entries stays expanded on the next
                     // message where it holds three thousand, rendering all of
                     // them in one pass.
-                    <JsonTreeView key={payloadBase64} value={json} lineNumbers showToolbar={false} control={treeControl} />
+                    <JsonTreeView key={payloadBase64} value={json} lineNumbers showToolbar={false} />
                   ) : (
                     <p role="alert">Payload is not valid JSON.</p>
                   ))}
@@ -745,7 +736,7 @@ export function MessagePayloadViewer() {
                         value={decodeAvro.data}
                         lineNumbers
                         showToolbar={false}
-                        control={treeControl}
+                       
                       />
                     )}
                   </>
@@ -783,7 +774,7 @@ export function MessagePayloadViewer() {
                           value={decodeProtobuf.data.value}
                           lineNumbers
                           showToolbar={false}
-                          control={treeControl}
+                         
                         />
                       </>
                     )}

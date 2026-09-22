@@ -1,8 +1,7 @@
 import { useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { CheckIcon, CopyIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
+import { CheckIcon, CopyIcon, SaveIcon } from "../../components/AppIcons";
 import { JsonTreeView } from "../../components/JsonTreeView";
-import { useJsonTreeControl } from "../../components/jsonTreeExpansion";
 import { LineNumberedText } from "../../components/LineNumberedText";
 import { valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
@@ -103,9 +102,6 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
   }
 
   const justCopied = status?.kind === "ok" && status.action === "copy";
-  // The same tree the payload panel shows, opened as its own tab — so it
-  // collapses large nodes for the same reason and needs the same way out.
-  const treeControl = useJsonTreeControl(tab.id);
 
   return (
     <div className="cluster-detail-panel">
@@ -119,22 +115,6 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
             >
               {formatPayloadSize(tab.payloadSizeBytes)}
             </span>
-          )}
-          {tab.kind === "json" && (
-            <button
-              type="button"
-              className="json-tree-icon-button"
-              title={
-                treeControl.collapsedCount === 0
-                  ? "Everything is already expanded"
-                  : `Expand all (${treeControl.collapsedCount} collapsed)`
-              }
-              aria-label="Expand all"
-              disabled={treeControl.collapsedCount === 0}
-              onClick={treeControl.expandAll}
-            >
-              <ExpandAllIcon />
-            </button>
           )}
           <button
             type="button"
@@ -170,7 +150,7 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
         ) : tab.kind === "text" ? (
           <LineNumberedText text={String(tab.value)} ariaLabel={tab.title} />
         ) : (
-          <JsonTreeView value={tab.value} showToolbar={false} control={treeControl} lineNumbers />
+          <JsonTreeView value={tab.value} showToolbar={false} lineNumbers />
         )}
       </div>
     </div>

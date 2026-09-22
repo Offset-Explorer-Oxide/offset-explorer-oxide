@@ -21,15 +21,28 @@ A fast, native desktop client for Apache Kafka — browse topics, read messages,
   - `backend/schema-registry` — Confluent Schema Registry client
   - `src-tauri` — the Tauri application shell and command layer
 - **Frontend:** React + TypeScript, Vite, Zustand, TanStack Query, AG Grid
-- **Storage:** SQLite (connection/tab state) + OS keychain (secrets)
+- **Storage:** SQLite (connections, tabs, saved schemas and their secrets — see the note under Connection management)
 
 ## Getting started
 
 ### Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (stable toolchain)
-- [Node.js](https://nodejs.org/) 20+
+- [Node.js](https://nodejs.org/) **22 or newer** — not 20. The npm that ships with Node 20 crashes part-way through installing this project's dev dependencies (`Cannot read properties of null (reading 'edgesOut')`) and leaves `node_modules` half-populated, which then shows up as unrelated-looking "failed to resolve import" errors. CI builds on Node 24.
 - [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (on Linux this includes `libwebkit2gtk-4.1-dev` and friends; on Windows, CMake + the MSVC Build Tools, since the Kafka client builds `librdkafka` from source)
+
+### Install dependencies
+
+```bash
+npm --prefix frontend install
+```
+
+The npm packages all live in `frontend/`, and the repo root is not an npm
+workspace — so `npm install` at the root installs *nothing*, and `npm run dev`
+then fails with `could not determine executable to run` (it cannot find the
+Tauri CLI) or with a Vite import that will not resolve. Run the command above
+once after cloning, and again whenever dependencies change; `package-lock.json`
+is not committed, so nothing else will tell you they have.
 
 ### Run in development
 
