@@ -13,8 +13,8 @@
 //! ```bash
 //! docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 //! # fixture: `e2e-publish`, 3 partitions (scripts/e2e-fixtures.sh creates it)
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test publish_roundtrip
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test publish_roundtrip
 //! ```
 
 use std::sync::atomic::AtomicBool;
@@ -23,11 +23,11 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use kafkaoxide_core::{
+use salty_core::{
     encode_messages, Connection, MessageFilter, NewPublishMessage, PayloadEncoding, PublishField,
     PublishHeaderInput, PublishLimits, SecurityProtocol, TopicMessage,
 };
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 const TOPIC: &str = "e2e-publish";
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,7 +35,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_MESSAGE_SIZE: u32 = 12 * 1024 * 1024;
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP")
+    std::env::var("SALTY_E2E_BOOTSTRAP")
         .ok()
         .filter(|value| !value.is_empty())
 }
@@ -45,7 +45,7 @@ macro_rules! broker {
         match bootstrap_servers() {
             Some(bootstrap) => bootstrap,
             None => {
-                eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+                eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
                 return;
             }
         }
@@ -114,7 +114,7 @@ async fn publish(
     connection: &Connection,
     partition: i32,
     messages: &[NewPublishMessage],
-) -> kafkaoxide_core::PublishOutcome {
+) -> salty_core::PublishOutcome {
     let records = encode_messages(messages, &PublishLimits::for_max_message_size(MAX_MESSAGE_SIZE))
         .expect("the fixtures in this file are all valid");
     client

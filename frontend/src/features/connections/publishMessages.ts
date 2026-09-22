@@ -11,7 +11,7 @@ import { NewPublishMessage, PayloadEncoding, PublishField } from "../../lib/taur
  * offering an action that is already known to fail.
  */
 
-/** Mirrors `MAX_PUBLISH_BATCH_MESSAGES` in `kafkaoxide_core::publish`. */
+/** Mirrors `MAX_PUBLISH_BATCH_MESSAGES` in `salty_core::publish`. */
 export const MAX_PUBLISH_MESSAGES = 100;
 
 export const PAYLOAD_ENCODINGS: { id: PayloadEncoding; label: string }[] = [

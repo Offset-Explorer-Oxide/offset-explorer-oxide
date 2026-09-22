@@ -16,8 +16,8 @@ compression.type=...` does exactly that: ConsoleProducer overrides it).
 
 .EXAMPLE
 pwsh scripts/e2e-compression-fixtures.ps1
-$env:KAFKAOXIDE_E2E_BOOTSTRAP = "localhost:9092"
-cargo test -p kafkaoxide-kafka --test compression_codecs -- --nocapture
+$env:SALTY_E2E_BOOTSTRAP = "localhost:9092"
+cargo test -p salty-kafka --test compression_codecs -- --nocapture
 #>
 [CmdletBinding()]
 param(
@@ -124,5 +124,5 @@ foreach ($codec in $codecs) {
 if ($bad) { throw ("Fixtures are not what they claim to be:`n  " + ($bad -join "`n  ")) }
 
 Write-Host "`nReady. Now run:"
-Write-Host "  `$env:KAFKAOXIDE_E2E_BOOTSTRAP = `"$Bootstrap`""
-Write-Host "  cargo test -p kafkaoxide-kafka --test compression_codecs -- --nocapture"
+Write-Host "  `$env:SALTY_E2E_BOOTSTRAP = `"$Bootstrap`""
+Write-Host "  cargo test -p salty-kafka --test compression_codecs -- --nocapture"

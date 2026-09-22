@@ -12,8 +12,8 @@
 //!
 //! ```powershell
 //! pwsh scripts/e2e-large-message-fixtures.ps1
-//! $env:KAFKAOXIDE_E2E_BOOTSTRAP = "localhost:9092"
-//! cargo test -p kafkaoxide-kafka --test fetch_budget -- --nocapture
+//! $env:SALTY_E2E_BOOTSTRAP = "localhost:9092"
+//! cargo test -p salty-kafka --test fetch_budget -- --nocapture
 //! ```
 
 use std::collections::BTreeSet;
@@ -21,23 +21,23 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Matches `scripts/e2e-large-message-fixtures.ps1`.
 const DEFAULT_TOPIC: &str = "big-2mb";
 /// Overridable so the same measurement can be pointed at a real topic
 /// shape, e.g. a 100-message browse of a 600k-message topic.
 fn budget() -> u32 {
-    std::env::var("KAFKAOXIDE_E2E_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(20)
+    std::env::var("SALTY_E2E_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(20)
 }
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 fn topic() -> String {
-    std::env::var("KAFKAOXIDE_E2E_LARGE_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
+    std::env::var("SALTY_E2E_LARGE_TOPIC").unwrap_or_else(|_| DEFAULT_TOPIC.to_string())
 }
 
 fn connection(bootstrap_servers: String) -> Connection {
@@ -91,7 +91,7 @@ fn filter(max_total_messages: Option<u32>) -> MessageFilter {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_overall_budget_reads_only_what_it_returns() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
         return;
     };
 

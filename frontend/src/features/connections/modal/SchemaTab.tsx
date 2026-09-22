@@ -1,8 +1,8 @@
 import { ConnectionTabProps } from "./PropertiesTab";
 
-export function AdvancedTab({ draft, onChange, disabled = false }: ConnectionTabProps) {
+export function SchemaTab({ draft, onChange, disabled = false }: ConnectionTabProps) {
   return (
-    <div role="tabpanel" aria-label="Advanced" className="connection-modal-tab-panel">
+    <div role="tabpanel" aria-label="Schema" className="connection-modal-tab-panel">
       <fieldset disabled={disabled} className="connection-modal-fieldset">
         <section className="connection-modal-section">
           <h3>Schema Registry</h3>

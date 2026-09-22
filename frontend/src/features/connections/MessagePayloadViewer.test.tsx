@@ -713,9 +713,12 @@ describe("MessagePayloadViewer", () => {
     await user.click(screen.getByRole("button", { name: "Expand all" }));
 
     // The array itself, and the objects inside it that only came into
-    // existence as it opened.
+    // existence as it opened. The 300th is *not* asserted: the tree is
+    // windowed, so a row that far down the document exists only once it is
+    // scrolled to — "everything is expanded" is what the disabled button
+    // says, and it is asserted instead.
     expect(screen.getByText('"event-0"')).toBeInTheDocument();
-    expect(screen.getByText('"event-299"')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
   });
 
   it("disables the button while there is nothing left to expand", async () => {
@@ -989,7 +992,7 @@ describe("MessagePayloadViewer literal formats", () => {
   });
 });
 
-// --- The toolbar: open / copy / save / download ----------------------------
+// --- The toolbar: open / copy / save ---------------------------------------
 
 describe("MessagePayloadViewer toolbar", () => {
   function viewJson(value: unknown) {
@@ -1132,27 +1135,15 @@ describe("MessagePayloadViewer toolbar", () => {
     expect(saveDialog).not.toHaveBeenCalled();
   });
 
-  // Download is the round-trip button: the bytes as the broker holds them,
-  // not the lossy UTF-8 decode every text view above shows.
-  it("downloads the original payload bytes whatever format is selected", async () => {
-    saveDialog.mockResolvedValue("/home/u/message.bin");
-    const invoked: { path: string; contentsBase64: string }[] = [];
-    setInvokeHandlers({
-      payload_save: (args) => {
-        invoked.push(args as { path: string; contentsBase64: string });
-        return undefined;
-      },
-    });
-    const user = userEvent.setup();
+  // Download used to sit at the end of this toolbar, writing the payload's
+  // original bytes. It was removed from the app entirely — Save, which
+  // writes what the selected format renders, is the only way out.
+  it("offers no Download button", () => {
     viewJson({ id: "order-42" });
     renderWithClient(<MessagePayloadViewer />);
 
-    await selectFormat(user, "Hex");
-    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
-
-    expect(saveDialog).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "partition-2-offset-7.bin" }));
-    // Byte for byte the payload, not the hex dump that is on screen.
-    expect(invoked[0].contentsBase64).toBe(btoa(JSON.stringify({ id: "order-42" })));
+    expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Save as/ })).toBeInTheDocument();
   });
 
   it("opens the raw text as its own app tab", async () => {
@@ -1176,6 +1167,31 @@ describe("MessagePayloadViewer toolbar", () => {
     expect(tab.kind).toBe("text");
     expect(tab.value).toBe("plain text payload");
     expect(tab.title).toBe("Partition 2 · Offset 7 · Raw");
+  });
+
+  /**
+   * The size chip is the one thing the opened tab would otherwise lose, and
+   * it has to be the *message's* size — the broker's figure, the same number
+   * this pane shows — not the length of whatever text the tab renders.
+   */
+  it("hands the opened tab the message's size", async () => {
+    const user = userEvent.setup();
+    useMessageViewerStore.setState({
+      message: {
+        partition: 2,
+        offset: 7,
+        timestampMs: null,
+        keyBase64: null,
+        payloadBase64: btoa("plain text payload"),
+        payloadSizeBytes: 4096,
+        headers: [],
+      },
+    });
+    renderWithClient(<MessagePayloadViewer />);
+
+    await user.click(screen.getByRole("button", { name: "Open in new tab" }));
+
+    expect(useJsonViewerTabsStore.getState().tabs[0].payloadSizeBytes).toBe(4096);
   });
 });
 
@@ -1518,23 +1534,6 @@ describe("MessagePayloadViewer with only a preview loaded", () => {
     });
   }
 
-  /**
-   * Download promises the payload's original bytes. Writing the preview
-   * slice under `partition-0-offset-42.bin`, with no error, hands the user a
-   * file that silently isn't the message — and nothing downstream can tell.
-   */
-  it("refuses to download a payload that is only a preview", async () => {
-    const user = userEvent.setup();
-    viewTruncatedMessage();
-    renderWithClient(<MessagePayloadViewer />);
-    await screen.findByText(/showing a preview only/i);
-
-    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(/not downloaded/i);
-    expect(saveDialog).not.toHaveBeenCalled();
-  });
-
   it("refuses to save a payload that is only a preview", async () => {
     const user = userEvent.setup();
     viewTruncatedMessage();
@@ -1553,7 +1552,7 @@ describe("MessagePayloadViewer with only a preview loaded", () => {
     renderWithClient(<MessagePayloadViewer />);
     await screen.findByText(/showing a preview only/i);
 
-    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
+    await user.click(screen.getByRole("button", { name: /^Save as/ }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not be loaded/i);
   });

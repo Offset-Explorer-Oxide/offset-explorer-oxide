@@ -1,20 +1,20 @@
 import { useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
-import { CheckIcon, CopyIcon, DownloadIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
+import { CheckIcon, CopyIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { useJsonTreeControl } from "../../components/jsonTreeExpansion";
 import { LineNumberedText } from "../../components/LineNumberedText";
 import { valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
 import { api } from "../../lib/tauri";
-import { formatXmlNode, textToBase64, XmlElementNode } from "../connections/payloadDecoding";
+import { formatPayloadSize, formatXmlNode, textToBase64, XmlElementNode } from "../connections/payloadDecoding";
 import { JsonViewerTab } from "./useJsonViewerTabsStore";
 
 export interface JsonViewerTabPanelProps {
   tab: JsonViewerTab;
 }
 
-type ToolbarAction = "copy" | "save" | "download";
+type ToolbarAction = "copy" | "save";
 
 /**
  * The tab's value as text — what Copy and Save both write.
@@ -53,15 +53,20 @@ function tabFormatLabel(tab: JsonViewerTab): string {
  * cluster/topic detail panel. No "open in new tab" button here: this view
  * already *is* a dedicated tab for the value, so there's nothing new to open.
  *
- * It carries the same Copy/Save/Download the payload viewer does, and for
- * the same reason it has them there: opening a payload in its own tab is
+ * It carries the same size chip and Copy/Save the payload viewer does, and
+ * for the same reason it has them there: opening a payload in its own tab is
  * what you do with the payload you actually care about, and sending it
  * somewhere else was the obvious next step with no button for it. The tree
  * views' own toolbars are switched off (`showToolbar={false}`) so the
  * controls don't stack, exactly as in `MessagePayloadViewer`.
+ *
+ * The trees here are numbered down the left edge (`lineNumbers`) like the
+ * ones in that pane, and for the same reason — a payload opened into its own
+ * tab is the long one, and a line you can point at is what makes it
+ * readable. The `"text"` kind has always had a gutter; these two hadn't.
  */
 export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
-  /** Transient feedback for the three buttons — cleared on a timer, or replaced by the next action's. */
+  /** Transient feedback for the toolbar buttons — cleared on a timer, or replaced by the next action's. */
   const [status, setStatus] = useState<{ kind: "ok" | "error"; action: ToolbarAction; message: string } | null>(null);
   /** The pending clear, so a new action cancels the old one's timer rather than racing it. */
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,29 +102,6 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
     }
   }
 
-  /**
-   * Download writes the message's **original bytes**, not this tab's text.
-   *
-   * Only offered when the tab was handed them — a value parsed out of a
-   * payload has already been through a lossy UTF-8 decode, so writing it
-   * back produces a file that no longer round-trips, and a Download button
-   * that quietly did that would be worse than no button at all.
-   */
-  async function handleDownload() {
-    if (!tab.payloadBase64) return;
-    try {
-      const path = await save({
-        defaultPath: `${tab.fileStem ?? "payload"}.bin`,
-        filters: [{ name: "Raw payload", extensions: ["bin"] }],
-      });
-      if (!path) return;
-      await api.savePayloadFile(path, tab.payloadBase64);
-      report("ok", "download", `Downloaded to ${path}`);
-    } catch (error) {
-      report("error", "download", `Download failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   const justCopied = status?.kind === "ok" && status.action === "copy";
   // The same tree the payload panel shows, opened as its own tab — so it
   // collapses large nodes for the same reason and needs the same way out.
@@ -130,6 +112,14 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
       <header className="cluster-detail-header json-viewer-tab-header">
         <h2>{tab.title}</h2>
         <div className="message-payload-toolbar-actions">
+          {tab.payloadSizeBytes !== undefined && (
+            <span
+              className="message-payload-size"
+              title={`Payload size: ${tab.payloadSizeBytes.toLocaleString()} bytes`}
+            >
+              {formatPayloadSize(tab.payloadSizeBytes)}
+            </span>
+          )}
           {tab.kind === "json" && (
             <button
               type="button"
@@ -164,17 +154,6 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
           >
             <SaveIcon />
           </button>
-          {tab.payloadBase64 && (
-            <button
-              type="button"
-              className="json-tree-icon-button"
-              title="Download the original payload bytes…"
-              aria-label="Download the original payload bytes"
-              onClick={handleDownload}
-            >
-              <DownloadIcon />
-            </button>
-          )}
         </div>
       </header>
       {status && (
@@ -187,11 +166,11 @@ export function JsonViewerTabPanel({ tab }: JsonViewerTabPanelProps) {
       )}
       <div className="connection-modal-body">
         {tab.kind === "xml" ? (
-          <XmlTreeView value={tab.value as XmlElementNode} showToolbar={false} />
+          <XmlTreeView value={tab.value as XmlElementNode} showToolbar={false} lineNumbers />
         ) : tab.kind === "text" ? (
           <LineNumberedText text={String(tab.value)} ariaLabel={tab.title} />
         ) : (
-          <JsonTreeView value={tab.value} showToolbar={false} control={treeControl} />
+          <JsonTreeView value={tab.value} showToolbar={false} control={treeControl} lineNumbers />
         )}
       </div>
     </div>

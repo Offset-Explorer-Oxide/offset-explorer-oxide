@@ -1,18 +1,13 @@
-import { useEffect, useState } from "react";
-import {
-  JsonTreeControl,
-  JsonTreeExpansionContext,
-  childCount,
-  shouldAutoExpand,
-  useJsonTreeControl,
-  useJsonTreeExpansion,
-} from "./jsonTreeExpansion";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { List, RowComponentProps } from "react-window";
+import { JsonTreeControl, useJsonTreeControl } from "./jsonTreeExpansion";
+import { INDENT_PX, JsonLine, LEAD_PX, flattenJsonTree } from "./jsonTreeLines";
 
 export interface JsonTreeViewProps {
   value: unknown;
   /** Opens `value` as its own tab in the app (there's no browser to open a real new tab in). Omit to hide the button — e.g. a view that's already a dedicated JSON tab has nothing new to open. */
   onOpenInNewTab?: () => void;
-  /** Numbers every rendered line down the left edge. Off by default — a tab-sized view of a small document reads better without the column. */
+  /** Numbers every rendered line down the left edge. On wherever a message payload is rendered — the payload panel and the viewer tab both — so a line in a long document can be pointed at; off by default for a caller showing something too small to need the column. */
   lineNumbers?: boolean;
   /** Set false where the surrounding panel already provides copy/open/save controls for this value, so the two toolbars don't stack. */
   showToolbar?: boolean;
@@ -23,6 +18,29 @@ export interface JsonTreeViewProps {
    */
   control?: JsonTreeControl;
 }
+
+/**
+ * Row height before the real one has been measured, and the one used where
+ * there is nothing to measure against (jsdom reports every box as zero).
+ * Close to `.json-tree-line`'s height at the default font size.
+ */
+export const DEFAULT_ROW_HEIGHT_PX = 22;
+
+/**
+ * The list's height until its container has been measured.
+ *
+ * In the app a `ResizeObserver` replaces this on the first frame. In jsdom
+ * there is no layout and the stub observer never fires, so this *is* the
+ * height for the whole test — which is why it is a screenful rather than a
+ * token value: a component test should see a plausible window of rows.
+ */
+export const DEFAULT_LIST_HEIGHT_PX = 600;
+
+/** The line-number gutter's margin, padding and rule — everything about it that isn't characters. */
+const GUTTER_CHROME_PX = 21;
+
+/** Measured to get the width of one character; long enough that rounding in the font doesn't matter. */
+const PROBE_SAMPLE = "0".repeat(40);
 
 function CopyIcon() {
   return (
@@ -50,12 +68,6 @@ function ExternalLinkIcon() {
   );
 }
 
-type JsonRecord = Record<string, unknown>;
-
-function isExpandable(value: unknown): value is unknown[] | JsonRecord {
-  return value !== null && typeof value === "object";
-}
-
 function formatPrimitive(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "string") return `"${value}"`;
@@ -67,101 +79,142 @@ function primitiveTypeClass(value: unknown): string {
   return `json-tree-value--${typeof value}`;
 }
 
-interface JsonNodeProps {
-  label: string | null;
-  value: unknown;
-  depth: number;
+interface JsonTreeRowProps {
+  lines: JsonLine[];
+  lineNumbers: boolean;
+  onToggle: (path: string, expanded: boolean) => void;
+  /** Width of the document's widest line, so the horizontal scroll extent doesn't change as rows come and go. */
+  contentWidth: number | null;
 }
 
-function JsonNode({ label, value, depth }: JsonNodeProps) {
-  // Containers worth more lines than the budget start collapsed. Everything
-  // expanded is the right default for the documents this view was built for —
-  // a Kafka message of a few KB — but the same default on a multi-megabyte
-  // payload renders every node of it into the DOM at once, and the app stops
-  // responding until the browser finishes laying out a tree nobody asked to
-  // see in full. A container past that size is one the user has to scroll
-  // anyway, so it costs a click and saves the freeze. See `shouldAutoExpand`
-  // for why the measure is lines rather than entries.
-  const [expanded, setExpanded] = useState(() => shouldAutoExpand(value, depth));
-  const expansion = useJsonTreeExpansion();
-  const expandAllToken = expansion?.expandAllToken ?? 0;
-  const reportCollapsed = expansion?.reportCollapsed;
+/** The contents of one row, without the positioning the list wraps it in. */
+function LineContent({ line, onToggle }: { line: JsonLine; onToggle: JsonTreeRowProps["onToggle"] }) {
+  const indent = { paddingLeft: `${line.depth * INDENT_PX}px` };
 
-  // Fires on mount as well as on a later bump, which is the point: Expand all
-  // has to reach the nodes that only come into existence as their parents
-  // open. `useJsonTreeControl` resets the token for a new document so this
-  // can't force-expand the next message the user clicks on.
-  useEffect(() => {
-    if (expandAllToken > 0) setExpanded(true);
-  }, [expandAllToken]);
-
-  // One collapsed node on screen is one thing Expand all can still do.
-  useEffect(() => {
-    if (!reportCollapsed || expanded || !isExpandable(value)) return;
-    reportCollapsed(1);
-    return () => reportCollapsed(-1);
-  }, [expanded, reportCollapsed, value]);
-
-  const indent = { paddingLeft: `${depth * 14}px` };
-
-  if (!isExpandable(value)) {
+  if (line.kind === "close") {
     return (
-      <div className="json-tree-line">
-        <span className="json-tree-line-content" style={indent}>
-          <span className="json-tree-indent" aria-hidden="true" />
-          {label !== null && <span className="json-tree-key">{label}: </span>}
-          <span className={`json-tree-value ${primitiveTypeClass(value)}`}>{formatPrimitive(value)}</span>
-        </span>
-      </div>
+      <span className="json-tree-line-content" style={indent}>
+        <span className="json-tree-indent" aria-hidden="true" />
+        <span className="json-tree-bracket">{line.isArray ? "]" : "}"}</span>
+      </span>
     );
   }
 
-  const isArray = Array.isArray(value);
-  const entries: [string, unknown][] = isArray
-    ? value.map((item, index) => [String(index), item])
-    : Object.entries(value);
-  const openBracket = isArray ? "[" : "{";
-  const closeBracket = isArray ? "]" : "}";
+  if (line.kind === "primitive") {
+    return (
+      <span className="json-tree-line-content" style={indent}>
+        <span className="json-tree-indent" aria-hidden="true" />
+        {line.label !== null && <span className="json-tree-key">{line.label}: </span>}
+        <span className={`json-tree-value ${primitiveTypeClass(line.value)}`}>{formatPrimitive(line.value)}</span>
+      </span>
+    );
+  }
 
+  const expanded = line.expanded === true;
   return (
-    <div>
-      <div className="json-tree-line">
-        <span className="json-tree-line-content" style={indent}>
-          <button
-            type="button"
-            className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
-            aria-label={expanded ? `Collapse ${label ?? "value"}` : `Expand ${label ?? "value"}`}
-            onClick={() => setExpanded((current) => !current)}
-          >
-            <span className="tree-caret" aria-hidden="true" />
-          </button>
-          {label !== null && <span className="json-tree-key">{label}: </span>}
-          <span className="json-tree-bracket">{openBracket}</span>
-          {!expanded && (
-            <>
-              <span className="json-tree-summary">
-                {entries.length} {isArray ? "items" : "keys"}
-              </span>
-              <span className="json-tree-bracket">{closeBracket}</span>
-            </>
-          )}
-        </span>
-      </div>
-      {expanded && (
+    <span className="json-tree-line-content" style={indent}>
+      <button
+        type="button"
+        className={`tree-caret-button${expanded ? " tree-caret-button--expanded" : ""}`}
+        aria-label={expanded ? `Collapse ${line.label ?? "value"}` : `Expand ${line.label ?? "value"}`}
+        onClick={() => onToggle(line.path, !expanded)}
+      >
+        <span className="tree-caret" aria-hidden="true" />
+      </button>
+      {line.label !== null && <span className="json-tree-key">{line.label}: </span>}
+      <span className="json-tree-bracket">{line.isArray ? "[" : "{"}</span>
+      {!expanded && (
         <>
-          {entries.map(([key, item]) => (
-            <JsonNode key={key} label={key} value={item} depth={depth + 1} />
-          ))}
-          <div className="json-tree-line">
-            <span className="json-tree-line-content" style={indent}>
-              <span className="json-tree-indent" aria-hidden="true" />
-              <span className="json-tree-bracket">{closeBracket}</span>
-            </span>
-          </div>
+          <span className="json-tree-summary">
+            {line.entryCount} {line.isArray ? "items" : "keys"}
+          </span>
+          <span className="json-tree-bracket">{line.isArray ? "]" : "}"}</span>
         </>
       )}
+    </span>
+  );
+}
+
+function JsonTreeRow({
+  index,
+  style,
+  lines,
+  lineNumbers,
+  onToggle,
+  contentWidth,
+}: RowComponentProps<JsonTreeRowProps>) {
+  const line = lines[index];
+  return (
+    <div className="json-tree-line" style={contentWidth === null ? style : { ...style, minWidth: contentWidth }}>
+      {/* The number used to be a CSS counter on `.json-tree-line::before`,
+          which counted the elements in the DOM. Only a windowful of those
+          exists now, so every screen would have restarted at 1 — the row's
+          index in the flattened document is the only thing that still knows
+          which line this is. */}
+      {lineNumbers && (
+        <span className="json-tree-line-number" aria-hidden="true">
+          {index + 1}
+        </span>
+      )}
+      <LineContent line={line} onToggle={onToggle} />
     </div>
   );
+}
+
+interface Metrics {
+  rowHeight: number;
+  /** Width of one character in the tree's font, or null before anything has been measured. */
+  charWidth: number | null;
+}
+
+/**
+ * The pixel geometry the list can't derive on its own.
+ *
+ * A virtualized list positions rows by a number, so it needs the row height up
+ * front — and that height moves with the app's Font size setting, so it has to
+ * be measured rather than declared.
+ *
+ * Width is the same problem one axis over, with a worse cause: the tree
+ * scrolls horizontally, but only a windowful of rows is ever in the DOM, so
+ * the browser can size to the widest row *currently on screen* and nothing
+ * more — the content width would lurch about as the user scrolled. The tree
+ * is set in a monospace face (see `.json-tree`), so one measured character
+ * plus the character counts the flattener already has is enough to know the
+ * document's width without rendering any row twice. Not rendering rows twice
+ * matters beyond tidiness: a hidden copy of a row is a second match for every
+ * query that looks for its text.
+ *
+ * Both come off the same hidden probe, re-measured whenever it resizes —
+ * which is what a font change does to it.
+ */
+function useJsonTreeMetrics(probe: HTMLElement | null): Metrics {
+  const [metrics, setMetrics] = useState<Metrics>({ rowHeight: DEFAULT_ROW_HEIGHT_PX, charWidth: null });
+
+  useLayoutEffect(() => {
+    if (!probe) return;
+
+    function measure() {
+      const element = probe as HTMLElement;
+      const sample = element.querySelector<HTMLElement>(".json-tree-measure-sample");
+      const height = element.offsetHeight;
+      const sampleWidth = sample?.getBoundingClientRect().width ?? 0;
+      setMetrics((current) => {
+        const next: Metrics = {
+          rowHeight: height > 0 ? height : DEFAULT_ROW_HEIGHT_PX,
+          charWidth: sampleWidth > 0 ? sampleWidth / PROBE_SAMPLE.length : null,
+        };
+        return current.rowHeight === next.rowHeight && current.charWidth === next.charWidth ? current : next;
+      });
+    }
+
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(probe);
+    return () => observer.disconnect();
+  }, [probe]);
+
+  return metrics;
 }
 
 /**
@@ -169,6 +222,10 @@ function JsonNode({ label, value, depth }: JsonNodeProps) {
  * an expand/collapse arrow. The toolbar has two icon buttons (label shown
  * on hover): copy the whole pretty-printed value to the clipboard, or open
  * it in its own tab in the app.
+ *
+ * The document is flattened to a list of lines and windowed, so the DOM holds
+ * a screenful of rows however much of it is expanded. Before that, Expand all
+ * on a 4 MB payload mounted ~1.5 million elements and killed the webview.
  */
 export function JsonTreeView({
   value,
@@ -182,44 +239,108 @@ export function JsonTreeView({
   // built; it just goes unused when the caller brought its own.
   const ownControl = useJsonTreeControl(value);
   const expansion = control ?? ownControl;
+  const [probe, setProbe] = useState<HTMLElement | null>(null);
+  const { rowHeight, charWidth } = useJsonTreeMetrics(probe);
+
+  const { lines, collapsedCount, widestLines } = useMemo(
+    () => flattenJsonTree(value, expansion.state),
+    [value, expansion.state],
+  );
+
+  /** Digits in the last line's number — what the gutter has to be wide enough for. */
+  const gutterChars = lineNumbers ? String(lines.length).length + 1 : 0;
+
+  // How wide the document is, from the widest few rows and one measured
+  // character. Every row is given it as a `min-width`, so the horizontal
+  // scroll extent is the document's rather than the current screenful's.
+  const contentWidth = useMemo(() => {
+    if (charWidth === null) return null;
+    let widest = 0;
+    for (const line of widestLines) {
+      widest = Math.max(widest, line.depth * INDENT_PX + LEAD_PX + line.weight * charWidth);
+    }
+    // The gutter and its rule, the row's right padding, and a little slack for
+    // the gaps `.json-tree-line-content` puts between its spans.
+    return Math.ceil(widest + gutterChars * charWidth + GUTTER_CHROME_PX + 24);
+  }, [widestLines, charWidth, gutterChars]);
+
+  const { reportCollapsedCount, setNodeExpanded } = expansion;
+  useEffect(() => {
+    reportCollapsedCount(collapsedCount);
+  }, [collapsedCount, reportCollapsedCount]);
+
+  const onToggle = useCallback((path: string, expanded: boolean) => setNodeExpanded(path, expanded), [setNodeExpanded]);
+
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    },
+    [],
+  );
 
   async function handleCopy() {
     await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    copyTimer.current = setTimeout(() => setCopied(false), 1500);
   }
 
+  const rowProps = useMemo<JsonTreeRowProps>(
+    () => ({ lines, lineNumbers, onToggle, contentWidth }),
+    [lines, lineNumbers, onToggle, contentWidth],
+  );
+  // Must not be inline: `List` calls it during render and cannot memoize it.
+  const rowKey = useCallback((index: number, data: JsonTreeRowProps) => data.lines[index].key, []);
+
   return (
-    <div className="json-tree">
+    <div className="json-tree json-tree--virtual">
       {showToolbar && (
-      <div className="json-tree-toolbar">
-        {onOpenInNewTab && (
+        <div className="json-tree-toolbar">
+          {onOpenInNewTab && (
+            <button
+              type="button"
+              className="json-tree-icon-button"
+              title="Open in new tab"
+              aria-label="Open in new tab"
+              onClick={onOpenInNewTab}
+            >
+              <ExternalLinkIcon />
+            </button>
+          )}
           <button
             type="button"
             className="json-tree-icon-button"
-            title="Open in new tab"
-            aria-label="Open in new tab"
-            onClick={onOpenInNewTab}
+            title={copied ? "Copied!" : "Copy"}
+            aria-label={copied ? "Copied!" : "Copy"}
+            onClick={handleCopy}
           >
-            <ExternalLinkIcon />
+            {copied ? <CheckIcon /> : <CopyIcon />}
           </button>
-        )}
-        <button
-          type="button"
-          className="json-tree-icon-button"
-          title={copied ? "Copied!" : "Copy"}
-          aria-label={copied ? "Copied!" : "Copy"}
-          onClick={handleCopy}
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </button>
-      </div>
-      )}
-      <JsonTreeExpansionContext.Provider value={expansion}>
-        <div className={`json-tree-body${lineNumbers ? " json-tree-body--numbered" : ""}`} role="tree">
-          <JsonNode label={null} value={value} depth={0} />
         </div>
-      </JsonTreeExpansionContext.Provider>
+      )}
+      <List<JsonTreeRowProps>
+        className={`json-tree-body json-tree-body--virtual${lineNumbers ? " json-tree-body--numbered" : ""}`}
+        role="tree"
+        // The gutter is sized from the largest number it will ever hold, so
+        // the content column doesn't shift left and right as the user scrolls
+        // from line 9 to line 10,000.
+        style={{ ["--json-tree-gutter" as string]: `${gutterChars}ch` }}
+        defaultHeight={DEFAULT_LIST_HEIGHT_PX}
+        rowCount={lines.length}
+        rowHeight={rowHeight}
+        rowKey={rowKey}
+        rowProps={rowProps}
+        rowComponent={JsonTreeRow}
+      />
+      {/* One sample string in the tree's own font, laid out and never painted.
+          Everything the list needs to know about pixels comes from this: the
+          height of a row, and the width of a character. */}
+      <div className="json-tree-line json-tree-measure" aria-hidden="true" ref={setProbe}>
+        <span className="json-tree-line-content">
+          <span className="json-tree-indent" />
+          <span className="json-tree-measure-sample">{PROBE_SAMPLE}</span>
+        </span>
+      </div>
     </div>
   );
 }

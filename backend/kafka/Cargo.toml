@@ -1,10 +1,10 @@
 [package]
-name = "kafkaoxide-kafka"
+name = "salty-kafka"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kafkaoxide-core = { workspace = true }
+salty-core = { workspace = true }
 error-stack = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
@@ -58,6 +58,6 @@ rdkafka = { version = "0.39", features = ["ssl-vendored", "zstd"] }
 # schema, and out of the decoder as JSON — the chain `connection_decode_avro`
 # performs, which cannot be tested where it lives because `src-tauri` needs a
 # desktop toolchain.
-kafkaoxide-schema-registry = { workspace = true }
-kafkaoxide-avro = { workspace = true }
+salty-schema-registry = { workspace = true }
+salty-avro = { workspace = true }
 serde_json = { workspace = true }

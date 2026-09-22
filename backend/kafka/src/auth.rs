@@ -1,4 +1,4 @@
-use kafkaoxide_core::is_auth_failure_reason;
+use salty_core::is_auth_failure_reason;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 
 /// Whether a librdkafka failure means "these credentials were rejected"

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useCountTopicMessages } from "./useClusterResources";
 
-export interface TopicPropertiesTabProps {
+export interface TopicMetadataTabProps {
   connectionId: string;
   topicName: string;
 }
 
-export function TopicPropertiesTab({ connectionId, topicName }: TopicPropertiesTabProps) {
+export function TopicMetadataTab({ connectionId, topicName }: TopicMetadataTabProps) {
   const [messageCount, setMessageCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const countMessages = useCountTopicMessages();
@@ -30,7 +30,7 @@ export function TopicPropertiesTab({ connectionId, topicName }: TopicPropertiesT
   }
 
   return (
-    <div role="tabpanel" aria-label="Properties" className="connection-modal-tab-panel">
+    <div role="tabpanel" aria-label="Meta Data" className="connection-modal-tab-panel">
       <section className="connection-modal-section">
         <h3>General</h3>
         <label>

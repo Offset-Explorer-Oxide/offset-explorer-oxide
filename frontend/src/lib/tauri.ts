@@ -455,8 +455,8 @@ export const api = {
   /** Trims the OS-visible working set on Windows (a no-op elsewhere) — see `commands::system::trim_process_memory`'s doc comment for why clearing app-level data alone doesn't shrink what Task Manager reports. */
   trimProcessMemory: () => invoke<void>("trim_process_memory"),
   /**
-   * Writes bytes to `path` — the payload viewer's Save and Download buttons,
-   * after the native save dialog has resolved where.
+   * Writes bytes to `path` — the payload viewer's and the JSON tab's Save
+   * buttons, after the native save dialog has resolved where.
    *
    * Takes base64 rather than bytes because Tauri's IPC is JSON: a `Uint8Array`
    * crosses it as a decimal array, roughly three times the characters of the

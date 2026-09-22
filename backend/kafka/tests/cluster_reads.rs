@@ -11,16 +11,16 @@
 //! docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 //! # fixtures: `e2e-basic` (3 partitions x ~20 keyed records), a committed
 //! # `e2e-group` on it, and `e2e-headers` (2 records carrying headers)
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test cluster_reads
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test cluster_reads
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol, TopicMessage};
-use kafkaoxide_kafka::{BrokerSslConfig, KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol, TopicMessage};
+use salty_kafka::{BrokerSslConfig, KafkaClient, RdKafkaClient};
 
 const TOPIC: &str = "e2e-basic";
 const HEADERS_TOPIC: &str = "e2e-headers";
@@ -32,7 +32,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_MESSAGE_SIZE: u32 = 12 * 1024 * 1024;
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 /// Every test bails out identically without a broker, so the suite stays
@@ -43,7 +43,7 @@ macro_rules! broker {
         match bootstrap_servers() {
             Some(bootstrap) => bootstrap,
             None => {
-                eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP to run this test");
+                eprintln!("skipped: set SALTY_E2E_BOOTSTRAP to run this test");
                 return;
             }
         }
@@ -520,17 +520,17 @@ async fn connecting_reports_reachable_and_releasing_drops_the_pooled_client() {
     let connection = connection(broker!());
 
     let status = client.connect(&connection).await.expect("connect failed");
-    assert!(matches!(status, kafkaoxide_core::ConnectionStatus::Reachable), "got {status:?}");
+    assert!(matches!(status, salty_core::ConnectionStatus::Reachable), "got {status:?}");
 
     let checked = client.check_status(&connection).await.expect("check_status failed");
-    assert!(matches!(checked, kafkaoxide_core::ConnectionStatus::Reachable), "got {checked:?}");
+    assert!(matches!(checked, salty_core::ConnectionStatus::Reachable), "got {checked:?}");
 
     client.release(&connection.id);
 
     // Releasing only drops the pooled client; the cluster is still reachable,
     // so the next request rebuilds one and succeeds.
     let after_release = client.connect(&connection).await.expect("connect after release failed");
-    assert!(matches!(after_release, kafkaoxide_core::ConnectionStatus::Reachable), "got {after_release:?}");
+    assert!(matches!(after_release, salty_core::ConnectionStatus::Reachable), "got {after_release:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -550,7 +550,7 @@ async fn test_connection_succeeds_against_a_reachable_cluster() {
         .await
         .expect("test_connection failed");
 
-    assert!(matches!(status, kafkaoxide_core::ConnectionStatus::Reachable), "got {status:?}");
+    assert!(matches!(status, salty_core::ConnectionStatus::Reachable), "got {status:?}");
 }
 
 fn base64_of(value: &str) -> String {

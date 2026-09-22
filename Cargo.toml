@@ -26,18 +26,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 strum = { version = "0.28", features = ["derive"] }
 async-trait = "0.1"
-kafkaoxide-core = { path = "backend/core" }
-kafkaoxide-db = { path = "backend/db" }
-kafkaoxide-kafka = { path = "backend/kafka" }
-kafkaoxide-avro = { path = "backend/avro" }
-kafkaoxide-protobuf = { path = "backend/protobuf" }
-kafkaoxide-schema-registry = { path = "backend/schema-registry" }
+salty-core = { path = "backend/core" }
+salty-db = { path = "backend/db" }
+salty-kafka = { path = "backend/kafka" }
+salty-avro = { path = "backend/avro" }
+salty-protobuf = { path = "backend/protobuf" }
+salty-schema-registry = { path = "backend/schema-registry" }
 
 # Release builds had no profile at all, so they ran on cargo's defaults:
 # `codegen-units = 16` (which deliberately trades optimization quality for
 # parallel compile speed) and no LTO, meaning nothing was ever inlined or
 # specialized across crate boundaries — every call from `src-tauri` into
-# `kafkaoxide-kafka`, and from there into rdkafka, stayed an opaque function
+# `salty-kafka`, and from there into rdkafka, stayed an opaque function
 # call. For a desktop app that is built once by CI and then run for hours by
 # every user, that is the wrong side of the trade: compile time is paid once
 # on a build machine, runtime is paid continuously on the user's.

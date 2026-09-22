@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { JsonTreeView } from "../../components/JsonTreeView";
 import { LineNumberedText } from "../../components/LineNumberedText";
-import { CheckIcon, CopyIcon, DownloadIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
+import { CheckIcon, CopyIcon, ExpandAllIcon, SaveIcon } from "../../components/AppIcons";
 import { useJsonTreeControl } from "../../components/jsonTreeExpansion";
 import { ValueFormatSelect, valueFormat } from "../../components/ValueFormatSelect";
 import { XmlTreeView } from "../../components/XmlTreeView";
@@ -62,7 +62,7 @@ export const HEX_PREVIEW_BYTES = 64 * 1024;
 const TREE_MODES: ValueMode[] = ["json", "avro", "protobuf"];
 
 /** Which toolbar button a status line came from. */
-type ToolbarAction = "copy" | "open" | "save" | "download";
+type ToolbarAction = "copy" | "open" | "save";
 
 const PANEL_TABS: { id: PanelTabId; label: string }[] = [
   { id: "headers", label: "Headers" },
@@ -210,7 +210,7 @@ export function MessagePayloadViewer() {
    */
   const [expanded, setExpanded] = useState<{ payload: string; mode: ValueMode } | null>(null);
   /**
-   * Transient feedback for the toolbar's Copy/Save/Download — cleared on a
+   * Transient feedback for the toolbar's Copy/Save — cleared on a
    * timer, or replaced by the next action's. `action` is carried so the Copy
    * button can show its own tick without matching on the message text.
    */
@@ -394,12 +394,10 @@ export function MessagePayloadViewer() {
    *
    * While `isShowingPreviewOnly` holds, `payloadBase64` is the Data tab's
    * bounded preview slice, not the message — and if the full-payload fetch
-   * *failed* it stays that way permanently. Save and Download read straight
+   * *failed* it stays that way permanently. Copy and Save render straight
    * from it, so without this they wrote a few KB of a multi-megabyte message
-   * to `partition-0-offset-42.bin` with no error and nothing to distinguish
-   * it from the real thing. Download's whole promise is the bytes exactly as
-   * the broker holds them, which is what makes a silent truncation there the
-   * worst version of this bug.
+   * to `partition-0-offset-42.json` with no error and nothing to distinguish
+   * it from the real thing.
    */
   function incompletePayloadReason(): string | null {
     if (!isShowingPreviewOnly) return null;
@@ -429,19 +427,19 @@ export function MessagePayloadViewer() {
 
   /**
    * What the opened tab is told about where its value came from: the format
-   * it was read as (its glyph in the tab strip), the payload's original
-   * bytes and a filename stem — so that tab can offer the same Copy/Save/
-   * Download this toolbar does rather than being a read-only dead end.
+   * it was read as (its glyph in the tab strip), the message's size and a
+   * filename stem — so that tab can show the same size chip and offer the
+   * same Copy/Save this toolbar does rather than being a read-only dead end.
    *
-   * The bytes are omitted while only a preview is loaded, for the reason
-   * `incompletePayloadReason` exists: a Download that silently writes a few
-   * KB of a multi-megabyte message is the worst version of this bug, and
-   * there is no banner in that tab to warn about it.
+   * The size is the broker's figure for the whole message, deliberately, and
+   * so is right even when only a preview has been loaded — the tab renders a
+   * capped view of the payload just as this pane does, and labelling that
+   * view with the length of the cap would say a 40 MB record is 256 KB.
    */
   function origin(format: ValueMode) {
     return {
       format,
-      payloadBase64: isShowingPreviewOnly || payloadBase64 === null ? undefined : payloadBase64,
+      payloadSizeBytes: payloadSizeBytes ?? undefined,
       fileStem: fileStem(),
     };
   }
@@ -505,39 +503,6 @@ export function MessagePayloadViewer() {
       report("ok", "save", `Saved to ${path}`);
     } catch (error) {
       report("error", "save", `Save failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /**
-   * Download writes the payload's **original bytes**, whatever format is
-   * selected — the message exactly as it sits on the broker.
-   *
-   * Not the same thing as Save, and the difference matters: a Kafka payload
-   * is an arbitrary byte string, and every text view of it above is a lossy
-   * UTF-8 decode (invalid sequences become U+FFFD). Saving that text back
-   * produces a file that no longer round-trips. This one does, which is what
-   * makes it the button to use for anything that will be fed to another tool.
-   */
-  async function handleDownload() {
-    if (payloadBase64 === null) {
-      report("error", "download", "Nothing to download — this row carries no payload.");
-      return;
-    }
-    const incomplete = incompletePayloadReason();
-    if (incomplete !== null) {
-      report("error", "download", `Not downloaded — ${incomplete}.`);
-      return;
-    }
-    try {
-      const path = await save({
-        defaultPath: `${fileStem()}.bin`,
-        filters: [{ name: "Raw payload", extensions: ["bin"] }],
-      });
-      if (!path) return;
-      await api.savePayloadFile(path, payloadBase64);
-      report("ok", "download", `Downloaded to ${path}`);
-    } catch (error) {
-      report("error", "download", `Download failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -623,7 +588,7 @@ export function MessagePayloadViewer() {
         <div role="tabpanel" aria-label="Value" className="message-payload-panel">
           {text === null ? (
             <p className="resizable-pane-placeholder">
-              Payload wasn't loaded for this fetch — check "Fetch message payload" below Fetch, then Fetch again.
+              Payload wasn't loaded for this fetch — check "Fetch message payload" above Fetch, then Fetch again.
             </p>
           ) : (
             <>
@@ -699,15 +664,6 @@ export function MessagePayloadViewer() {
                   >
                     <SaveIcon />
                   </button>
-                  <button
-                    type="button"
-                    className="json-tree-icon-button"
-                    title="Download the original payload bytes…"
-                    aria-label="Download the original payload bytes"
-                    onClick={handleDownload}
-                  >
-                    <DownloadIcon />
-                  </button>
                 </div>
               </div>
               {status && (
@@ -725,7 +681,9 @@ export function MessagePayloadViewer() {
                   Avro document pushed those controls off the top, so
                   switching format or closing the message meant paging all the
                   way back up. */}
-              <div className="message-payload-scroll">
+              <div
+                className={`message-payload-scroll${TREE_MODES.includes(mode) ? " message-payload-scroll--tree" : ""}`}
+              >
                 {literal !== null && (
                   <>
                     <LineNumberedText

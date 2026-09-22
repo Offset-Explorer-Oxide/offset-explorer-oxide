@@ -130,7 +130,7 @@ jobs:
       # recently a `cargo test` binary built from this same workspace. Each
       # reported green while the shipped Windows binary still could not
       # decompress: v0.37.0 passed the `build_info` gate and its installed
-      # `kafkaoxide-app.exe` still carries librdkafka's "snappy not enabled at
+      # `salty-app.exe` still carries librdkafka's "snappy not enabled at
       # build time" marker, which is only compiled in when Snappy is absent.
       #
       # So the checks below run in the order that matters: build the exact
@@ -178,7 +178,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          binary=target/release/kafkaoxide-app
+          binary=target/release/salty-app
           if [ -f "$binary.exe" ]; then binary="$binary.exe"; fi
           status=0
           "$binary" --librdkafka-features "$RUNNER_TEMP/librdkafka-features.txt" || status=$?
@@ -189,7 +189,7 @@ jobs:
       # terms of librdkafka's own feature list, and covers the non-bundled
       # crates' tests in the same run.
       - name: Verify librdkafka's own feature report
-        run: cargo test --release -p kafkaoxide-kafka build_info -- --nocapture
+        run: cargo test --release -p salty-kafka build_info -- --nocapture
 
       - name: Build and upload to draft release
         uses: tauri-apps/tauri-action@v0
@@ -198,6 +198,6 @@ jobs:
         with:
           projectPath: src-tauri
           tagName: ${{ needs.check-version.outputs.tag }}
-          releaseName: 'Offset Explorer Oxide v${{ needs.check-version.outputs.version }}'
+          releaseName: 'Salty v${{ needs.check-version.outputs.version }}'
           releaseDraft: true
           prerelease: false

@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { JsonTreeView } from "./JsonTreeView";
+import { useJsonTreeControl } from "./jsonTreeExpansion";
 
 describe("JsonTreeView", () => {
   it("renders primitive values with their keys", () => {
@@ -120,7 +121,12 @@ describe("JsonTreeView", () => {
     render(<JsonTreeView value={{ events: items }} />);
 
     expect(screen.getByText('"item-0"')).toBeInTheDocument();
-    expect(screen.getByText('"item-499"')).toBeInTheDocument();
+    // Open, not merely started: a collapsed `events` would offer an Expand
+    // arrow and a `500 items` summary instead. The 500th item is *not*
+    // asserted to be in the DOM — the tree is windowed, and rows that far
+    // down the document only exist once they are scrolled to.
+    expect(screen.queryByRole("button", { name: "Expand events" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/500 items/)).not.toBeInTheDocument();
   });
 
   /**
@@ -169,5 +175,91 @@ describe("JsonTreeView line numbers and toolbar", () => {
 
     expect(container.querySelector(".json-tree-toolbar")).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The tree is virtualized: only the rows near the viewport are real DOM
+ * elements, however much of the document is expanded.
+ *
+ * Without this, Expand all on a large payload mounts every line at once —
+ * measured in a real browser before the change, a 1 MB payload blocked the
+ * main thread for 6.6s and a 4 MB payload crashed the renderer outright.
+ */
+describe("JsonTreeView virtualization", () => {
+  function ExpandAllHarness({ value }: { value: unknown }) {
+    const control = useJsonTreeControl(value);
+    return (
+      <>
+        <button type="button" onClick={control.expandAll}>
+          Expand all
+        </button>
+        <JsonTreeView value={value} showToolbar={false} control={control} />
+      </>
+    );
+  }
+
+  it("renders only a window of rows when everything is expanded", async () => {
+    const user = userEvent.setup();
+    // 2,000 three-field objects: 10,002 rendered lines once fully expanded.
+    const items = Array.from({ length: 2000 }, (_, i) => ({ id: `item-${i}`, sku: `sku-${i}`, note: "…" }));
+    const { container } = render(<ExpandAllHarness value={{ events: items }} />);
+
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+
+    const rendered = container.querySelectorAll(".json-tree-line").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(200);
+    expect(screen.queryByText('"item-1999"')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Only a windowful of rows is in the DOM, so the browser can size the scroll
+ * box to the widest row *on screen* and nothing more — the content would get
+ * wider and narrower as the user scrolled. The tree is monospace, so the
+ * document's width comes from one measured character instead.
+ *
+ * jsdom reports every box as zero, so the measurement has to be faked to
+ * exercise it at all; what is asserted is the consequence, not the number.
+ */
+describe("JsonTreeView content width", () => {
+  const CHAR_PX = 8;
+
+  // The measurement spy is global; left in place it would size the rows in
+  // the next test too.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function withMeasurableText() {
+    return vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const width = this.classList.contains("json-tree-measure-sample")
+        ? (this.textContent ?? "").length * CHAR_PX
+        : 0;
+      return { width, height: 0, top: 0, left: 0, right: width, bottom: 0, x: 0, y: 0, toJSON: () => ({}) };
+    });
+  }
+
+  it("gives every row the width of the document's longest line", () => {
+    withMeasurableText();
+    const { container } = render(<JsonTreeView value={{ short: "a", longest: "x".repeat(200) }} />);
+
+    const rows = container.querySelectorAll<HTMLElement>(".json-tree-body .json-tree-line");
+    const widths = [...rows].map((row) => row.style.minWidth);
+
+    expect(widths.length).toBeGreaterThan(1);
+    // Every row the same, and wide enough for the 200-character value rather
+    // than for whichever row happens to be on screen.
+    expect(new Set(widths).size).toBe(1);
+    expect(parseInt(widths[0], 10)).toBeGreaterThan(200 * CHAR_PX);
+  });
+
+  it("leaves the rows unconstrained when nothing can be measured", () => {
+    const { container } = render(<JsonTreeView value={{ a: 1 }} />);
+
+    for (const row of container.querySelectorAll<HTMLElement>(".json-tree-body .json-tree-line")) {
+      expect(row.style.minWidth).toBe("");
+    }
   });
 });

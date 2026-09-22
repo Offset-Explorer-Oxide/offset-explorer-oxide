@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { INITIAL_EXPANSION, JsonTreeExpansionState } from "./jsonTreeLines";
 
 /**
  * How many rendered lines a container may be worth and still be expanded on
@@ -8,12 +9,16 @@ import { createContext, useCallback, useContext, useMemo, useState } from "react
  * the wrong thing: an array of 120 integers is 120 lines and started
  * collapsed, while 80 objects of twenty fields each is over 1,600 lines and
  * started open. What actually costs layout time is the number of lines the
- * tree puts in the DOM — the view isn't virtualised, so every line of every
- * expanded node is a real element — and that is what this counts.
+ * tree puts on screen, and that is what this counts.
  *
  * 1,000 lines is roomy enough that an ordinary message opens fully read-able
  * (a few hundred lines is typical) and still an order of magnitude short of
- * the multi-megabyte payloads that froze the app when everything expanded.
+ * the multi-megabyte payloads this view is routinely handed.
+ *
+ * Note that since the tree became virtualized this is a *readability* budget
+ * rather than a safety one — a wall of a hundred thousand open lines is
+ * useless to read, but it no longer freezes anything. The hard limit that
+ * used to live here is gone; see `flattenJsonTree`.
  */
 export const AUTO_EXPAND_MAX_LINES = 1000;
 
@@ -60,7 +65,8 @@ export function childCount(value: unknown): number {
  * limit, not the true total.
  *
  * A primitive is one line. A container is its opening line plus its closing
- * bracket line plus its entries — which is exactly what `JsonNode` renders.
+ * bracket line plus its entries — which is exactly what `flattenJsonTree`
+ * produces.
  */
 export function renderedLineCount(value: unknown, limit: number, depth = 0): number {
   if (!isExpandable(value)) return 1;
@@ -82,67 +88,66 @@ export function shouldAutoExpand(value: unknown, depth: number): boolean {
 }
 
 /**
- * The Expand-all wiring, shared between a tree and a toolbar button that
- * isn't inside it.
+ * The expansion state of one tree, plus the Expand-all wiring shared with a
+ * toolbar button that isn't inside it (the payload panel's toolbar sits above
+ * the tree, not in it).
  *
- * Two things cross that boundary. `expandAllToken` goes down: every node
- * expands when it changes, *including nodes that mount afterwards*, which is
- * what makes one click expand a tree whose deeper levels aren't rendered yet.
- * `collapsedCount` comes up: each collapsed node on screen counts itself, so
- * the button can be disabled when there is nothing left to expand — and
- * enabled again the moment the user collapses something by hand.
- *
- * Only *mounted* nodes report, which is exactly right: a node inside a
- * collapsed parent isn't on screen, and its parent is already counted.
+ * `collapsedCount` used to be tallied by each node reporting itself on mount
+ * and unmount. It is now a single number the tree hands up once per flatten —
+ * the same count, arrived at without a state update per node, which mattered
+ * once one click could mount a hundred thousand of them.
  */
-export interface JsonTreeExpansion {
-  expandAllToken: number;
-  reportCollapsed: (delta: number) => void;
-}
-
-export const JsonTreeExpansionContext = createContext<JsonTreeExpansion | null>(null);
-
-export interface JsonTreeControl extends JsonTreeExpansion {
-  /** How many collapsed nodes are on screen; 0 means Expand all has nothing to do. */
-  collapsedCount: number;
+export interface JsonTreeControl {
+  state: JsonTreeExpansionState;
+  /** Open or close one container. */
+  setNodeExpanded: (path: string, expanded: boolean) => void;
   expandAll: () => void;
+  /** Collapsed containers on screen; 0 means Expand all has nothing to do. */
+  collapsedCount: number;
+  /** Called by the tree with what the current flatten found. */
+  reportCollapsedCount: (count: number) => void;
 }
 
 /**
  * @param resetKey Changes whenever the tree is showing a different document —
  * for the payload panel, the payload and the format it's being read as. A
  * fresh document must start from the auto-expand rules rather than inheriting
- * "the user pressed Expand all" from the last one, and the token is what
- * would otherwise carry that across.
+ * "the user pressed Expand all", or an expanded `events` node on a message
+ * with three entries would stay expanded on the next message where it holds
+ * three thousand.
  */
 export function useJsonTreeControl(resetKey: unknown = null): JsonTreeControl {
-  const [expandAllToken, setExpandAllToken] = useState(0);
+  const [state, setState] = useState<JsonTreeExpansionState>(INITIAL_EXPANSION);
   const [collapsedCount, setCollapsedCount] = useState(0);
   const [previousKey, setPreviousKey] = useState(resetKey);
 
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);
-    setExpandAllToken(0);
-    // `collapsedCount` is deliberately not reset with it: it is a balanced
-    // counter, and the outgoing tree's nodes each report -1 as they unmount
-    // *after* this render. Zeroing it here would make those cleanups drive it
-    // negative and the button would go dead on the new message.
+    setState(INITIAL_EXPANSION);
   }
 
-  const reportCollapsed = useCallback((delta: number) => {
-    setCollapsedCount((current) => current + delta);
+  const setNodeExpanded = useCallback((path: string, expanded: boolean) => {
+    setState((current) => {
+      const overrides = new Map(current.overrides);
+      overrides.set(path, expanded);
+      return { ...current, overrides };
+    });
   }, []);
+
+  // Clearing the per-node overrides along with it is deliberate: a node the
+  // user collapsed by hand is exactly what "expand all" is being asked to
+  // undo, and leaving the override in place would make the button silently
+  // skip it.
   const expandAll = useCallback(() => {
-    setExpandAllToken((current) => current + 1);
+    setState({ overrides: new Map(), expandAll: true });
+  }, []);
+
+  const reportCollapsedCount = useCallback((count: number) => {
+    setCollapsedCount(count);
   }, []);
 
   return useMemo(
-    () => ({ expandAllToken, collapsedCount, reportCollapsed, expandAll }),
-    [expandAllToken, collapsedCount, reportCollapsed, expandAll],
+    () => ({ state, setNodeExpanded, expandAll, collapsedCount, reportCollapsedCount }),
+    [state, setNodeExpanded, expandAll, collapsedCount, reportCollapsedCount],
   );
-}
-
-/** The ambient expansion wiring for a `JsonNode`; inert outside a provider. */
-export function useJsonTreeExpansion(): JsonTreeExpansion | null {
-  return useContext(JsonTreeExpansionContext);
 }

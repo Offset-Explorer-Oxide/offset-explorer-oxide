@@ -19,16 +19,16 @@
 //! ```bash
 //! docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 //! ./scripts/e2e-fixtures.sh
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test fetch_stall -- --nocapture
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test fetch_stall -- --nocapture
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Created by `scripts/e2e-fixtures.sh`: 30,000 x ~1 KB over 6 partitions.
 const TOPIC: &str = "perf-probe";
@@ -41,7 +41,7 @@ const MESSAGES: u32 = 30_000;
 const BUDGET: Duration = Duration::from_secs(3);
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 fn connection(bootstrap_servers: String) -> Connection {
@@ -129,7 +129,7 @@ async fn fetch(include_payload: bool) -> Option<(Duration, usize)> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_fetch_does_not_stall_on_the_prefetch_queue_backoff() {
     let Some((elapsed, count)) = fetch(false).await else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
 
@@ -149,7 +149,7 @@ async fn a_large_fetch_does_not_stall_on_the_prefetch_queue_backoff() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_same_holds_when_payloads_are_fetched() {
     let Some((elapsed, count)) = fetch(true).await else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
 
@@ -178,7 +178,7 @@ async fn the_same_holds_when_payloads_are_fetched() {
 #[tokio::test(flavor = "multi_thread")]
 async fn repeated_small_browses_do_not_pay_a_coordinator_query_each() {
     let Some(bootstrap) = bootstrap_servers() else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
     let client = RdKafkaClient::new();

@@ -19,7 +19,10 @@ describe("JsonViewerTabPanel", () => {
 
     expect(screen.getByRole("heading", { name: "Partition 0 · Offset 1" })).toBeInTheDocument();
     expect(screen.getByText("orderId:")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
+    // Scoped to the value: the tree's line-number gutter is a real element
+    // now (a CSS counter can't number a windowed list), so a bare "1" also
+    // matches the number of the line this value is on.
+    expect(screen.getByText("1", { selector: ".json-tree-value" })).toBeInTheDocument();
   });
 
   it("doesn't show an 'Open in new tab' button — this view is already a dedicated tab for the value", () => {
@@ -66,14 +69,40 @@ describe("JsonViewerTabPanel", () => {
     expect(container.querySelector(".code-gutter")?.textContent).toBe("1\n2");
     expect(container.querySelector(".code-body")?.textContent).toBe("line one\nline two");
   });
+
+  /**
+   * The text kind has had a gutter all along; the two tree kinds hadn't.
+   * A whole tab of one document is where a line to point at is worth the
+   * column, so all three are numbered here — unlike the payload pane beside
+   * the grid, which stays unnumbered on its trees.
+   */
+  it("numbers the JSON tree's lines", () => {
+    const { container } = render(
+      <JsonViewerTabPanel
+        tab={{ id: "json-1", title: "Offset 1", name: "Json", kind: "json", value: { orderId: 1 } }}
+      />,
+    );
+
+    expect(container.querySelector(".json-tree-body--numbered")).not.toBeNull();
+  });
+
+  it("numbers the XML tree's lines", () => {
+    const { container } = render(
+      <JsonViewerTabPanel
+        tab={{
+          id: "xml-1",
+          title: "Offset 1",
+          name: "Xml",
+          kind: "xml",
+          value: { tag: "order", attributes: [], children: [], text: "42" },
+        }}
+      />,
+    );
+
+    expect(container.querySelector(".json-tree-body--numbered")).not.toBeNull();
+  });
 });
 
-/**
- * Opening a payload in its own tab is what you do with the payload you
- * actually care about — and until now that tab was a dead end with a Copy
- * button and nothing else. These cover the two that write files, including
- * the distinction that makes them two buttons rather than one.
- */
 describe("JsonViewerTabPanel expand all", () => {
   const heavy = {
     orderId: "a-1",
@@ -90,8 +119,13 @@ describe("JsonViewerTabPanel expand all", () => {
 
     await user.click(screen.getByRole("button", { name: "Expand all" }));
 
+    // The array itself, and the objects inside it that only came into
+    // existence as it opened. The 300th is *not* asserted: the tree is
+    // windowed, so a row that far down the document exists only once it is
+    // scrolled to — "everything is expanded" is what the disabled button
+    // says, and it is asserted instead.
     expect(screen.getByText('"event-0"')).toBeInTheDocument();
-    expect(screen.getByText('"event-299"')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeDisabled();
   });
 
   it("disables the button when nothing is collapsed", () => {
@@ -116,8 +150,6 @@ describe("JsonViewerTabPanel expand all", () => {
 });
 
 describe("JsonViewerTabPanel toolbar", () => {
-  const PAYLOAD = btoa('{"orderId":1}');
-
   function jsonTab(overrides: Record<string, unknown> = {}) {
     return {
       id: "json-1",
@@ -125,7 +157,7 @@ describe("JsonViewerTabPanel toolbar", () => {
       name: "Json",
       kind: "json" as const,
       format: "json" as const,
-      payloadBase64: PAYLOAD,
+      payloadSizeBytes: 2048,
       fileStem: "partition-0-offset-1",
       value: { orderId: 1 },
       ...overrides,
@@ -171,24 +203,22 @@ describe("JsonViewerTabPanel toolbar", () => {
   });
 
   /**
-   * The whole reason Download is a separate button: a payload is an
-   * arbitrary byte string, and the text above it is a lossy UTF-8 decode
-   * plus a parse. This one has to write what the broker holds.
+   * The size the pane this tab was opened from was showing — the message's,
+   * as the broker reported it, not the length of the text rendered here.
    */
-  it("downloads the original payload bytes, not the rendered text", async () => {
-    saveDialog.mockResolvedValue("/tmp/out.bin");
-    const user = userEvent.setup();
+  it("shows the message's size the way the payload viewer does", () => {
     render(<JsonViewerTabPanel tab={jsonTab()} />);
 
-    await user.click(screen.getByRole("button", { name: "Download the original payload bytes" }));
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+    expect(screen.getByTitle("Payload size: 2,048 bytes")).toBeInTheDocument();
+  });
 
-    expect(saveDialog).toHaveBeenCalledWith(
-      expect.objectContaining({ defaultPath: "partition-0-offset-1.bin" }),
-    );
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith(
-      "payload_save",
-      expect.objectContaining({ contentsBase64: PAYLOAD }),
-    );
+  // A tab opened from something that isn't a message has no size to show,
+  // and shows no chip rather than a made-up number.
+  it("omits the size when the tab was opened without one", () => {
+    render(<JsonViewerTabPanel tab={jsonTab({ payloadSizeBytes: undefined })} />);
+
+    expect(screen.queryByText(/KB|MB|\d+ B/)).not.toBeInTheDocument();
   });
 
   it("writes nothing when the save dialog is cancelled", async () => {
@@ -201,12 +231,12 @@ describe("JsonViewerTabPanel toolbar", () => {
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();
   });
 
-  // A tab opened without the bytes must not offer a button that would have
-  // to invent them — it offers no button.
-  it("hides Download when the tab carries no original bytes", () => {
-    render(<JsonViewerTabPanel tab={jsonTab({ payloadBase64: undefined })} />);
+  // Download used to sit beside Save here, writing the payload's original
+  // bytes. It was removed from the app entirely — Save is the only way out.
+  it("offers no Download button", () => {
+    render(<JsonViewerTabPanel tab={jsonTab()} />);
 
-    expect(screen.queryByRole("button", { name: "Download the original payload bytes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save as JSON" })).toBeInTheDocument();
   });
 

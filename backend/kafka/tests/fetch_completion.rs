@@ -26,16 +26,16 @@
 //! ```bash
 //! docker run -d --name kafka -p 9092:9092 apache/kafka:3.9.0
 //! ./scripts/e2e-fixtures.sh
-//! KAFKAOXIDE_E2E_BOOTSTRAP=localhost:9092 \
-//!   cargo test -p kafkaoxide-kafka --test fetch_completion -- --nocapture
+//! SALTY_E2E_BOOTSTRAP=localhost:9092 \
+//!   cargo test -p salty-kafka --test fetch_completion -- --nocapture
 //! ```
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Created by `scripts/e2e-fixtures.sh`: 10,000 transactional records over 6
 /// partitions, occupying rather more than 10,000 offsets.
@@ -48,7 +48,7 @@ const TOPIC: &str = "perf-txn";
 const BUDGET: Duration = Duration::from_secs(1);
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 fn connection(bootstrap_servers: String) -> Connection {
@@ -126,7 +126,7 @@ fn browse(max: u32) -> MessageFilter {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newest_first_browse_of_a_transactional_topic_finishes_promptly() {
     let Some((elapsed, count, poll_error)) = timed_fetch(TOPIC, browse(100)).await else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
 
@@ -150,7 +150,7 @@ async fn a_newest_first_browse_of_a_transactional_topic_finishes_promptly() {
 #[tokio::test(flavor = "multi_thread")]
 async fn draining_a_transactional_topic_stops_at_the_end_of_the_data() {
     let Some((elapsed, count, poll_error)) = timed_fetch(TOPIC, browse(30_000)).await else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
 
@@ -171,7 +171,7 @@ async fn draining_a_transactional_topic_stops_at_the_end_of_the_data() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ordinary_topic_still_returns_every_message_it_should() {
     let Some((elapsed, count, _)) = timed_fetch("perf-probe", browse(30_000)).await else {
-        eprintln!("skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
+        eprintln!("skipped: set SALTY_E2E_BOOTSTRAP (and run scripts/e2e-fixtures.sh)");
         return;
     };
 

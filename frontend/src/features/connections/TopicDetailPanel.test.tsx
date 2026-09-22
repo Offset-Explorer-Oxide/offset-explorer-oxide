@@ -21,14 +21,42 @@ describe("TopicDetailPanel", () => {
     expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument();
   });
 
-  it("renders Properties, Data, Partitions, Config, and Schema tabs", () => {
+  /**
+   * Order is asserted, not just membership: Data leads because it is both the
+   * first tab and the default one, Meta Data sits next to it, and Config is
+   * last.
+   */
+  it("renders Data, Meta Data, Partitions, Schema and Config, in that order", () => {
     renderWithClient(<TopicDetailPanel connectionId="1" topicName="orders" />);
 
-    expect(screen.getByRole("tab", { name: "Properties" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Data" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Partitions" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Config" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Schema" })).toBeInTheDocument();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Data",
+      "Meta Data",
+      "Partitions",
+      "Schema",
+      "Config",
+    ]);
+  });
+
+  it("switches to the Config tab when clicked, listing the broker's settings for the topic", async () => {
+    setInvokeHandlers({
+      connection_describe_topic_config: () => [{ name: "retention.ms", value: "604800000" }],
+    });
+    const user = userEvent.setup();
+    renderWithClient(<TopicDetailPanel connectionId="1" topicName="orders" />);
+
+    await user.click(screen.getByRole("tab", { name: "Config" }));
+
+    expect(await screen.findByText("retention.ms")).toBeInTheDocument();
+    expect(screen.getByText("604800000")).toBeInTheDocument();
+  });
+
+  it("makes the default tab the first tab", () => {
+    renderWithClient(<TopicDetailPanel connectionId="1" topicName="orders" />);
+
+    const [first] = screen.getAllByRole("tab");
+    expect(first).toHaveAttribute("aria-selected", "true");
+    expect(first).toHaveTextContent("Data");
   });
 
   it("switches to the Schema tab when clicked", async () => {
@@ -41,13 +69,13 @@ describe("TopicDetailPanel", () => {
     expect(await screen.findByLabelText("Avro schema")).toBeInTheDocument();
   });
 
-  it("switches to the Properties tab when clicked, showing the topic name", async () => {
+  it("switches to the Meta Data tab when clicked, showing the topic name", async () => {
     const user = userEvent.setup();
     renderWithClient(<TopicDetailPanel connectionId="1" topicName="orders" />);
 
-    await user.click(screen.getByRole("tab", { name: "Properties" }));
+    await user.click(screen.getByRole("tab", { name: "Meta Data" }));
 
-    expect(screen.getByRole("tab", { name: "Properties" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Meta Data" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("Topic name")).toHaveValue("orders");
   });
 });

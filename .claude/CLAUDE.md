@@ -1,6 +1,10 @@
-# Offset Explorer Oxide
+# Salty
 
-A desktop Kafka client built with Tauri v2 (Rust backend, React/TypeScript frontend) — a lightweight alternative to Offset Explorer.
+A desktop Kafka client built with Tauri v2 (Rust backend, React/TypeScript frontend).
+
+Renamed from "Offset Explorer Oxide" in v1.0.0. The Rust crates are
+`salty-*` (`salty_core`, `salty_kafka`, …), the bundle identifier is
+`dev.salty.app`, and the e2e gates are `SALTY_E2E_*`.
 
 ## Structure
 
@@ -50,7 +54,7 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   `allow_publishing` is deliberately **excluded from `PortableConnection`**, so
   an exported connections file can never arrive with publishing pre-enabled;
   that is the same reasoning that keeps secrets out of exports. The gate order
-  itself lives in `kafkaoxide_core::publish_refusal` rather than the command, so
+  itself lives in `salty_core::publish_refusal` rather than the command, so
   it can be tested where `src-tauri` cannot be built.
 - `AppError::Authorization` is distinct from `AppError::Authentication` on
   purpose: a `TOPIC_AUTHORIZATION_FAILED` must not feed the credential circuit
@@ -93,20 +97,24 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   `build-support/e2e-acl/server.properties`) with three principals: `admin`
   (super), `writer` (Describe+Read+Write) and `reader` (Describe+Read only).
   `backend/kafka/tests/publish_authorization.rs` is gated on
-  `KAFKAOXIDE_E2E_ACL_BOOTSTRAP` and is the only test that can show a read-only
+  `SALTY_E2E_ACL_BOOTSTRAP` and is the only test that can show a read-only
   principal being refused — on the ordinary e2e broker, which has no authorizer,
   `reader` would publish happily and the test would pass for the wrong reason.
 - Most of `backend/kafka/src/client.rs` is only reachable with a real broker.
   `scripts/e2e-fixtures.sh` sets one up (`docker run -d --name kafka -p 9092:9092
-  apache/kafka:3.9.0` first); without `KAFKAOXIDE_E2E_BOOTSTRAP` the e2e tests
+  apache/kafka:3.9.0` first); without `SALTY_E2E_BOOTSTRAP` the e2e tests
   skip themselves and that file drops from ~94% to ~62%.
 - The message payload panel (`MessagePayloadViewer`) is the one place besides
-  `connections_export` that writes a user file: Save writes the value as the
-  selected format renders it, Download writes the payload's original bytes,
-  both through `commands::system::payload_save` after the frontend has
-  resolved a path via the native save dialog. It takes base64 rather than a
-  byte vector because Tauri's IPC is JSON. Its chosen format and its placement
-  (beside the middle pane or docked under it) live in
+  `connections_export` that writes a user file: **Save** writes the value as
+  the selected format renders it, through `commands::system::payload_save`
+  after the frontend has resolved a path via the native save dialog. It takes
+  base64 rather than a byte vector because Tauri's IPC is JSON. A second
+  button, **Download** (the payload's original bytes, in both this panel and
+  `JsonViewerTabPanel`), was **deliberately removed** — Save is the only way
+  out now, so don't reintroduce it; `payload_save` still writes bytes rather
+  than a string only because the frontend base64-encodes the rendered text
+  itself. Its chosen format and its placement (beside the middle pane or
+  docked under it) live in
   `useMessageViewerPrefsStore`, which keeps a per-tab choice *and* an
   app-wide last-chosen default in localStorage.
 - Protobuf decoding uses `protox` (compiles `.proto` *source text* to a
@@ -121,7 +129,7 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   Confluent header is stripped on *every* path (a manual schema does not mean
   "decode the payload whole", as it does for Avro), and there is no refusal —
   with no schema anywhere the wire format still yields field numbers, so
-  `kafkaoxide_protobuf::wire::decode_raw` renders those and the result carries
+  `salty_protobuf::wire::decode_raw` renders those and the result carries
   `source: "none"` so the UI can say the keys are numbers, not names. Note the
   Confluent message-index shorthand: an all-zero path is a single `0` byte,
   not a length-prefixed array.
@@ -133,9 +141,58 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   415 kB, startup 111 ms -> 43 ms. A test that renders one of those panels has
   to `findBy` its contents, not `getBy` — the tab body now resolves
   asynchronously.
+- **`JsonTreeView` is virtualized and must stay that way.** It flattens the
+  document to a list of lines (`jsonTreeLines.ts`) and renders it through
+  `react-window`'s `List`, so the DOM holds a screenful of rows however much is
+  expanded. Before that, Expand all on a 4 MB payload mounted ~1.5 million
+  elements: measured in Chromium, 1 MB blocked the main thread for 6.6 s and
+  4 MB crashed the renderer. Three consequences to keep in mind: the line
+  numbers come from the row's index, **not** a CSS counter (a counter restarts
+  at 1 on every screen, and the counter rule is still there for the XML tree,
+  scoped `:not(.json-tree-body--virtual)`); the list needs a *definite height*
+  to fill, which is why `.message-payload-scroll` hands its scrolling over via
+  `--tree` for the three tree formats; and the document's width is computed
+  from one measured character (`.json-tree-measure`) rather than from
+  `width: max-content`, which can only ever see the rows currently on screen.
+  A test that asserts a deep row is in the DOM will fail — assert the
+  expansion state instead (an absent Expand arrow, a disabled Expand all).
+- **`XmlTreeView` is *not* virtualized, and expands every node on mount**
+  (`useState(true)`), so it has the freeze `JsonTreeView` no longer has:
+  measured 5,000 elements -> 688 ms, 20,000 -> 2.25 s, linear. It shares
+  `.json-tree*` classes with the JSON tree, so scope changes to those away from
+  it (`--virtual` modifiers) unless you mean to hit both.
 - Only `ResourceCategory` (Brokers, Consumers) virtualizes its list, via
   `react-window`'s `List` past a 50-item threshold. **Topics is a separate,
   deliberately non-virtualized `TopicCategory`** — so a change to the
   virtualized path cannot be verified by opening Topics, which is the obvious
   thing to try and shows the plain `<ul>` branch instead.
+- **Frontend `localStorage` keys keep the `kafkaoxide.` prefix** (theme, font
+  settings, panel heights, pane widths, message-viewer prefs) even though
+  everything else is `salty`. Renaming them is strictly worse than leaving
+  them: a key that survives the identifier change carries the user's settings
+  forward, and one that doesn't is lost either way — renaming only guarantees
+  the first case is lost too. The app data *database* is a different story and
+  is migrated for real; see `salty_core::adopt_legacy_app_data`.
+- **`backend/db/migrations/*.sql` must never be edited**, not even a comment:
+  `sqlx::migrate!` checksums applied migrations, so a changed byte makes every
+  existing install fail to start. `0004_topic_schemas.sql` still says
+  `kafkaoxide_db::init_pool` for exactly this reason.
+- The connections export file's version field serialises as
+  `saltyConnectionsVersion` but carries `#[serde(alias =
+  "kafkaoxideConnectionsVersion")]`, because it is the first thing
+  `ConnectionExportFile::parse` checks — without the alias every file exported
+  before the rename would be rejected as invalid.
+- The topic detail panel's tabs are **Data, Meta Data, Partitions, Schema,
+  Config**, in that order, with Data as the default — first tab and landing tab
+  deliberately the same. "Meta Data" was "Properties" (it holds the topic's
+  name and a message count, not settings); Config is last because it is the one
+  read-only tab, showing the broker's own settings for the topic via
+  `useTopicConfig` -> `connection_describe_topic_config`.
+- The connection modal / cluster panel tabs are **Properties, Security &
+  Authentication, Schema**. Security and Authentication were merged because
+  the protocol chosen in one decides whether the other is needed at all; the
+  two halves are `SecuritySection` and `AuthenticationSection`, composed in
+  that order by `SecurityAuthenticationTab`, each keeping its own `disabled`
+  fieldset. "Schema" was "Advanced" — every field on it is a Schema Registry
+  setting.
 - Frontend feature folders pair each component/store with its test file (e.g. `useTabsStore.ts` + `useTabsStore.test.ts`) rather than a separate `__tests__` tree.

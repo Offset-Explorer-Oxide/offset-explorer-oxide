@@ -136,16 +136,6 @@ export function SaveIcon() {
   );
 }
 
-/** An arrow into a tray — Download, which writes the payload's original bytes. */
-export function DownloadIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M8 2v7.5m0 0L5.2 6.7M8 9.5l2.8-2.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M2.8 11v1.5a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1V11" stroke="currentColor" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 /** Two chevrons pushing apart — Expand all, which opens every collapsed node in the tree. */
 export function ExpandAllIcon() {
   return (

@@ -70,7 +70,7 @@ function AppShell() {
 
   async function handleExportAll() {
     const path = await save({
-      defaultPath: "kafkaoxide-connections.json",
+      defaultPath: "salty-connections.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (path) {

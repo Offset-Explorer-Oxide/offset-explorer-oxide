@@ -16,11 +16,11 @@
 //! each topic through the very code path the Data tab uses.
 //!
 //! ```powershell
-//! $env:KAFKAOXIDE_E2E_BOOTSTRAP = "localhost:9092"
-//! cargo test -p kafkaoxide-kafka --test compression_codecs -- --nocapture
+//! $env:SALTY_E2E_BOOTSTRAP = "localhost:9092"
+//! cargo test -p salty-kafka --test compression_codecs -- --nocapture
 //! ```
 //!
-//! With no `KAFKAOXIDE_E2E_BOOTSTRAP` set there is no broker to talk to, so
+//! With no `SALTY_E2E_BOOTSTRAP` set there is no broker to talk to, so
 //! the test reports itself skipped rather than failing — `cargo test` on a
 //! machine with no Kafka stays green.
 
@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use kafkaoxide_core::{Connection, MessageFilter, SecurityProtocol};
-use kafkaoxide_kafka::{KafkaClient, RdKafkaClient};
+use salty_core::{Connection, MessageFilter, SecurityProtocol};
+use salty_kafka::{KafkaClient, RdKafkaClient};
 
 /// Codecs a producer can choose, and which this app therefore has to be able
 /// to read. `lz4` is bundled into librdkafka unconditionally, so it doubles
@@ -43,13 +43,13 @@ const CODECS: &[&str] = &["gzip", "snappy", "lz4", "zstd"];
 const EXPECTED_MESSAGES: usize = 20;
 
 fn bootstrap_servers() -> Option<String> {
-    std::env::var("KAFKAOXIDE_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
+    std::env::var("SALTY_E2E_BOOTSTRAP").ok().filter(|value| !value.is_empty())
 }
 
 /// Topics are named `<prefix><codec>`; the prefix is overridable so a run
 /// against a shared cluster doesn't have to own the plain names.
 fn topic_for(codec: &str) -> String {
-    let prefix = std::env::var("KAFKAOXIDE_E2E_TOPIC_PREFIX").unwrap_or_else(|_| "c-".to_string());
+    let prefix = std::env::var("SALTY_E2E_TOPIC_PREFIX").unwrap_or_else(|_| "c-".to_string());
     format!("{prefix}{codec}")
 }
 
@@ -106,13 +106,13 @@ fn filter() -> MessageFilter {
 async fn every_compression_codec_can_be_fetched() {
     let Some(bootstrap) = bootstrap_servers() else {
         eprintln!(
-            "skipped: set KAFKAOXIDE_E2E_BOOTSTRAP (and run \
+            "skipped: set SALTY_E2E_BOOTSTRAP (and run \
              scripts/e2e-compression-fixtures.ps1) to run this test"
         );
         return;
     };
 
-    println!("librdkafka builtin.features = {}", kafkaoxide_kafka::build_info::builtin_features());
+    println!("librdkafka builtin.features = {}", salty_kafka::build_info::builtin_features());
 
     let client = RdKafkaClient::new();
     let connection = connection(bootstrap);
@@ -178,6 +178,6 @@ async fn every_compression_codec_can_be_fetched() {
         failures.is_empty(),
         "this build cannot read every compression codec:\n  {}\nlibrdkafka builtin.features = {}",
         failures.join("\n  "),
-        kafkaoxide_kafka::build_info::builtin_features(),
+        salty_kafka::build_info::builtin_features(),
     );
 }

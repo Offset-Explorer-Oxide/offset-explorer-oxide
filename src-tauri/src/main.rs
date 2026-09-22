@@ -23,8 +23,8 @@ use tauri::Manager;
 /// above), so the answer also goes to `path` when one is given, and the exit
 /// code carries the verdict regardless of where output can be seen.
 fn report_librdkafka_features(path: Option<&str>) -> ! {
-    let features = kafkaoxide_kafka::build_info::builtin_features();
-    let missing = kafkaoxide_kafka::build_info::missing_required_features();
+    let features = salty_kafka::build_info::builtin_features();
+    let missing = salty_kafka::build_info::missing_required_features();
 
     let report = if missing.is_empty() {
         format!("ok\nbuiltin.features = {features}\n")
@@ -63,16 +63,16 @@ fn main() {
             // separate value to remember to update on every version bump.
             if let Some(window) = handle.get_webview_window("main") {
                 let version = handle.package_info().version.to_string();
-                let _ = window.set_title(&format!("Offset Explorer Oxide v{version}"));
+                let _ = window.set_title(&format!("Salty v{version}"));
             }
 
             // Before any client is built, so every connection this app opens
-            // identifies itself as `kafkaoxide/<version>` rather than
+            // identifies itself as `salty/<version>` rather than
             // librdkafka's shared default of `rdkafka`. The version can only
             // come from here: the workspace crates all sit at 0.1.0 and are
             // not bumped per release, so `tauri.conf.json` (via
             // `package_info()`) is the only true version of the app.
-            kafkaoxide_kafka::set_app_version(&handle.package_info().version.to_string());
+            salty_kafka::set_app_version(&handle.package_info().version.to_string());
 
             tauri::async_runtime::block_on(async move {
                 // What "Application started" below reports: opening the
@@ -81,19 +81,34 @@ fn main() {
                 let started = std::time::Instant::now();
                 let data_dir = handle.path().app_data_dir().expect("app data dir");
                 std::fs::create_dir_all(&data_dir).expect("create app data dir");
-                let db_path = data_dir.join("kafkaoxide.sqlite");
+
+                // The app data directory is named after the bundle
+                // identifier, and the identifier changed with the rename — so
+                // an upgrading user's connections, tabs and saved schemas are
+                // sitting one directory over, under the old name. Copy them
+                // across before opening anything, or the first launch after
+                // the upgrade looks like a fresh install.
+                //
+                // Deliberately not fatal: a failure here means the user has
+                // an empty app, which is recoverable and worth a log line,
+                // while panicking means they have no app at all. The
+                // decision-making itself is in `salty_core`, where it is
+                // tested — this crate cannot be compiled everywhere.
+                let adopted = salty_core::adopt_legacy_app_data(&data_dir);
+
+                let db_path = data_dir.join(salty_core::DB_FILE);
                 let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
-                let pool = kafkaoxide_db::init_pool(&database_url)
+                let pool = salty_db::init_pool(&database_url)
                     .await
                     .expect("failed to initialize database");
 
                 handle.manage(AppState {
                     pool,
-                    kafka: Arc::new(kafkaoxide_kafka::RdKafkaClient::new()),
-                    zookeeper: Arc::new(kafkaoxide_kafka::TcpZookeeperClient),
-                    connections: kafkaoxide_core::ConnectionRegistry::default(),
-                    fetch_cancellations: kafkaoxide_core::FetchCancellations::default(),
-                    schema_registry: kafkaoxide_schema_registry::SchemaRegistryClients::default(),
+                    kafka: Arc::new(salty_kafka::RdKafkaClient::new()),
+                    zookeeper: Arc::new(salty_kafka::TcpZookeeperClient),
+                    connections: salty_core::ConnectionRegistry::default(),
+                    fetch_cancellations: salty_core::FetchCancellations::default(),
+                    schema_registry: salty_schema_registry::SchemaRegistryClients::default(),
                 });
 
                 logging::emit_log(
@@ -102,21 +117,45 @@ fn main() {
                     format!("Application started in {} ms", started.elapsed().as_millis()),
                 );
 
+                // After the pool is up, so the line lands in a Logs panel the
+                // user can actually open, and so a migration that went wrong
+                // is visible rather than silent.
+                match adopted {
+                    Ok(Some(adopted)) => logging::emit_log(
+                        &handle,
+                        "info",
+                        format!(
+                            "Adopted data from the previous version ({}): {}",
+                            adopted.from.display(),
+                            adopted.files.join(", "),
+                        ),
+                    ),
+                    Ok(None) => {}
+                    Err(error) => logging::emit_log(
+                        &handle,
+                        "warn",
+                        format!(
+                            "Could not copy data from the previous version: {error}. Saved \
+                             connections from before the rename to Salty will not appear.",
+                        ),
+                    ),
+                }
+
                 // Logged so the id is discoverable from the app itself: it is
                 // what an operator filters broker metrics and quotas by, and
                 // it is the line that makes a forgotten `set_app_version`
-                // visible (it would read "kafkaoxide" with no version).
+                // visible (it would read "salty" with no version).
                 logging::emit_log(
                     &handle,
                     "info",
-                    format!("Broker connections identify as client.id={}", kafkaoxide_kafka::broker_client_id()),
+                    format!("Broker connections identify as client.id={}", salty_kafka::broker_client_id()),
                 );
 
                 // Enumerating the OS trust store is the one fixed cost every
                 // TLS connection pays; doing it here means the user's first
                 // click doesn't.
                 let ca_started = std::time::Instant::now();
-                kafkaoxide_kafka::warm_native_ca_bundle();
+                salty_kafka::warm_native_ca_bundle();
                 logging::emit_log(
                     &handle,
                     "info",
@@ -130,8 +169,8 @@ fn main() {
                 // releases went out before that could be diagnosed. Recording
                 // it at startup means the Logs panel answers the question
                 // directly, from the build the user is actually running.
-                let features = kafkaoxide_kafka::build_info::builtin_features();
-                let missing = kafkaoxide_kafka::build_info::missing_required_features();
+                let features = salty_kafka::build_info::builtin_features();
+                let missing = salty_kafka::build_info::missing_required_features();
                 if missing.is_empty() {
                     logging::emit_log(&handle, "info", format!("librdkafka features: {features}"));
                 } else {

@@ -224,7 +224,7 @@ function applyGridState(gridApi: GridApi<TopicMessage>, state: DataTabGridState)
 export interface DataTabProps {
   connectionId: string;
   topicName: string;
-  /** When set, this Data tab is scoped to a single partition — the Partition filter is prepopulated and locked to it. */
+  /** When set, this Data tab is scoped to a single partition — the Partition field is prepopulated and locked to it. */
   partitionId?: number;
 }
 
@@ -768,7 +768,7 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
           />
         </label>
         <label>
-          Partition filter
+          Partition
           <input
             value={form.partitions}
             onChange={(e) => updateForm({ partitions: e.target.value })}
@@ -806,14 +806,6 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         </label>
       </div>
 
-      <div className="data-tab-controls">
-        <button type="button" aria-label="Fetch" onClick={handlePlay} disabled={isPlaying}>
-          ▶ Fetch
-        </button>
-        <button type="button" aria-label="Stop" onClick={handleStop} disabled={!isPlaying}>
-          ■ Stop
-        </button>
-      </div>
       <label className="connection-modal-checkbox-label data-tab-include-payload">
         <input
           type="checkbox"
@@ -823,6 +815,14 @@ export function DataTab({ connectionId, topicName, partitionId }: DataTabProps) 
         />
         Fetch message payload
       </label>
+      <div className="data-tab-controls">
+        <button type="button" aria-label="Fetch" onClick={handlePlay} disabled={isPlaying}>
+          ▶ Fetch
+        </button>
+        <button type="button" aria-label="Stop" onClick={handleStop} disabled={!isPlaying}>
+          ■ Stop
+        </button>
+      </div>
 
       {error && (
         <p role="alert" className="connection-modal-error">

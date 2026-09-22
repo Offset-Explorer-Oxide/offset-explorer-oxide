@@ -27,6 +27,11 @@ interface GeneralSettingsState {
   setMaxTotalFetchBytes: (bytes: number) => void;
 }
 
+// The `kafkaoxide.` prefix is the app's previous name, and it stays.
+// Renaming these keys cannot help anyone: a browser key that survives the
+// upgrade carries the user's settings forward, and one that doesn't is gone
+// either way. Changing them would only guarantee the first case is lost too.
+// See the localStorage note in .claude/CLAUDE.md.
 const STORAGE_KEY = "kafkaoxide.generalSettings";
 
 interface StoredGeneralSettings {

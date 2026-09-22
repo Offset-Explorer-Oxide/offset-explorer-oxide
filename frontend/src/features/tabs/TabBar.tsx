@@ -357,7 +357,7 @@ export function TabBar() {
             <header className="connection-modal-header">
               <h2>Close application?</h2>
             </header>
-            <p>This is the last open tab — closing it will close kafkaoxide.</p>
+            <p>This is the last open tab — closing it will close Salty.</p>
             <footer className="connection-modal-footer">
               <button type="button" onClick={confirmCloseLastTab}>
                 Close application

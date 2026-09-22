@@ -217,7 +217,7 @@ describe("App", () => {
       if (command === "connections_export") return Promise.resolve(undefined);
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
-    save.mockResolvedValue("/tmp/kafkaoxide-connections.json");
+    save.mockResolvedValue("/tmp/salty-connections.json");
     const user = userEvent.setup();
 
     render(<App />);
@@ -227,14 +227,14 @@ describe("App", () => {
 
     expect(save).toHaveBeenCalledWith(
       expect.objectContaining({
-        defaultPath: "kafkaoxide-connections.json",
+        defaultPath: "salty-connections.json",
         filters: [{ name: "JSON", extensions: ["json"] }],
       }),
     );
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("connections_export", {
         ids: null,
-        path: "/tmp/kafkaoxide-connections.json",
+        path: "/tmp/salty-connections.json",
       }),
     );
   });
@@ -266,7 +266,7 @@ describe("App", () => {
       if (command === "connections_import") return Promise.resolve({ imported: 2, skipped: 1 });
       return Promise.reject(new Error(`unexpected command ${command}`));
     });
-    open.mockResolvedValue("/tmp/kafkaoxide-connections.json");
+    open.mockResolvedValue("/tmp/salty-connections.json");
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
     const user = userEvent.setup();
 
@@ -690,7 +690,7 @@ describe("App", () => {
       );
     expect(await screen.findByTestId("resizable-pane-right")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Properties" }));
+    await user.click(screen.getByRole("tab", { name: "Meta Data" }));
     await user.click(screen.getByText("payments"));
 
     await waitFor(() => expect(screen.queryByTestId("resizable-pane-right")).not.toBeInTheDocument());

@@ -158,7 +158,7 @@ describe("DataTab", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.getByLabelText("Max messages per partition")).toBeInTheDocument();
     expect(screen.getByLabelText("Total max messages")).toBeInTheDocument();
-    expect(screen.getByLabelText("Partition filter")).toBeInTheDocument();
+    expect(screen.getByLabelText("Partition")).toBeInTheDocument();
     expect(screen.getByLabelText(/^From/)).toBeInTheDocument();
     expect(screen.getByLabelText(/^To(\s|$)/)).toBeInTheDocument();
     expect(screen.getByLabelText("Offset")).toBeInTheDocument();
@@ -167,8 +167,8 @@ describe("DataTab", () => {
   it("pre-fills and disables the partition filter when partitionId is given", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" partitionId={2} />);
 
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("2");
-    expect(screen.getByLabelText("Partition filter")).toBeDisabled();
+    expect(screen.getByLabelText("Partition")).toHaveValue("2");
+    expect(screen.getByLabelText("Partition")).toBeDisabled();
   });
 
   it("updates the partition filter when partitionId changes without the component remounting", () => {
@@ -178,7 +178,7 @@ describe("DataTab", () => {
         <DataTab connectionId="1" topicName="orders" partitionId={0} />
       </QueryClientProvider>,
     );
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("0");
+    expect(screen.getByLabelText("Partition")).toHaveValue("0");
 
     rerender(
       <QueryClientProvider client={client}>
@@ -186,7 +186,7 @@ describe("DataTab", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("1");
+    expect(screen.getByLabelText("Partition")).toHaveValue("1");
   });
 
   it("clears the search text and filter fields when switching to a different topic without remounting", async () => {
@@ -264,8 +264,8 @@ describe("DataTab", () => {
   it("leaves the partition filter blank and editable when partitionId is not given", () => {
     renderWithClient(<DataTab connectionId="1" topicName="orders" />);
 
-    expect(screen.getByLabelText("Partition filter")).toHaveValue("");
-    expect(screen.getByLabelText("Partition filter")).toBeEnabled();
+    expect(screen.getByLabelText("Partition")).toHaveValue("");
+    expect(screen.getByLabelText("Partition")).toBeEnabled();
   });
 
   it("fetches with the prepopulated partition when partitionId is given and Fetch is clicked", async () => {
@@ -288,9 +288,16 @@ describe("DataTab", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
   });
 
-  it("shows a 'Fetch message payload' checkbox below Fetch/Stop, unchecked by default", () => {
-    renderWithClient(<DataTab connectionId="1" topicName="orders" />);
-    expect(screen.getByLabelText("Fetch message payload")).not.toBeChecked();
+  it("shows a 'Fetch message payload' checkbox above Fetch/Stop, unchecked by default", () => {
+    const { container } = renderWithClient(<DataTab connectionId="1" topicName="orders" />);
+    const checkbox = screen.getByLabelText("Fetch message payload");
+    expect(checkbox).not.toBeChecked();
+    // Above, not below: the checkbox decides what Fetch will do, so it has
+    // to be readable before the button is pressed rather than after.
+    const controls = container.querySelector(".data-tab-controls") as HTMLElement;
+    expect(checkbox.closest("label")!.compareDocumentPosition(controls)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("fetches messages with a default-capped, no-payload filter when Fetch is clicked with no filters touched", async () => {
@@ -362,7 +369,7 @@ describe("DataTab", () => {
 
     await user.clear(screen.getByLabelText("Max messages per partition"));
     await user.type(screen.getByLabelText("Max messages per partition"), "10");
-    await user.type(screen.getByLabelText("Partition filter"), "0,1");
+    await user.type(screen.getByLabelText("Partition"), "0,1");
     await user.click(screen.getByRole("button", { name: "Fetch" }));
 
     await waitFor(() =>
@@ -522,7 +529,7 @@ describe("DataTab", () => {
     await waitFor(() => expect(screen.getByLabelText("Max messages per partition")).toBeDisabled());
 
     expect(screen.getByLabelText("Total max messages")).toBeDisabled();
-    expect(screen.getByLabelText("Partition filter")).toBeDisabled();
+    expect(screen.getByLabelText("Partition")).toBeDisabled();
     expect(screen.getByLabelText("Offset")).toBeDisabled();
     expect(screen.getByLabelText(/^From/)).toBeDisabled();
     expect(screen.getByLabelText(/^To(\s|$)/)).toBeDisabled();

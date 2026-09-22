@@ -1,6 +1,6 @@
-use kafkaoxide_core::{ConnectionRegistry, FetchCancellations};
-use kafkaoxide_kafka::{KafkaClient, ZookeeperClient};
-use kafkaoxide_schema_registry::SchemaRegistryClients;
+use salty_core::{ConnectionRegistry, FetchCancellations};
+use salty_kafka::{KafkaClient, ZookeeperClient};
+use salty_schema_registry::SchemaRegistryClients;
 use sqlx::sqlite::SqlitePool;
 use std::sync::Arc;
 

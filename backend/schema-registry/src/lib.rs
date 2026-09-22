@@ -1,13 +1,13 @@
 use error_stack::{Report, ResultExt};
-use kafkaoxide_core::Result;
-use kafkaoxide_core::AppError;
+use salty_core::Result;
+use salty_core::AppError;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 /// Schema Registry TLS/auth material from a connection's Schema Registry
-/// fields + secrets — mirrors `kafkaoxide_kafka::BrokerSslConfig`'s split
+/// fields + secrets — mirrors `salty_kafka::BrokerSslConfig`'s split
 /// between locations (not secret) and passwords (from the OS keychain).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SchemaRegistryAuth<'a> {

@@ -2,7 +2,7 @@ use crate::commands::connections::CommandError;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use error_stack::ResultExt;
-use kafkaoxide_core::AppError;
+use salty_core::AppError;
 
 /// Asks the OS to trim this process's working set — the number Windows'
 /// Task Manager shows as "Memory". Clearing the frontend's cached rows/
@@ -33,8 +33,8 @@ pub fn trim_process_memory() {
     }
 }
 
-/// Backs the payload viewer's Save and Download buttons. `path` is resolved
-/// by the frontend beforehand via the native save dialog — this command only
+/// Backs the payload viewer's Save button. `path` is resolved by the
+/// frontend beforehand via the native save dialog — this command only
 /// decodes and writes the bytes, exactly like `connections_export`.
 ///
 /// Takes base64 rather than a `Vec<u8>`: Tauri's IPC is JSON, so a byte
@@ -44,11 +44,10 @@ pub fn trim_process_memory() {
 /// shape the payload is held in on the frontend, so nothing has to be
 /// re-encoded to call this.
 ///
-/// Writing *bytes* rather than a string is the point of the Download half:
-/// a payload is an arbitrary Kafka byte string, not guaranteed UTF-8, and
-/// the viewer's on-screen text is a lossy decode of it (invalid sequences
-/// become U+FFFD). Saving that text back would hand the user a file that no
-/// longer matches what is on the broker.
+/// It stays a *bytes* write rather than a string one even though Save is now
+/// the only caller: the frontend base64-encodes the rendered text itself
+/// (`textToBase64`), so a UTF-8 string would only move that encoding across
+/// the IPC boundary at three times the size for nothing.
 #[tauri::command]
 pub fn payload_save(path: String, contents_base64: String) -> Result<(), CommandError> {
     let bytes = BASE64
