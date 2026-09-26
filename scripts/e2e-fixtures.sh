@@ -27,11 +27,40 @@ topic() {
     --create --if-not-exists --topic "$1" --partitions "$2" --replication-factor 1 >/dev/null
 }
 
+# Total messages across a topic's partitions; 0 for a topic with none.
+#
+# Creating a topic is idempotent (`--if-not-exists`) but *producing* to one is
+# not, and only the two expensive perf fixtures below used to check. Re-running
+# the script therefore appended a second copy of every cheap fixture — 60
+# records in `e2e-basic` became 120, and `cluster_reads.rs`, which asserts on
+# exact contents, failed against a broker that had merely been seeded twice.
+# That is a confusing way to spend an afternoon, so every produce step now
+# gates on this.
+messages_in() {
+  kexec "$K/kafka-get-offsets.sh" --bootstrap-server "$BOOTSTRAP" --topic "$1" 2>/dev/null \
+    | awk -F: '{ total += $3 } END { print total + 0 }'
+}
+
 echo "==> waiting for the broker"
+# The loop used to fall through when the broker never answered, leaving the
+# first real command to fail instead — under `set -e` that surfaced as a bare
+# "No such container" or a topic-creation error, naming neither the broker nor
+# the wait. On a loaded CI runner a cold Kafka start is exactly when this
+# happens, so it says so, and shows the broker's own last words.
+broker_ready=0
 for _ in $(seq 1 60); do
-  if kexec "$K/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" --list >/dev/null 2>&1; then break; fi
+  if kexec "$K/kafka-topics.sh" --bootstrap-server "$BOOTSTRAP" --list >/dev/null 2>&1; then
+    broker_ready=1
+    break
+  fi
   sleep 1
 done
+if [ "$broker_ready" -ne 1 ]; then
+  echo "the broker at $BOOTSTRAP did not answer within 60s" >&2
+  echo "--- last 50 lines of \`docker logs $CONTAINER\` ---" >&2
+  docker logs --tail 50 "$CONTAINER" >&2 || echo "(container $CONTAINER does not exist)" >&2
+  exit 1
+fi
 
 # --- compression_codecs.rs -------------------------------------------------
 # Produced by Kafka's own Java console producer, so what lands on disk does
@@ -40,9 +69,11 @@ done
 echo "==> compression fixtures (c-gzip, c-snappy, c-lz4, c-zstd)"
 for codec in gzip snappy lz4 zstd; do
   topic "c-$codec" 1
-  seq 1 20 | sed 's/^/msg-/' \
-    | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" \
-        --topic "c-$codec" --compression-codec "$codec" >/dev/null 2>&1
+  if [ "$(messages_in "c-$codec")" -eq 0 ]; then
+    seq 1 20 | sed 's/^/msg-/' \
+      | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" \
+          --topic "c-$codec" --compression-codec "$codec" >/dev/null 2>&1
+  fi
 done
 
 # --- payload_budget.rs / fetch_budget.rs -----------------------------------
@@ -50,13 +81,19 @@ done
 # file of concatenated records with no separator is sent as one oversized
 # message and rejected wholesale.
 echo "==> large-message fixtures (big-msgs, big-2mb)"
-kexec sh -c 'head -c 524288 /dev/zero | tr "\0" x > /tmp/big.txt; echo >> /tmp/big.txt'
 topic big-msgs 1
 topic big-2mb 3
-kexec sh -c "for i in \$(seq 1 20); do cat /tmp/big.txt; done > /tmp/big20.txt"
-kexec sh -c "for i in \$(seq 1 30); do cat /tmp/big.txt; done > /tmp/big30.txt"
-kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-msgs < /tmp/big20.txt" >/dev/null 2>&1
-kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-2mb  < /tmp/big30.txt" >/dev/null 2>&1
+if [ "$(messages_in big-msgs)" -eq 0 ] || [ "$(messages_in big-2mb)" -eq 0 ]; then
+  kexec sh -c 'head -c 524288 /dev/zero | tr "\0" x > /tmp/big.txt; echo >> /tmp/big.txt'
+  kexec sh -c "for i in \$(seq 1 20); do cat /tmp/big.txt; done > /tmp/big20.txt"
+  kexec sh -c "for i in \$(seq 1 30); do cat /tmp/big.txt; done > /tmp/big30.txt"
+fi
+if [ "$(messages_in big-msgs)" -eq 0 ]; then
+  kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-msgs < /tmp/big20.txt" >/dev/null 2>&1
+fi
+if [ "$(messages_in big-2mb)" -eq 0 ]; then
+  kexec sh -c "$K/kafka-console-producer.sh --bootstrap-server $BOOTSTRAP --topic big-2mb  < /tmp/big30.txt" >/dev/null 2>&1
+fi
 
 # --- fetch_stall.rs --------------------------------------------------------
 # Enough messages, over enough partitions, that a fetch of the whole topic
@@ -98,14 +135,18 @@ fi
 # --- cluster_reads.rs ------------------------------------------------------
 echo "==> cluster fixtures (e2e-basic, e2e-headers)"
 topic e2e-basic 3
-for i in $(seq 1 60); do echo "k$i:value-$i"; done \
-  | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-basic \
-      --property parse.key=true --property key.separator=: >/dev/null 2>&1
+if [ "$(messages_in e2e-basic)" -eq 0 ]; then
+  for i in $(seq 1 60); do echo "k$i:value-$i"; done \
+    | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-basic \
+        --property parse.key=true --property key.separator=: >/dev/null 2>&1
+fi
 
 topic e2e-headers 1
-printf 'trace-id:abc123,content-type:application/json\tkey-1:body-1\ntrace-id:def456,content-type:text/plain\tkey-2:body-2\n' \
-  | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-headers \
-      --property parse.headers=true --property parse.key=true --property key.separator=: >/dev/null 2>&1
+if [ "$(messages_in e2e-headers)" -eq 0 ]; then
+  printf 'trace-id:abc123,content-type:application/json\tkey-1:body-1\ntrace-id:def456,content-type:text/plain\tkey-2:body-2\n' \
+    | kexec_i "$K/kafka-console-producer.sh" --bootstrap-server "$BOOTSTRAP" --topic e2e-headers \
+        --property parse.headers=true --property parse.key=true --property key.separator=: >/dev/null 2>&1
+fi
 
 # Two consumer groups, because the lag path behaves differently for each:
 # `e2e-group` is left idle (Kafka reports it `Empty`, members array NULL) and

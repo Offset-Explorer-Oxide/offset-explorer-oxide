@@ -63,11 +63,37 @@ npm run coverage           # both LCOV reports into coverage/, for SonarQube
   it — which needs `backend/kafka/src/producer.rs`'s `ProducerErrorContext`,
   because on the produce path a wrong password arrives as a bare
   `MessageTimedOut` and only librdkafka's `error` callback names the cause.
-- `rdkafka` has no ACL or `DescribeTopics` support in **any** published version
-  (checked against 0.39.0), so there is no way to ask a broker "may I write
-  here?" before trying. Publishing therefore relies on the produce attempt
-  itself being the authorization check — nothing is written when it is refused —
-  plus the app-side gates above.
+- `rdkafka`'s **safe wrapper** has no ACL or `DescribeTopics` support in any
+  published version (checked against 0.39.0), so there is no way to ask a
+  broker "may I write here?" before trying. Publishing therefore relies on the
+  produce attempt itself being the authorization check — nothing is written
+  when it is refused — plus the app-side gates above. `DescribeTopics` is
+  genuinely absent; **ACLs are not**. `rdkafka` re-exports rdkafka-sys
+  wholesale (`pub use rdkafka_sys::{bindings, helpers, types};`, `lib.rs:275`)
+  and rdkafka-sys 4.10.0+2.12.1 binds the full C ACL API, reachable from the
+  existing pooled `AdminClient` via `AdminClient::inner().native_ptr()`. That
+  is what `backend/kafka/src/acl.rs` uses, and it is the only `unsafe` in the
+  codebase — keep it that way.
+- **librdkafka discards the `DescribeAcls` error code**, so an ACL listing
+  cannot tell you why it is empty. `rd_kafka_DescribeAclsResponse_parse`
+  (2.12.1) reads the response's `error_code`, uses it only to reassign a local
+  `errstr` pointer, and returns `RD_KAFKA_RESP_ERR_NO_ERROR` unconditionally —
+  so `CLUSTER_AUTHORIZATION_FAILED` and `SECURITY_DISABLED` both arrive as a
+  *successful, empty* result, indistinguishable from a cluster with no ACLs
+  defined. Since those three mean opposite things, `salty_core`'s
+  `AclAvailability` recovers what it can from the broker's own
+  `authorizer.class.name` (read via `DescribeConfigs`, which *does* propagate
+  its errors) and reports `Indeterminate` rather than guessing the rest. Do not
+  "simplify" this back to reading the error code; `backend/kafka/tests/
+  acl_describe.rs` fails against a real broker if you do.
+- ACL **pattern matching is the broker's job, not ours.** A `DescribeAcls`
+  filter sent with `RD_KAFKA_RESOURCE_PATTERN_MATCH` makes the broker resolve
+  which literal, prefixed and wildcard patterns govern a given resource name,
+  so `salty_core::acl_effective` never matches patterns — it only applies
+  Kafka's precedence and implication rules. Note those rules are **asymmetric**:
+  the implication expansion (`Read`/`Write`/`Delete`/`Alter` ⇒ `Describe`,
+  `AlterConfigs` ⇒ `DescribeConfigs`) applies when looking for an *allow* and
+  never to a *deny*, so a `Deny Read` does not deny `Describe`.
 - `rdkafka` uses librdkafka's default vendored build (`configure && make`) on macOS/Linux, and the `cmake-build` feature (CMake + MSVC) on Windows — see `backend/kafka/Cargo.toml`.
 - **The fetch path uses `BaseConsumer` inside `spawn_blocking`, not
   `StreamConsumer`, and that is deliberate.** rdkafka's `tokio` feature *is*

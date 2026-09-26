@@ -4,7 +4,7 @@ use base64::Engine;
 use error_stack::ResultExt;
 use salty_core::Result;
 use salty_core::{
-    AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
+    AclAvailability, AclFilter, AclListing, AppError, BrokerSummary, ConfigEntry, Connection, ConnectionStatus, ConsumerGroupLag,
     ConsumerGroupSummary, EncodedRecord, MessageFetchResult, MessageFilter, MessageHeader, PartitionLag,
     PartitionSummary, PublishOutcome, SaslMechanism, SecurityProtocol, TopicMessage, TopicSummary,
 };
@@ -282,6 +282,22 @@ pub trait KafkaClient: Send + Sync {
         topic: &str,
         read_timeout: Duration,
     ) -> Result<Vec<ConfigEntry>, AppError>;
+
+    /// Backs the tree's Access Control category and the Access tabs, via
+    /// librdkafka's DescribeAcls admin API — reached over raw FFI, because
+    /// rdkafka's safe wrapper binds no ACL call at all (see `crate::acl`).
+    ///
+    /// Returns an `AclListing` rather than a bare `Vec` because two of the
+    /// broker's answers are facts about the cluster rather than failures:
+    /// no authorizer is configured, or this principal may not read ACLs.
+    /// Only a genuine failure — a timeout, a dead socket — comes back as
+    /// `Err`.
+    async fn describe_acls(
+        &self,
+        connection: &Connection,
+        filter: AclFilter,
+        read_timeout: Duration,
+    ) -> Result<AclListing, AppError>;
 
     /// Backs the consumer group detail panel's "Refresh" button. Decodes
     /// each member's partition assignment (see `crate::assignment`), then
@@ -644,6 +660,11 @@ pub struct RdKafkaClient {
     admin_clients: Mutex<HashMap<String, PooledAdminClient>>,
 }
 
+/// The broker config naming the authorizer in force. Empty (not absent)
+/// when no authorizer is configured, which is what makes it usable as a
+/// definitive "this cluster is unsecured" signal.
+const AUTHORIZER_CLASS_CONFIG: &str = "authorizer.class.name";
+
 /// A pooled admin client, versioned by the connection it was built from —
 /// see [`PooledClient`], whose contract this mirrors exactly.
 struct PooledAdminClient {
@@ -716,6 +737,51 @@ impl RdKafkaClient {
             },
         );
         Ok(client)
+    }
+
+    /// The broker's configured `authorizer.class.name`, or `None` if it
+    /// could not be read.
+    ///
+    /// Used only to interpret an empty ACL listing. `DescribeConfigs` is the
+    /// right question to ask because, unlike `DescribeAcls`, librdkafka
+    /// propagates its failures — so a principal who may not read broker
+    /// configs yields `None` here and the caller reports "cannot determine"
+    /// rather than inventing an answer.
+    ///
+    /// Every failure collapses to `None` on purpose: this is a secondary
+    /// probe that qualifies another result, and it must never turn a
+    /// perfectly good (if empty) ACL listing into an error.
+    async fn authorizer_class(&self, connection: &Connection, read_timeout: Duration) -> Option<String> {
+        let client = self.metadata_client(connection).ok()?;
+        // Any broker will do — `authorizer.class.name` is a static, per-broker
+        // config and a cluster running an authorizer on only some of its
+        // brokers is not a configuration this app needs to describe.
+        let broker_id = tokio::task::spawn_blocking(move || {
+            client
+                .observed("failed to fetch broker metadata", |consumer| {
+                    consumer.fetch_metadata(None, read_timeout)
+                })
+                .ok()
+                .and_then(|metadata| metadata.brokers().first().map(|broker| broker.id()))
+        })
+        .await
+        .ok()??;
+
+        let admin = self.admin_client(connection).ok()?;
+        let options = AdminOptions::new().request_timeout(Some(read_timeout));
+        let results = admin
+            .describe_configs([&ResourceSpecifier::Broker(broker_id)], &options)
+            .await
+            .ok()?;
+
+        results
+            .into_iter()
+            .next()?
+            .ok()?
+            .entries
+            .into_iter()
+            .find(|entry| entry.name == AUTHORIZER_CLASS_CONFIG)
+            .map(|entry| entry.value.unwrap_or_default())
     }
 
     /// Retires *both* of a connection's pooled clients.
@@ -1587,6 +1653,37 @@ impl KafkaClient for RdKafkaClient {
             .collect())
     }
 
+    async fn describe_acls(
+        &self,
+        connection: &Connection,
+        filter: AclFilter,
+        read_timeout: Duration,
+    ) -> Result<AclListing, AppError> {
+        // The same pooled admin client the Config tab uses: an ACL listing
+        // is another DescribeConfigs-shaped admin round trip, and opening
+        // Access Control right after a Config tab should not cost a second
+        // handshake. See `admin_client`.
+        let admin = self.admin_client(connection)?;
+        let listing = crate::acl::describe_acls(admin, filter, read_timeout).await?;
+
+        // A listing that actually carries bindings needs no interpreting: the
+        // broker answered and we can see the answer.
+        if !listing.bindings.is_empty() {
+            return Ok(listing);
+        }
+
+        // An *empty* listing is the ambiguous one, and librdkafka will not
+        // tell us which kind it is — it drops the DescribeAcls error code
+        // (see `crate::acl`). So ask the broker something it does answer
+        // honestly: whether it is running an authorizer at all. One extra
+        // round trip, and only in the empty case.
+        let authorizer = self.authorizer_class(connection, read_timeout).await;
+        Ok(AclListing {
+            availability: AclAvailability::for_empty_listing(authorizer.as_deref()),
+            ..listing
+        })
+    }
+
     async fn fetch_consumer_group_lag(
         &self,
         connection: &Connection,
@@ -1848,6 +1945,8 @@ mod tests {
             sasl_password: None,
             sasl_oauth_url: None,
             schema_registry_endpoint: None,
+            ksqldb_endpoint: None,
+            ksqldb_basic_auth_credentials: None,
             schema_registry_basic_auth_credentials: None,
             schema_registry_trust_store_location: None,
             schema_registry_trust_store_password: None,
@@ -2161,6 +2260,8 @@ mod tests {
             sasl_password: None,
             sasl_oauth_url: None,
             schema_registry_endpoint: None,
+            ksqldb_endpoint: None,
+            ksqldb_basic_auth_credentials: None,
             schema_registry_basic_auth_credentials: None,
             schema_registry_trust_store_location: None,
             schema_registry_trust_store_password: None,

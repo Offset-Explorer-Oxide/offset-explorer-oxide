@@ -20,6 +20,8 @@ export interface ConnectionDraft {
   saslOauthUrl: string;
   schemaRegistryEndpoint: string;
   schemaRegistryBasicAuthCredentials: string;
+  ksqldbEndpoint: string;
+  ksqldbBasicAuthCredentials: string;
   schemaRegistryTrustStoreLocation: string;
   schemaRegistryTrustStorePassword: string;
   schemaRegistryKeystoreLocation: string;
@@ -55,6 +57,8 @@ export function emptyDraft(): ConnectionDraft {
     saslOauthUrl: "",
     schemaRegistryEndpoint: "",
     schemaRegistryBasicAuthCredentials: "",
+    ksqldbEndpoint: "",
+    ksqldbBasicAuthCredentials: "",
     schemaRegistryTrustStoreLocation: "",
     schemaRegistryTrustStorePassword: "",
     schemaRegistryKeystoreLocation: "",
@@ -111,6 +115,8 @@ export function toNewConnection(draft: ConnectionDraft): NewConnection {
     saslOauthUrl: nullableTrim(draft.saslOauthUrl),
     schemaRegistryEndpoint: nullableTrim(draft.schemaRegistryEndpoint),
     schemaRegistryBasicAuthCredentials: nullableTrim(draft.schemaRegistryBasicAuthCredentials),
+    ksqldbEndpoint: nullableTrim(draft.ksqldbEndpoint),
+    ksqldbBasicAuthCredentials: nullableTrim(draft.ksqldbBasicAuthCredentials),
     schemaRegistryTrustStoreLocation: nullableTrim(draft.schemaRegistryTrustStoreLocation),
     schemaRegistryTrustStorePassword: nullableTrim(draft.schemaRegistryTrustStorePassword),
     schemaRegistryKeystoreLocation: nullableTrim(draft.schemaRegistryKeystoreLocation),
@@ -146,6 +152,8 @@ export function connectionToDraft(connection: Connection): ConnectionDraft {
     saslPassword: connection.saslPassword ?? "",
     saslOauthUrl: connection.saslOauthUrl ?? "",
     schemaRegistryEndpoint: connection.schemaRegistryEndpoint ?? "",
+    ksqldbEndpoint: connection.ksqldbEndpoint ?? "",
+    ksqldbBasicAuthCredentials: connection.ksqldbBasicAuthCredentials ?? "",
     schemaRegistryBasicAuthCredentials: connection.schemaRegistryBasicAuthCredentials ?? "",
     schemaRegistryTrustStoreLocation: connection.schemaRegistryTrustStoreLocation ?? "",
     schemaRegistryTrustStorePassword: connection.schemaRegistryTrustStorePassword ?? "",

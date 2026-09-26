@@ -1,3 +1,5 @@
+mod acl;
+mod acl_effective;
 mod auth;
 mod cluster;
 mod connection;
@@ -10,6 +12,14 @@ mod message_stream;
 mod publish;
 mod registry;
 
+pub use acl::{
+    AclAvailability, AclBinding, AclFilter, AclListing, AclOperation, AclPermission, PatternType,
+    ResourceType,
+};
+pub use acl_effective::{
+    effective, principals, resource_access, OperationVerdict, PrincipalAccess, ResourceAccess,
+    Verdict, VerdictReason, WILDCARD_PRINCIPAL,
+};
 pub use cluster::{
     BrokerSummary, ConfigEntry, ConsumerGroupLag, ConsumerGroupSummary, PartitionLag,
     PartitionSummary, TopicSummary,

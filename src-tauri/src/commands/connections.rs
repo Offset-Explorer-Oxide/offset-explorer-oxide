@@ -118,7 +118,7 @@ fn record_auth_outcome<T>(
 ///
 /// The pooled client is still dropped on an authentication failure — a
 /// client the broker has rejected cannot serve the next request either.
-fn record_auth_success_only<T>(
+pub(crate) fn record_auth_success_only<T>(
     state: &AppState,
     id: &str,
     result: &Result<T, error_stack::Report<AppError>>,

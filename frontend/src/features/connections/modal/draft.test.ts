@@ -197,6 +197,8 @@ function sampleConnection(overrides: Partial<Connection> = {}): Connection {
     saslOauthUrl: "https://idp.example.com/token",
     schemaRegistryEndpoint: "https://schema-registry.local",
     schemaRegistryBasicAuthCredentials: "sr-user:sr-secret",
+    ksqldbEndpoint: "https://ksql.local",
+    ksqldbBasicAuthCredentials: "ksql-user:ksql-secret",
     schemaRegistryTrustStoreLocation: "/etc/ts.jks",
     schemaRegistryTrustStorePassword: "sr-ts-secret",
     schemaRegistryKeystoreLocation: "/etc/ks.jks",
